@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    {
+      "package": "E:/MyProjects/opencode-statistics",
+      "options": {
+        "url": "http://127.0.0.1:4517",
+        "allowReveal": false
+      }
+    }
+  ]
+}

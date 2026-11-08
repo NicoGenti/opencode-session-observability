@@ -1,0 +1,171 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import http from "node:http";
+import { createObservabilityServer } from "../src/server/http.ts";
+import { ObservabilityService } from "../src/core/service.ts";
+import { preview, redactString, redactValue } from "../src/core/util.ts";
+// @ts-expect-error - plain browser module without type declarations
+import { renderMarkdown } from "../src/ui/markdown.js";
+import {
+  memorySource,
+  secretsFixture,
+  simpleFixture,
+  writeFixtureDb,
+} from "./fixtures/build.ts";
+
+function request(
+  port: number,
+  pathname: string,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: "127.0.0.1", port, path: pathname, method: "GET", headers },
+      (res) => {
+        let body = "";
+        res.on("data", (chunk) => (body += chunk));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+test("HTTP rejects forged Host and cross-site requests", async () => {
+  const { path } = writeFixtureDb(simpleFixture());
+  const server = await createObservabilityServer({ dbPath: path, port: 0 });
+  try {
+    const normal = await request(server.port, "/api/health");
+    assert.equal(normal.status, 200);
+
+    const forgedHost = await request(server.port, "/api/health", {
+      Host: `attacker.example:${server.port}`,
+    });
+    assert.equal(forgedHost.status, 403);
+    assert.equal(JSON.parse(forgedHost.body).error, "forbidden_host");
+
+    const forgedOrigin = await request(server.port, "/api/sessions", {
+      Origin: "http://attacker.example",
+    });
+    assert.equal(forgedOrigin.status, 403);
+
+    const crossSite = await request(server.port, "/api/sessions", {
+      "Sec-Fetch-Site": "cross-site",
+    });
+    assert.equal(crossSite.status, 403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("reveal is disabled by default and health hides the database path", async () => {
+  const { path } = writeFixtureDb(secretsFixture());
+  const server = await createObservabilityServer({ dbPath: path, port: 0 });
+  try {
+    const health = JSON.parse((await request(server.port, "/api/health")).body);
+    assert.equal(health.revealAllowed, false);
+    assert.equal(health.dbPath, "opencode.db");
+
+    const reveal = await request(
+      server.port,
+      "/api/sessions/ses_secrets/events?reveal=1",
+    );
+    assert.equal(reveal.status, 403);
+    assert.equal(JSON.parse(reveal.body).error, "reveal_disabled");
+  } finally {
+    await server.close();
+  }
+});
+
+test("HTTP errors do not reflect absolute paths", async () => {
+  const { path } = writeFixtureDb(simpleFixture());
+  const server = await createObservabilityServer({ dbPath: path, port: 0 });
+  try {
+    const nul = await request(server.port, "/ui/%00");
+    assert.equal(nul.status, 400);
+    assert.doesNotMatch(nul.body, /src[\\/]ui/i);
+
+    const badPercent = await request(server.port, "/%");
+    assert.equal(badPercent.status, 400);
+    assert.match(badPercent.body, /Malformed request path/);
+  } finally {
+    await server.close();
+  }
+});
+
+test("redaction covers token formats and truncated preview tails", () => {
+  const samples = [
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig",
+    "AIzaSyD-1234567890abcdefghijklmnopqrstu",
+    "sk_live_51H8xQabcdefghijklmnop",
+    "STRIPE_SECRET_KEY=sk_live_51H8xQabcdefghijklmnop",
+    "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    "glpat-abcdefghijklmnopqrst",
+    "npm_abcdefghijklmnopqrstuvwxyz0123456789",
+    "pypi-abcdefghijklmnopqrstuvwxyz",
+    "hf_abcdefghijklmnopqrstuvwxyz0123456789",
+    "github_pat_abcdefghijklmnopqrstuvwxyz",
+    "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+    "Cookie: session=abcdef123456",
+    "postgres://user:pa55w0rd@db.example.com:5432/app",
+    "api_key: abcdef1234567890",
+    'PASSWORD="hunter2"',
+    "https://hooks.slack.com/services/T000/B000/XXXX",
+    "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----",
+  ];
+  for (const sample of samples) {
+    assert.notEqual(redactString(sample), sample, `not redacted: ${sample}`);
+  }
+
+  const full = "x".repeat(230) + " sk-abcdefghijklmnop12345 TAIL";
+  const redacted = redactValue({
+    text: full,
+    textPreview: preview(full, 240),
+  }) as { textPreview: string };
+  assert.doesNotMatch(redacted.textPreview, /sk-/);
+
+  const keys = redactValue({
+    apiToken: "a",
+    passphrase: "b",
+    xAuthToken: "c",
+    secretAccessKey: "d",
+    DATABASE_URL: "postgres://u:p@h/db",
+  }) as Record<string, string>;
+  for (const value of Object.values(keys)) assert.equal(value, "[REDACTED]");
+});
+
+test("session search does not match redacted titles", async () => {
+  const service = new ObservabilityService(memorySource(secretsFixture()));
+  const hidden = await service.listSessions({ query: "sk-testvalue" });
+  assert.equal(hidden.length, 0);
+  const revealed = await service.listSessions({
+    query: "sk-testvalue",
+    reveal: true,
+  });
+  assert.equal(revealed.length, 1);
+  const normal = await service.listSessions({ query: "secrets" });
+  assert.equal(normal.length, 1);
+});
+
+test("Markdown export escapes raw HTML in interpolated text", async () => {
+  const data = simpleFixture();
+  data.sessions[0]!.meta.title = '<img src=x onerror=alert(1)>';
+  const service = new ObservabilityService(memorySource(data));
+  const result = await service.export("ses_simple", { format: "markdown" });
+  const firstLine = result.content.split("\n")[0]!;
+  const rendered = firstLine.replace(/\\[<>&[\]`]/g, "");
+  assert.doesNotMatch(rendered, /<img/);
+  assert.match(firstLine, /\\<img/);
+});
+
+test("Markdown renderer rejects unsafe links and handles bracket-heavy text", () => {
+  const unsafe = renderMarkdown("[x](javascript:alert(1))");
+  assert.doesNotMatch(unsafe.html, /<a /);
+
+  const safe = renderMarkdown("[docs](https://example.com/docs)");
+  assert.match(safe.html, /<a href="https:\/\/example\.com\/docs"/);
+
+  const brackets = renderMarkdown("[".repeat(20_000), { maxChars: 20_000 });
+  assert.equal(brackets.truncated, false);
+});

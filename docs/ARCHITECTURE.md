@@ -1,0 +1,180 @@
+# Architecture
+
+The implementation separates storage, normalization, projection, metrics, presentation and export. The UI never reads OpenCode's raw schema.
+
+## Data flow
+
+```mermaid
+flowchart LR
+  DB[(OpenCode 2 SQLite<br/>session_v2 / session_message)] -->|read-only| SQL[SQLite adapter]
+  API[OpenCode 2 plugin client<br/>ctx.session.*] --> APIA[API adapter]
+  FIX[Fixtures / Memory source] --> MEM[Memory adapter]
+
+  SQL --> RAW[RawMessage[] + SessionMeta]
+  APIA --> RAW
+  MEM --> RAW
+
+  RAW --> NORM[Normalize<br/>NormalizedEvent[]]
+  NORM --> PROJ[Project<br/>turns / steps / tools / compactions / unattached]
+  PROJ --> MET[Metrics<br/>tokens / cache / durations / speed / context]
+  PROJ --> IDX[Event index]
+  MET --> TOT[Totals + capabilities + coverage]
+
+  PROJ --> SVC[ObservabilityService]
+  IDX --> SVC
+  TOT --> SVC
+  SVC -->|redact / filter / page| HTTP[Local HTTP API]
+  SVC -->|redact / filter / page| RPC[Plugin RPC]
+  SVC -->|redact unless reveal| EXP[Export JSON / MD / HTML]
+
+  HTTP --> WEB[Browser UI<br/>Trajectory + Statistics]
+  RPC --> TUI[TUI commands]
+  RPC --> EXT[Other clients]
+```
+
+## Layers
+
+| Layer | Files | Responsibility |
+|---|---|---|
+| Adapter | `core/adapters/sqlite.ts`, `api.ts`, `memory.ts`, `paths.ts` | Own the storage/API shape. Produce `RawMessage` and `SessionMeta`. No metrics. |
+| Data model | `core/types.ts` | Normalized event, step, turn, compaction, totals, capabilities, DTOs. |
+| Normalization | `core/normalize.ts` | One ordered `NormalizedEvent` per message/content block. No turn assignment. |
+| Projection | `core/project.ts` | Group events into turns/steps, attach non-step events, identify unattached events, build compaction transactions and capabilities. |
+| Metrics | `core/metrics.ts` | Pure formulas for prompt tokens, cache hit rate, durations, residual, speed, context delta. |
+| Service | `core/service.ts` | Load a dataset, cache briefly, redact, filter, keyset-page, detail, export. |
+| Presentation | `server/http.ts`, `ui/*` | Local HTTP API, static UI, view state. |
+| Integration | `plugin/index.ts`, `rpc.ts`, `service.ts`, `tui.ts` | OpenCode 2 server RPC + TUI commands. |
+| Export | `core/export.ts` | Self-contained reports. |
+
+## Adapter isolation
+
+The adapter interface is intentionally small:
+
+```ts
+interface ObservabilitySource {
+  kind: "sqlite" | "api" | "jsonl";
+  listSessions(options?): Promise<SessionSummary[]>;
+  getSession(id): Promise<SessionMeta | null>;
+  listMessages(id, range?): Promise<RawMessage[]>;
+  getFamily(id): Promise<SessionFamily>;
+  messageBounds(id): Promise<{ minSeq; maxSeq; count }>;
+  close?(): void;
+}
+```
+
+- **SQLite** reads `session_v2` and `session_message` with parameterized `SELECT`s.
+- **API** calls `ctx.session.list/get/context` and synthesizes sequence numbers from the ordered array.
+- **Memory** backs tests and fixtures.
+
+The normalizer sees the same `RawMessage` shape from all three. A storage change should be contained in one adapter.
+
+## Ordering and grouping invariants
+
+1. **Recorded order wins.** Messages are sorted by `seq`, then `time_created`, then `id`. A timestamp regression is flagged (`timestamp-regression`) but never re-sorted.
+2. **User opens a turn.** Each `user` message starts a new turn. In a subagent session the trigger label is “Delegated prompt”.
+3. **Assistant is one step.** Each `assistant` message is one step. Its `reasoning`, `text` and `tool` blocks share the step's `stepID`.
+4. **A new user message closes the previous turn.** No event is moved to a later turn.
+5. **Idle closes the open turn.** `idle.outcome` drives completed/error/interrupted status.
+6. **Synthetic messages** start a turn only when no turn is open; otherwise they are non-step events in the current turn.
+7. **System, switches, compactions, skill/shell/unknown** attach to the open turn; with no open turn they become unattached and are shown separately.
+8. **Assistant without a user** starts an “orphan” turn with an uncertainty label; it is not silently attached to an earlier turn.
+9. **Compactions are transactions**, not steps. They are recorded once and never added to step/turn token totals.
+
+This is a projection, not a reconstruction of the conversation from prose. Identifiers and `seq` are used; no global app state is consulted.
+
+## Metrics layer
+
+All formulas live in `core/metrics.ts` and return a `Metric`:
+
+```ts
+interface Metric {
+  value: number | null;
+  basis: "measured" | "derived" | "estimated" | "unavailable";
+  note?: string;
+}
+```
+
+- `measured` — a recorded value (timestamps, token counters).
+- `derived` — arithmetic over recorded values.
+- `estimated` — a documented fallback (e.g. model time from `completed` when `streamed` is absent and no tools ran).
+- `unavailable` — the data is not present; no hidden inference.
+
+See [METRICS.md](METRICS.md).
+
+## Service layer
+
+`ObservabilityService` is the only place that:
+
+- loads a session dataset (session + family + messages + bounds);
+- normalizes and projects;
+- mirrors turn ids onto the full event stream used by detail/list endpoints;
+- redacts (unless reveal is explicitly allowed);
+- applies filters and keyset pagination;
+- trims the analysis payload (tool input/output and unbounded prose stay in the detail endpoint);
+- exports.
+
+It caches a dataset for ~4 seconds, keyed by `session.time.updated`, message count, sequence range and window flag. This avoids repeating the projection for the analysis + event page + detail requests while keeping live sessions fresh.
+
+### Event paging
+
+- Keyset pagination on `orderKey` (`seq:order:messageID`), not offsets.
+- Backward pages return the newest matching rows; the UI prepends older pages and adjusts `scrollTop` by the height delta.
+- Forward pages return rows after the newest loaded `orderKey`.
+- `around=<eventID|orderKey>` centers a page on a jump target; the UI uses it for Statistics → Trajectory jumps and deep links.
+- Duplicate ids are dropped when merging pages.
+- `totalMatched` and `totalInSession` are included so the UI can label “Window total” vs “Session total”.
+
+### Sanitization
+
+- Default: `redactValue` recursively replaces credential-shaped keys/strings.
+- Token counts (`tokens.input`, `cache.read`, …) are preserved.
+- The analysis endpoint strips full tool input/output and caps step prose; the full payload is available only via the event detail endpoint.
+- List DTOs contain previews only.
+- Reveal is a separate request parameter and is gated by the server/plugin option.
+
+## UI layer
+
+- Vanilla ES modules, no build step, no external assets.
+- `ui/app.js` owns state, routing (`#/s/<id>/<view>?event=…`), filters, views, drawer, export, theme, shortcuts.
+- `ui/virtual.js` is a variable-height virtual list. Only visible rows (plus overscan) are in the DOM.
+- Statistics uses one `<tbody>` per turn with `content-visibility: auto` and an expandable step detail row.
+- `ui/markdown.js` renders a safe Markdown subset (raw HTML is escaped first).
+- Scroll preservation is a pure helper (`core/paging.ts`, mirrored in `ui/paging.js`) and is tested.
+
+## Plugin surfaces
+
+```text
+OpenCode 2 server ── loads ./exports["."] ──► Plugin.define → ctx.rpc.register
+OpenCode 2 TUI    ── loads ./exports["./tui"] ──► keymap slash commands
+Browser           ── HTTP ──► local server ──► SQLite adapter
+Other clients     ── HTTP/RPC ──► service
+```
+
+The TUI commands are intentionally non-mutating: they resolve the current session from `context.ui.router.current()` and open the browser URL. They never enqueue a prompt.
+
+## Read-only guarantees
+
+- SQLite opened with `readOnly: true`.
+- `PRAGMA query_only = ON`.
+- Adapter interface contains no mutation method.
+- Server routes are GET/HEAD only.
+- Plugin handlers only call `listSessions`, `getSession`, `listMessages`, `getFamily`, `analyze`, `events`, `eventDetail`, `export`.
+- Tests hash the database file before/after analysis and test that a read-only connection rejects `CREATE TABLE`.
+
+## Error handling
+
+- Missing session/event → 404 with a stable error code.
+- Locked database → 503 with a retry hint.
+- OpenCode 1 / unknown schema → explicit error; no partial reads.
+- Malformed JSON in an individual message → preserved as an `unknown` event with an `_parseError` payload; the rest of the session still loads.
+- Unknown message types/content blocks → `unknown` events with uncertainty labels.
+- Out-of-order timestamps → flagged; order preserved.
+- No start/end timestamps → `unavailable` metrics, not estimates.
+
+## Extension points
+
+- Add a new storage adapter by implementing `ObservabilitySource`.
+- Add a new message/content type in `normalize.ts`; unknown types are already preserved.
+- Add a metric in `metrics.ts` and surface it in `project.ts`/UI.
+- Add a live capture plugin using `session.hook("http.request")`/`"http.response"`; keep it separate from the read-only historical analysis.
+- Add a Desktop GUI panel by implementing `./gui-experimental`; the RPC contract is already available.

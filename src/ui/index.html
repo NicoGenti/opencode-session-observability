@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>OpenCode Session Observability</title>
+  <link rel="stylesheet" href="/ui/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <div id="shell" class="shell">
+    <aside id="sidebar" class="sidebar" aria-label="Sessions">
+      <div class="sidebar-head">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">◐</span>
+          <span>Session Observability</span>
+        </div>
+        <button id="theme-toggle" class="icon-btn" type="button" title="Toggle theme" aria-label="Toggle theme">◑</button>
+      </div>
+      <div class="sidebar-search">
+        <label class="sr-only" for="session-search">Search sessions</label>
+        <input id="session-search" type="search" placeholder="Search sessions…" autocomplete="off" spellcheck="false">
+      </div>
+      <div id="family" class="family" hidden></div>
+      <div id="session-list" class="session-list" role="listbox" aria-label="Sessions"></div>
+      <div class="sidebar-foot">
+        <span id="db-info" title="Database path"></span>
+      </div>
+    </aside>
+
+    <main id="main" class="main">
+      <header class="topbar">
+        <button id="sidebar-toggle" class="icon-btn mobile-only" type="button" aria-label="Toggle session list">☰</button>
+        <div class="topbar-actions">
+          <button id="refresh" class="btn ghost" type="button" title="Reload the session (R)">Refresh</button>
+          <label class="switch" title="Reload every 10 seconds while visible">
+            <input id="live-toggle" type="checkbox"> Live
+          </label>
+          <button id="reveal-toggle" class="btn ghost danger" type="button" aria-pressed="false">Reveal secrets</button>
+          <div class="menu">
+            <button id="export-btn" class="btn" type="button" aria-haspopup="menu" aria-expanded="false">Export ▾</button>
+            <div id="export-menu" class="menu-panel" role="menu" hidden>
+              <button type="button" data-export="json" role="menuitem">JSON (full analysis)</button>
+              <button type="button" data-export="markdown" role="menuitem">Markdown report</button>
+              <button type="button" data-export="html" role="menuitem">HTML report</button>
+              <div class="menu-note" id="export-note">Redacted by default</div>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div id="error" class="banner error" role="alert" hidden></div>
+      <div id="reveal-warning" class="banner warn" role="status" hidden>
+        Secrets are visible. Do not share this screen or its exports.
+      </div>
+
+      <section id="session-header" class="session-header"></section>
+
+      <nav class="tabs" role="tablist" aria-label="Session views">
+        <button id="tab-trajectory" class="tab" type="button" role="tab" data-view="trajectory" aria-controls="view">Trajectory</button>
+        <button id="tab-statistics" class="tab" type="button" role="tab" data-view="statistics" aria-controls="view">Statistics</button>
+        <span class="tab-spacer"></span>
+        <span id="load-state" class="muted small"></span>
+        <button id="shortcuts-btn" class="btn ghost" type="button" title="Keyboard shortcuts (?)">Shortcuts</button>
+      </nav>
+
+      <section id="view" class="view" role="tabpanel" aria-live="polite"></section>
+    </main>
+  </div>
+
+  <div id="drawer-backdrop" class="backdrop" hidden></div>
+  <aside id="drawer" class="drawer" role="dialog" aria-modal="true" aria-label="Event detail" hidden></aside>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <div id="shortcuts" class="modal" role="dialog" aria-modal="true" aria-labelledby="shortcuts-title" hidden>
+    <div class="modal-card">
+      <button class="modal-close icon-btn" type="button" aria-label="Close" data-close-shortcuts>×</button>
+      <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+      <dl class="shortcut-list">
+        <div><dt><kbd>/</kbd></dt><dd>Focus the event search</dd></div>
+        <div><dt><kbd>1</kbd></dt><dd>Trajectory view</dd></div>
+        <div><dt><kbd>2</kbd></dt><dd>Statistics view</dd></div>
+        <div><dt><kbd>e</kbd></dt><dd>Toggle errors-only</dd></div>
+        <div><dt><kbd>t</kbd></dt><dd>Toggle tool calls</dd></div>
+        <div><dt><kbd>c</kbd></dt><dd>Toggle compactions</dd></div>
+        <div><dt><kbd>r</kbd></dt><dd>Toggle retries</dd></div>
+        <div><dt><kbd>s</kbd></dt><dd>Toggle subagent calls</dd></div>
+        <div><dt><kbd>j</kbd> / <kbd>k</kbd></dt><dd>Next / previous event</dd></div>
+        <div><dt><kbd>g</kbd> / <kbd>G</kbd></dt><dd>Jump to start / end</dd></div>
+        <div><dt><kbd>Esc</kbd></dt><dd>Close the detail drawer or dialog</dd></div>
+        <div><dt><kbd>?</kbd></dt><dd>This dialog</dd></div>
+      </dl>
+    </div>
+  </div>
+
+  <script type="module" src="/ui/app.js"></script>
+</body>
+</html>
