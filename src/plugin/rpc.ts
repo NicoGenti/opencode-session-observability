@@ -1,4 +1,4 @@
-import { Rpc } from "@opencode/plugin/rpc";
+import { defineRpc } from "./rpc-define.ts";
 
 const stringArray = {
   type: "array",
@@ -16,7 +16,7 @@ const emptyInput = {
   additionalProperties: false,
 } as const;
 
-export const Observability = Rpc.define({
+export const Observability = defineRpc({
   id: "session-observability",
   methods: {
     health: {

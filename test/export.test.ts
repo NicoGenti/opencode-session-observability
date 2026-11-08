@@ -60,6 +60,21 @@ test("HTML export escapes session and event content", async () => {
   assert.match(result.content, /&lt;script&gt;alert/);
 });
 
+test("redacted Markdown and HTML exports contain no fixture secrets", async () => {
+  const service = new ObservabilityService(memorySource(secretsFixture()));
+  for (const format of ["markdown", "html"] as const) {
+    const result = await service.export("ses_secrets", {
+      format,
+      includeEvents: true,
+    });
+    assert.equal(result.redacted, true);
+    assert.doesNotMatch(result.content, /sk-supersecretvalue12345/);
+    assert.doesNotMatch(result.content, /ghp_abcdefghijklmnop/);
+    assert.doesNotMatch(result.content, /token=abcdef1234567890/);
+    assert.match(result.content, /\[REDACTED/);
+  }
+});
+
 test("redacted exports hide credentials and reveal exports include them", async () => {
   const service = new ObservabilityService(memorySource(secretsFixture()));
   const redacted = await service.export("ses_secrets", {
@@ -68,6 +83,7 @@ test("redacted exports hide credentials and reveal exports include them", async 
   });
   assert.doesNotMatch(redacted.content, /sk-supersecretvalue12345/);
   assert.doesNotMatch(redacted.content, /ghp_abcdefghijklmnop/);
+  assert.doesNotMatch(redacted.content, /token=abcdef1234567890/);
   assert.match(redacted.content, /\[REDACTED/);
 
   const revealed = await service.export("ses_secrets", {

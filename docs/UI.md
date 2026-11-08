@@ -95,12 +95,24 @@ Each compaction is a distinct transaction card:
 
 The final row is labelled **Session total** when the loaded range covers the whole session, otherwise **Window total**. It shows turn/step counts, token sums, weighted cache hit rate, cost, model/tool times, output speed, and both context figures. `Recorded by OpenCode` compares with the session-row totals.
 
+## Access token
+
+By default every `/api` route except `/api/health` requires an access token. The printed URL carries it in the fragment (`#/?token=…` or `#/s/<id>/<view>?token=…`). On load the UI:
+
+1. reads the token from the fragment,
+2. stores it in `sessionStorage` for the tab,
+3. removes it from the address bar with `history.replaceState`.
+
+The token is sent as `Authorization: Bearer …` (or `X-Observability-Token`) and is never placed in a server query parameter, log line or error body. If a request returns `401`, the UI clears the stored token and prompts for a new one. Opening a deep link without a token also prompts.
+
+`--no-auth` disables authentication on loopback only. A non-loopback bind always requires authentication. The server writes a per-port token file with user-only permissions so the TUI can reuse the token; an explicit `--token=<value>` is not persisted.
+
 ## Reveal secrets
 
 - Default: credential-shaped values are redacted server-side.
 - `Reveal secrets` asks for confirmation, then reloads the session and events with raw payloads.
 - While active, a persistent warning is shown and the button changes to `Hide secrets`.
-- Reveal is disabled unless the server starts with `--reveal`; the button is disabled and the API returns 403 for `reveal=1`.
+- Reveal is disabled unless the server starts with `--reveal`; the button is disabled and the API returns 403 for `reveal=1`. When a token is enabled, a valid token is also required before the reveal policy is evaluated.
 
 Redaction preserves token counts and metrics. It targets keys such as `api_key`, `authorization`, `password`, `secret`, `access_token`, `refresh_token`, `credential`, and strings such as bearer tokens, `sk-…`, GitHub/Slack/AWS tokens, private keys, URL credentials and credential query parameters.
 
@@ -168,7 +180,7 @@ In OpenCode 2:
 /statistics
 ```
 
-The commands use the session currently shown in the TUI, check `GET /api/health`, and open the corresponding deep link in the browser. If the UI is not running, a toast shows the start command. The commands never mutate the session.
+The commands use the session currently shown in the TUI, check `GET /api/health`, and open the corresponding deep link in the browser. The TUI reads the per-port token file written by the server; the plugin option `token` or `OPENCODE_OBSERVABILITY_TOKEN` overrides it (required for an explicit `--token=<value>`). If the UI is not running, a toast shows the start command. If no token is available, the TUI explains how to provide one and does not open an unauthenticated page. The token is never shown in a toast. The commands never mutate the session.
 
 ## Troubleshooting
 
@@ -179,5 +191,7 @@ The commands use the session currently shown in the TUI, check `GET /api/health`
 | “Database is locked” | The analysis is read-only; retry when the session is idle. WAL reads normally work while OpenCode runs. |
 | Empty Trajectory | Clear filters or search; check `totalInSession`. |
 | `Reveal secrets` disabled | The server was started without `--reveal`. |
-| TUI command says the UI is not running | Run `npm start -- --port 4517`, or set the plugin `url` option to the actual port. |
+| “A valid access token is required” | Reopen the printed URL, paste the token into the prompt, or restart the server so it writes a fresh token file. |
+| TUI command says a token is required | Check that the server wrote a token file for the configured port, or set the plugin option `token` / `OPENCODE_OBSERVABILITY_TOKEN`. |
+| TUI command says the UI is not running | Run `npm start -- --port 4517` (add `--no-auth` only for unauthenticated loopback), or set the plugin `url` option to the actual port. |
 | Port in use | Use `--port 0` (ephemeral) or another port. |

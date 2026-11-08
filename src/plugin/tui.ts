@@ -1,9 +1,52 @@
 import { spawn } from "node:child_process";
-import { Plugin } from "@opencode/plugin/tui";
+import { readTokenFile } from "../server/token-file.ts";
+import { defineTuiPlugin } from "./define.ts";
 
 const DEFAULT_URL = "http://127.0.0.1:4517";
 
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+
+type Reachability = "ok" | "auth" | "down";
+type RouteLike = { type: string; sessionID?: string };
+
+export function buildTuiUrl(
+  base: string,
+  route: RouteLike,
+  view: "trajectory" | "statistics",
+  token: string | null,
+): string {
+  const path =
+    route.type === "session" && route.sessionID
+      ? `#/s/${encodeURIComponent(route.sessionID)}/${view}`
+      : "#/";
+  const url = `${base}/${path}`;
+  return token ? `${url}?token=${encodeURIComponent(token)}` : url;
+}
+
+function withoutToken(url: string): string {
+  return url.replace(/([?&])token=[^&]*/g, "$1").replace(/[?&]$/, "");
+}
+
+function pluginToken(value: unknown): string | null {
+  if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  const env = process.env.OPENCODE_OBSERVABILITY_TOKEN;
+  return typeof env === "string" && env.trim().length > 0 ? env.trim() : null;
+}
+
+async function tokenFromFile(base: string): Promise<string | null> {
+  try {
+    const url = new URL(base);
+    const port = url.port
+      ? Number(url.port)
+      : url.protocol === "https:"
+        ? 443
+        : 80;
+    if (!Number.isInteger(port) || port <= 0 || port > 65_535) return null;
+    return (await readTokenFile(port))?.token ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function baseUrl(value: unknown): string {
   if (typeof value !== "string" || value.length === 0) return DEFAULT_URL;
@@ -19,7 +62,7 @@ function baseUrl(value: unknown): string {
   }
 }
 
-async function reachable(url: string): Promise<boolean> {
+async function reachable(url: string): Promise<Reachability> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 1_500);
   try {
@@ -27,9 +70,13 @@ async function reachable(url: string): Promise<boolean> {
       signal: controller.signal,
       headers: { Accept: "application/json" },
     });
-    return response.ok;
+    if (!response.ok) return "down";
+    const body = (await response.json().catch(() => null)) as {
+      authRequired?: unknown;
+    } | null;
+    return body?.authRequired === true ? "auth" : "ok";
   } catch {
-    return false;
+    return "down";
   } finally {
     clearTimeout(timer);
   }
@@ -61,22 +108,19 @@ function openBrowser(url: string): boolean {
  * local web UI for the session currently shown in the TUI, or explain how to
  * start the UI when it is not running.
  */
-export default Plugin.define({
+export default defineTuiPlugin({
   id: "opencode-session-observability.tui",
   setup(context) {
     const base = baseUrl(context.options.url);
 
-    const targetUrl = (view: "trajectory" | "statistics"): string => {
-      const route = context.ui.router.current();
-      if (route.type === "session") {
-        return `${base}/#/s/${encodeURIComponent(route.sessionID)}/${view}`;
-      }
-      return `${base}/`;
-    };
-
     const openView = async (view: "trajectory" | "statistics"): Promise<void> => {
-      const url = targetUrl(view);
-      if (!(await reachable(base))) {
+      const configured = pluginToken(context.options.token);
+      const status = await reachable(base);
+      const token =
+        status === "auth"
+          ? (configured ?? (await tokenFromFile(base)))
+          : null;
+      if (status === "down") {
         context.ui.toast.show({
           title: "Session observability",
           message:
@@ -86,10 +130,21 @@ export default Plugin.define({
         });
         return;
       }
+      if (status === "auth" && !token) {
+        context.ui.toast.show({
+          title: "Session observability",
+          message:
+            "The UI requires an access token, but no token file was found. Restart it with `npm start`, or set the plugin option \"token\" or OPENCODE_OBSERVABILITY_TOKEN.",
+          variant: "warning",
+          duration: 10_000,
+        });
+        return;
+      }
+      const url = buildTuiUrl(base, context.ui.router.current(), view, token);
       if (!openBrowser(url)) {
         context.ui.toast.show({
           title: "Session observability",
-          message: url,
+          message: withoutToken(url),
           variant: "info",
           duration: 8_000,
         });

@@ -245,16 +245,20 @@ function redactPemBlocks(value: string): string {
 function redactTruncatedTail(value: string): string {
   let out = value;
   out = out.replace(
-    /\b(?:sk-[A-Za-z0-9_-]{1,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{1,}|glpat-[A-Za-z0-9_-]{1,}|npm_[A-Za-z0-9]{1,}|pypi-[A-Za-z0-9_-]{1,}|hf_[A-Za-z0-9]{1,}|github_pat_[A-Za-z0-9_]{1,}|AIza[0-9A-Za-z_-]{1,})…$/,
+    /\b(?:sk-[A-Za-z0-9_-]*|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]*|gh[pousr]_[A-Za-z0-9]*|glpat-[A-Za-z0-9_-]*|npm_[A-Za-z0-9]*|pypi-[A-Za-z0-9_-]*|hf_[A-Za-z0-9]*|github_pat_[A-Za-z0-9_]*|xox[baprs]-?[A-Za-z0-9-]*|AIza[0-9A-Za-z_-]*|AKIA[0-9A-Z]*)…$/,
     "[REDACTED]…",
   );
-  out = out.replace(/\beyJ[A-Za-z0-9_-]{1,}…$/, "[REDACTED:jwt]…");
+  out = out.replace(/\beyJ[A-Za-z0-9_-]*…$/, "[REDACTED:jwt]…");
   out = out.replace(
     /((?:"(?:api[-_]?key|apikey|password|passwd|secret|client[-_]?secret|access[-_]?token|refresh[-_]?token|auth[-_]?token|token|authorization|database[-_]?url|dsn)"\s*:\s*")[^"]*)…$/gi,
     "$1[REDACTED]…",
   );
   out = out.replace(
     /((?:api[-_]?key|apikey|password|passwd|passphrase|secret|token|authorization|database[-_]?url|dsn)\s*[:=]\s*)(?:"[^"]*|'[^']*|[^\s&;,"']*)…$/gi,
+    "$1[REDACTED]…",
+  );
+  out = out.replace(
+    /((?<![A-Za-z0-9_])(?:token|id[-_]?token|session[-_]?token)\s*[:=]\s*)(?:"[^"]*|'[^']*|[^\s&;,"']*)…$/gi,
     "$1[REDACTED]…",
   );
   out = out.replace(
@@ -310,6 +314,13 @@ const SECRET_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
     pattern:
       /((?:api[-_]?key|apikey|password|passwd|passphrase|secret|client[-_]?secret|access[-_]?token|refresh[-_]?token|auth[-_]?token|api[-_]?token|secret[-_]?access[-_]?key|database[-_]?url|dsn)(?:[A-Za-z0-9_-]*)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s&;,"']+)/gi,
   },
+  {
+    name: "token-assignment",
+    // Bare token assignments need a length and letter guard so token counts
+    // such as `input_tokens: 100` and `token: 100` stay readable.
+    pattern:
+      /((?<![A-Za-z0-9_])(?:token|id[-_]?token|session[-_]?token)\s*[:=]\s*)(?:"[^"]+"|'[^']+'|(?=[A-Za-z0-9._~+/=-]*[A-Za-z])[A-Za-z0-9._~+/=-]{8,})/gi,
+  },
 ];
 
 const REDACTED = "[REDACTED]";
@@ -357,6 +368,7 @@ export function redactString(value: string): string {
         }
         if (
           (name === "assignment-credential" ||
+            name === "token-assignment" ||
             name === "aws-secret" ||
             name === "basic-auth" ||
             name === "cookie-header") &&

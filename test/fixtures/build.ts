@@ -757,7 +757,8 @@ export function secretsFixture(): Fixture {
             api_key: "sk-supersecretvalue12345",
             env: { PASSWORD: "hunter2" },
           },
-          output: "response with ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+          output:
+            "response with ghp_abcdefghijklmnopqrstuvwxyz0123456789 token=abcdef1234567890",
         }),
       ],
       tokens: { input: 100, output: 10, reasoning: 0, cacheRead: 0, cacheWrite: 0 },

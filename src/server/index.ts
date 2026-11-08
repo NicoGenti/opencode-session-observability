@@ -1,5 +1,11 @@
 import { spawn } from "node:child_process";
 import { createObservabilityServer } from "./http.ts";
+import { generateToken } from "./auth.ts";
+import {
+  clearTokenFile,
+  removeTokenFile,
+  writeTokenFile,
+} from "./token-file.ts";
 import {
   DatabaseDiscoveryError,
   discoverDatabase,
@@ -25,7 +31,10 @@ Options:
   --port <port>     Port (default: 4517; 0 picks a free port)
   --reveal          Allow the explicit "reveal secrets" mode
   --no-reveal       Keep reveal disabled (the default)
-  --allow-remote    Allow a non-loopback --host (unauthenticated LAN exposure)
+  --token           Generate a per-run access token (default) and print it
+  --token=<value>   Use an explicit access token (at least 16 characters)
+  --no-auth         Disable the access token (loopback only)
+  --allow-remote    Allow a non-loopback --host; requires authentication
   --open            Open the browser after starting
   --help, -h        Show this help
   --version, -v     Print the version
@@ -40,6 +49,9 @@ interface CliOptions {
   port: number;
   allowReveal: boolean;
   allowRemote: boolean;
+  authToken?: string;
+  generatedToken: boolean;
+  noAuth: boolean;
   open: boolean;
   help: boolean;
   version: boolean;
@@ -57,6 +69,8 @@ function parseArgs(argv: string[]): CliOptions {
     port: 4517,
     allowReveal: false,
     allowRemote: false,
+    generatedToken: false,
+    noAuth: false,
     open: false,
     help: false,
     version: false,
@@ -73,6 +87,18 @@ function parseArgs(argv: string[]): CliOptions {
       options.allowReveal = false;
     } else if (arg === "--allow-remote") {
       options.allowRemote = true;
+    } else if (arg === "--token") {
+      options.authToken = generateToken();
+      options.generatedToken = true;
+    } else if (arg.startsWith("--token=")) {
+      const value = arg.slice("--token=".length).trim();
+      if (value.length < 16) {
+        throw new Error("--token must be at least 16 characters");
+      }
+      options.authToken = value;
+      options.generatedToken = false;
+    } else if (arg === "--no-auth") {
+      options.noAuth = true;
     } else if (arg === "--open") {
       options.open = true;
     } else if (arg === "--db") {
@@ -104,6 +130,16 @@ function parseArgs(argv: string[]): CliOptions {
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
+  }
+  if (options.noAuth && options.authToken !== undefined) {
+    throw new Error("--token and --no-auth are mutually exclusive");
+  }
+  if (options.noAuth) {
+    options.authToken = undefined;
+    options.generatedToken = false;
+  } else if (options.authToken === undefined) {
+    options.authToken = generateToken();
+    options.generatedToken = true;
   }
   return options;
 }
@@ -144,8 +180,16 @@ async function main(): Promise<void> {
   }
   if (!isLoopback(options.host) && !options.allowRemote) {
     process.stderr.write(
-      `Refusing to bind ${options.host}: the server has no authentication.\n` +
-        "Use --allow-remote to expose it on a non-loopback interface.\n",
+      `Refusing to bind ${options.host}: the server is loopback-only by default.\n` +
+        "Use --allow-remote to expose it on a non-loopback interface; authentication stays required.\n",
+    );
+    process.exitCode = 2;
+    return;
+  }
+  if (!isLoopback(options.host) && options.authToken === undefined) {
+    process.stderr.write(
+      `Refusing to bind ${options.host} without authentication.\n` +
+        "--no-auth is loopback-only. Remove it or bind to a loopback address.\n",
     );
     process.exitCode = 2;
     return;
@@ -185,6 +229,7 @@ async function main(): Promise<void> {
       host: options.host,
       port: options.port,
       allowReveal: options.allowReveal,
+      authToken: options.authToken,
     });
   } catch (error) {
     if (error instanceof UnsupportedSchemaError || error instanceof DatabaseBusyError) {
@@ -203,29 +248,64 @@ async function main(): Promise<void> {
     throw error;
   }
 
+  let tokenFile: string | null = null;
+  if (options.authToken && options.generatedToken) {
+    try {
+      tokenFile = await writeTokenFile(running.port, options.authToken);
+    } catch (error) {
+      process.stderr.write(
+        `Warning: could not write the token file: ${
+          error instanceof Error ? error.message : String(error)
+        }\n`,
+      );
+    }
+  } else {
+    // An explicit token is not persisted; remove any stale file so the TUI
+    // does not present a token that belongs to a previous run.
+    await clearTokenFile(running.port);
+  }
+
+  const uiUrl = options.authToken
+    ? `${running.url}/#/?token=${encodeURIComponent(options.authToken)}`
+    : running.url;
   process.stdout.write(
     [
       "OpenCode Session Observability",
       `Database: ${running.dbPath}`,
       `Bind:     ${running.host}:${running.port}`,
-      `URL:      ${running.url}`,
+      `URL:      ${uiUrl}`,
       "Mode:     read-only (SQLITE_OPEN_READONLY, PRAGMA query_only)",
       options.allowReveal
         ? "Secrets:  redacted by default; explicit reveal is allowed"
         : "Secrets:  redacted; reveal is disabled (use --reveal to allow)",
+      options.authToken
+        ? `Auth:     token required (${
+            options.generatedToken ? "generated" : "explicit"
+          }); do not share this URL`
+        : "Auth:     disabled (--no-auth; loopback only)",
+      ...(tokenFile ? [`Token:    ${tokenFile} (read by the TUI)`] : []),
       ...(isLoopback(options.host)
         ? []
-        : ["Warning:  non-loopback bind; the API has no authentication."]),
+        : ["Warning:  non-loopback bind; access requires the run token."]),
       "Press Ctrl+C to stop.",
       "",
     ].join("\n"),
   );
 
-  if (options.open) openBrowser(running.url);
+  if (options.open) openBrowser(uiUrl);
 
+  let shuttingDown = false;
   const shutdown = async (): Promise<void> => {
-    await running.close();
-    process.exit(0);
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      await running.close();
+    } finally {
+      if (tokenFile && options.authToken) {
+        await removeTokenFile(running.port, options.authToken);
+      }
+      process.exit(0);
+    }
   };
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());

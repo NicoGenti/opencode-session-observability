@@ -68,8 +68,11 @@ This checklist separates what is implemented, what is available from OpenCode 2,
 - [x] OpenCode 2 server plugin with read-only RPC.
 - [x] OpenCode 2 TUI commands `/observability`, `/trajectory`, `/statistics`.
 - [x] Local HTTP API + static UI; GET/HEAD only; strict CSP; loopback bind.
-- [x] 66 automated tests.
+- [x] Default-on access token with constant-time comparison and a per-port token file for the TUI.
+- [x] `--no-auth` loopback opt-out; non-loopback binds always require authentication.
+- [x] 88 automated tests.
 - [x] Read-only file hash test and write-rejection test.
+- [x] OpenCode SDK kept as a type-only devDependency; production and full audits clean (overrides pin patched `glob` and `minimatch`).
 - [x] Fixtures: simple, tools, subagents, retry/error, compaction, long paging, incomplete, out-of-order, secrets, empty.
 - [x] README, data-source analysis, architecture, metrics reference, UI guide.
 
@@ -133,6 +136,11 @@ This checklist separates what is implemented, what is available from OpenCode 2,
 | Export formats and escaping | `test/export.test.ts` |
 | RPC contract and handlers | `test/plugin.test.ts` |
 | HTTP server endpoints/headers/redaction/export/errors | `test/server.test.ts` |
+| Access token, non-loopback guard, constant-time comparison | `test/auth.test.ts` |
+| Per-port token file lifecycle and permissions | `test/token-file.test.ts` |
+| UI fragment token, sessionStorage and headers | `test/ui-auth.test.ts` |
+| TUI deep-link token placement | `test/plugin-tui.test.ts` |
+| Plugin sources keep the SDK type-only | `test/plugin-deps.test.ts` |
 
 ## Known gaps / next steps
 
@@ -141,3 +149,5 @@ This checklist separates what is implemented, what is available from OpenCode 2,
 3. **Approval history.** Without a persisted permission event, this remains unavailable. The UI does not fake it.
 4. **Compaction duration and removed-token exactness.** The current values are the best derivable values; a future schema could record start/end and a direct ledger.
 5. **Very large single sessions.** The analysis endpoint trims step prose and tool bodies; the event detail endpoint remains the source for full payloads. If sessions grow to hundreds of thousands of messages, server-side SQL aggregation and a streaming projection would be the next optimization.
+6. **Stale token files.** A hard kill can leave a per-port token file behind. The next run on that port overwrites or clears it; the file is user-scoped and contains a token that is no longer valid after the server exits.
+7. **Redaction coverage.** Redaction is heuristic: known prefixes, credential-shaped keys and assignments are covered, but unknown formats and very short values are not. Reveal remains opt-in and disabled by default.

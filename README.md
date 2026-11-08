@@ -22,7 +22,7 @@ The implementation is original and targets OpenCode 2.2.x. It was built against 
 | UI | Local browser app: Trajectory + Statistics, filters, full-text search, detail drawer, copy, export |
 | Integration | OpenCode 2 server plugin with read-only RPC + TUI commands `/observability`, `/trajectory`, `/statistics` |
 | Export | Self-contained HTML, Markdown and JSON |
-| Tests | 66 tests: parsing, projection, metrics, paging, scroll preservation, redaction, adapters, HTTP API, RPC, exports, read-only guarantees |
+| Tests | 88 tests: parsing, projection, metrics, paging, scroll preservation, redaction, authentication, adapters, HTTP API, RPC, exports, read-only guarantees |
 
 ---
 
@@ -45,6 +45,24 @@ npm start
 
 `npm start` discovers an OpenCode 2 database automatically (see below), starts a local server on `http://127.0.0.1:4517`, and prints the URL and database path.
 
+By default the server generates an access token, prints the tokenized URL, and writes a per-port token file so the TUI can open the authenticated UI without copying the token.
+
+Open the printed URL. The token is carried in the URL fragment, removed from the address bar after the UI loads, and kept in `sessionStorage` for that tab.
+
+Disable authentication on loopback:
+
+```bash
+npm start -- --no-auth
+```
+
+Use a stable explicit token:
+
+```bash
+npm start -- --token=<value>
+```
+
+Explicit tokens are not written to disk. Configure the TUI with the `token` plugin option or `OPENCODE_OBSERVABILITY_TOKEN`.
+
 Explicit database and port:
 
 ```bash
@@ -59,16 +77,21 @@ Other flags:
 --port <port>   Port (default 4517; 0 picks a free port)
 --reveal        Allow the explicit reveal-secrets mode
 --no-reveal     Keep reveal disabled (the default)
---allow-remote  Allow a non-loopback --host; the API has no authentication
+--token         Generate a per-run access token (default) and print it
+--token=<value> Use an explicit access token (at least 16 characters)
+--no-auth       Disable the access token (loopback only)
+--allow-remote  Allow a non-loopback --host; authentication stays required
 --open          Open the browser after starting
 --help, -v      Help / version
 ```
 
+`--token` and `--no-auth` are mutually exclusive. A non-loopback bind is refused when authentication is disabled.
+
 Run the checks:
 
 ```bash
-npm test            # 66 tests, node:test
-npm run typecheck   # tsc --noEmit
+npm run check       # typecheck + 88 tests (node:test)
+npm run audit:prod  # production dependency audit (0 advisories)
 ```
 
 ---
@@ -122,6 +145,7 @@ For a local checkout, copy `opencode.jsonc.example` into your OpenCode config an
       "options": {
         "url": "http://127.0.0.1:4517",
         "allowReveal": false
+        // "token": "optional override; the TUI reads the run token file by default"
       }
     }
   ]
@@ -137,6 +161,8 @@ For a published package:
 ```
 
 The TUI loads the TUI parts of plugins its server loads. The TUI commands only open the browser; they never inject a prompt into the session.
+
+The TUI reads the per-port token file written by `npm start`. The optional `token` plugin option, or the `OPENCODE_OBSERVABILITY_TOKEN` environment variable, overrides it. An explicit `--token=<value>` is never written to disk, so it must be provided through one of those two settings. The TUI never prints the token in a toast.
 
 ### Use
 
@@ -154,7 +180,7 @@ Then in the OpenCode 2 TUI:
 /statistics      open the Statistics view for the current session
 ```
 
-If the UI is not running, the command shows a toast with the command to start it. The URL is configurable with the plugin option `url`; it must point at a loopback address (`127.0.0.1`, `localhost` or `::1`).
+If the UI is not running, the command shows a toast with the command to start it. If the UI requires a token and the plugin has none, it shows how to provide one instead of opening an unauthenticated page. The URL is configurable with the plugin option `url`; it must point at a loopback address (`127.0.0.1`, `localhost` or `::1`).
 
 ### RPC namespace
 
@@ -257,10 +283,11 @@ See [docs/METRICS.md](docs/METRICS.md) for formulas, caveats and worked examples
 - **Read-only connection**: `DatabaseSync(path, { readOnly: true })`, `PRAGMA query_only = ON`, `enableForeignKeyConstraints: false` (no writes).
 - **No mutation APIs**: the adapter interface has only `listSessions`, `getSession`, `listMessages`, `messageBounds`, `getFamily`.
 - **No session prompts**: the plugin and TUI commands never call `session.prompt`, `compact`, `interrupt` or any action method.
+- **Access token (default on loopback)**: the server generates a 256-bit per-run token. Every `/api` route except `/api/health` then requires `Authorization: Bearer <token>` or `X-Observability-Token`. The token is printed in the URL fragment, stripped from the address bar, and kept in `sessionStorage`; it is never written to logs or error bodies. A per-port token file with user-only permissions lets the TUI reuse it (`%LOCALAPPDATA%\opencode-observability` on Windows, `$XDG_RUNTIME_DIR` or `~/.config/opencode-observability` elsewhere). `--no-auth` disables authentication on loopback only. `--token=<value>` uses an explicit token that is not persisted.
 - **Redaction**: credential-shaped keys and strings are replaced with `[REDACTED]` by default. Token *counts* are metrics and are preserved.
-- **Reveal**: disabled by default; enable with `--reveal` (server) or `allowReveal: true` (plugin). The browser confirmation is a UX safeguard, not an access control: any client that can reach the API and is allowed to reveal receives raw data. The UI shows a persistent warning while active.
-- **Network**: bind `127.0.0.1` by default; non-loopback binds require `--allow-remote` and are unauthenticated. Requests are rejected unless the `Host` (and any `Origin`) belongs to the listener, which blocks DNS rebinding; CORS is not relied on.
-- **Exports**: redacted by default; HTML/Markdown/JSON include a warning when redacted.
+- **Reveal**: disabled by default; enable with `--reveal` (server) or `allowReveal: true` (plugin). The browser confirmation is a UX safeguard, not an access control: any client that can reach the API, is allowed to reveal and has a valid token (when enabled) receives raw data. The UI shows a persistent warning while active.
+- **Network**: bind `127.0.0.1` by default. Non-loopback binds require `--allow-remote` and authentication; `--no-auth` is refused off loopback. Requests are rejected unless the `Host` (and any `Origin`) belongs to the listener, which blocks DNS rebinding; CORS is not relied on.
+- **Exports**: redacted by default; HTML/Markdown/JSON include a warning when redacted. When a token is enabled, download requests carry the same header.
 
 Test coverage includes a SHA-256 before/after check proving analysis leaves the database file unchanged, and a read-only write-rejection test.
 
@@ -302,22 +329,27 @@ src/
   server/
     index.ts            CLI
     http.ts             local HTTP API + static UI
+    auth.ts             access-token generation and constant-time comparison
+    token-file.ts       per-port token file read by the TUI
   ui/
     index.html
     styles.css
     app.js              views, state, filters, drawer, shortcuts
+    auth.js             fragment token, sessionStorage and headers
     virtual.js          variable-height virtual list
     markdown.js         safe Markdown subset
     format.js            formatting + badges
     paging.js           UI-side page merge (mirrors core)
   plugin/
     index.ts            OpenCode 2 server part (RPC)
+    define.ts           identity shims for the SDK's define helpers
     rpc.ts              typed RPC contract
+    rpc-define.ts       local Rpc.define equivalent
     service.ts          RPC handlers
     tui.ts              TUI commands
 test/
   fixtures/build.ts     synthetic OpenCode 2 fixtures
-  *.test.ts             66 tests
+  *.test.ts             88 tests
 docs/
   DATA-SOURCES.md
   ARCHITECTURE.md
@@ -331,11 +363,13 @@ docs/
 ## Testing
 
 ```bash
-npm test
-npm run typecheck
+npm run check       # typecheck + 88 tests
+npm run audit:prod  # production dependency audit
 ```
 
 The fixtures cover: a simple session, multiple tool calls (including parallel and error), subagents, retry + error, compaction, a long paging session, an incomplete/interrupted run, out-of-order timestamps, secrets, and an empty session. The HTTP tests start the real server on an ephemeral port against a synthetic SQLite database.
+
+The OpenCode 2 SDK is a devDependency used only for types: the runtime plugin uses local identity shims for `Plugin.define` and `Rpc.define`, so the SDK's packaging toolchain is never loaded by this app. `npm run audit:prod` reports no advisories. The `overrides` in `package.json` pin `glob@14.0.4` and `minimatch@11.0.5` to clear the SDK's transitive packaging advisories, so a full `npm audit` also reports no vulnerabilities. Remove those overrides when OpenCode pins patched releases upstream.
 
 A real-database smoke check:
 

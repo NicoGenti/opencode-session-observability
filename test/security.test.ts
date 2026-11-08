@@ -111,6 +111,12 @@ test("redaction covers token formats and truncated preview tails", () => {
     "postgres://user:pa55w0rd@db.example.com:5432/app",
     "api_key: abcdef1234567890",
     'PASSWORD="hunter2"',
+    "token=abcdef123456",
+    "TOKEN=abcdef123456",
+    "token: abcdefgh",
+    "id_token=abcdef123456",
+    "session_token=abcdef123456",
+    "x-auth-token: abcdef123456",
     "https://hooks.slack.com/services/T000/B000/XXXX",
     "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----",
   ];
@@ -133,6 +139,43 @@ test("redaction covers token formats and truncated preview tails", () => {
     DATABASE_URL: "postgres://u:p@h/db",
   }) as Record<string, string>;
   for (const value of Object.values(keys)) assert.equal(value, "[REDACTED]");
+});
+
+test("redaction keeps token metrics readable", () => {
+  for (const text of [
+    "input_tokens: 100",
+    "output_tokens: 50",
+    "token: 100",
+    "token count: 42",
+    "total_tokens: 1234",
+    "token=12345678",
+  ]) {
+    assert.equal(redactString(text), text, `over-redacted: ${text}`);
+  }
+});
+
+test("redaction covers truncated secret prefixes", () => {
+  const secrets = [
+    "sk-abcdefghijklmnopqrstuvwx",
+    `ghp_${"a".repeat(36)}`,
+    `xoxb-${"b".repeat(36)}`,
+    `AKIA${"C".repeat(16)}`,
+    "token=abcdef1234567890",
+    "id_token=abcdef1234567890",
+    "session_token=abcdef1234567890",
+  ];
+  for (const secret of secrets) {
+    for (const width of [24, 32, 48]) {
+      const cut = preview(`prefix ${secret}`, width);
+      const out = redactString(cut);
+      assert.notEqual(out, cut, `${secret}@${width} was not redacted`);
+      assert.doesNotMatch(
+        out,
+        /abcdef|sk-|ghp_|xoxb-|AKIA/i,
+        `${secret}@${width}: ${out}`,
+      );
+    }
+  }
 });
 
 test("session search does not match redacted titles", async () => {

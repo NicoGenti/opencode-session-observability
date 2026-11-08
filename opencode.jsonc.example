@@ -5,7 +5,11 @@
       "package": "E:/MyProjects/opencode-statistics",
       "options": {
         "url": "http://127.0.0.1:4517",
-        "allowReveal": false
+        "allowReveal": false,
+        // Optional override. The TUI reads the per-port token file by default.
+        // An explicit --token=<value> is not persisted; provide it here or in
+        // OPENCODE_OBSERVABILITY_TOKEN instead.
+        "token": ""
       }
     }
   ]

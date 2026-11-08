@@ -1,7 +1,7 @@
-import { Plugin } from "@opencode/plugin";
 import { ApiSource } from "../core/adapters/api.ts";
 import type { ApiClientLike } from "../core/adapters/api.ts";
 import { ObservabilityService } from "../core/service.ts";
+import { defineServerPlugin } from "./define.ts";
 import { Observability } from "./rpc.ts";
 import { createRpcHandlers } from "./service.ts";
 
@@ -13,7 +13,7 @@ import { createRpcHandlers } from "./service.ts";
  * writes the SQLite store. The browser UI and the TUI commands consume the same
  * projection code either directly or through this RPC.
  */
-export default Plugin.define({
+export default defineServerPlugin({
   id: "opencode-session-observability",
   async setup(ctx) {
     const allowReveal = ctx.options.allowReveal === true;

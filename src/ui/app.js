@@ -21,6 +21,11 @@ import {
   statusClass,
   turnModelParts,
 } from "./format.js";
+import {
+  authHeaders,
+  consumeTokenFromLocation,
+  storeToken,
+} from "./auth.js";
 import { renderMarkdown } from "./markdown.js";
 import { mergePages } from "./paging.js";
 import { VirtualList } from "./virtual.js";
@@ -55,6 +60,7 @@ class ApiError extends Error {
 }
 
 const state = {
+  token: null,
   sessions: [],
   sessionID: null,
   session: null,
@@ -155,9 +161,22 @@ async function api(path, params = {}, options = {}) {
   }
   if (state.reveal && !options.noReveal) url.searchParams.set("reveal", "1");
   const response = await fetch(url, {
-    headers: { Accept: "application/json" },
+    headers: { Accept: "application/json", ...authHeaders(state.token) },
     cache: "no-store",
   });
+  if (response.status === 401 && !options.authRetried) {
+    state.token = null;
+    const entered =
+      typeof window !== "undefined" && typeof window.prompt === "function"
+        ? window.prompt("Access token for the observability server:")
+        : null;
+    const token = typeof entered === "string" ? entered.trim() : "";
+    if (token) {
+      state.token = token;
+      storeToken(token);
+      return api(path, params, { ...options, authRetried: true });
+    }
+  }
   if (!response.ok) {
     let body = null;
     try {
@@ -1785,7 +1804,10 @@ async function exportCurrent(format) {
     url.searchParams.set("format", format);
     url.searchParams.set("includeEvents", "1");
     if (state.reveal) url.searchParams.set("reveal", "1");
-    const response = await fetch(url, { cache: "no-store" });
+    const response = await fetch(url, {
+      cache: "no-store",
+      headers: authHeaders(state.token),
+    });
     if (!response.ok) {
       const body = await response.json().catch(() => null);
       throw new ApiError(
@@ -2101,6 +2123,7 @@ function collectDom() {
 }
 
 async function boot() {
+  state.token = consumeTokenFromLocation(window.location, window.history);
   collectDom();
   applyStoredTheme();
   bindStaticEvents();

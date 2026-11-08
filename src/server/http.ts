@@ -7,6 +7,7 @@ import { discoverDatabase } from "../core/adapters/paths.ts";
 import { DatabaseBusyError, UnsupportedSchemaError } from "../core/adapters/sqlite.ts";
 import { openWorkerSqliteSource } from "../core/adapters/sqlite-worker-source.ts";
 import type { ObservabilitySource } from "../core/types.ts";
+import { isAuthorized } from "./auth.ts";
 import {
   EventNotFoundError,
   ObservabilityService,
@@ -22,6 +23,8 @@ export interface ServerOptions {
   host?: string;
   port?: number;
   allowReveal?: boolean;
+  /** When set, every /api route except /api/health requires this token. */
+  authToken?: string;
   uiRoot?: string;
 }
 
@@ -232,6 +235,17 @@ export async function createObservabilityServer(
 ): Promise<RunningServer> {
   const host = options.host ?? "127.0.0.1";
   if (host.trim() === "") throw new Error("host must not be empty");
+  const authToken =
+    options.authToken === undefined ? undefined : options.authToken.trim();
+  if (options.authToken !== undefined && authToken === "") {
+    throw new Error("authToken must not be empty");
+  }
+  const authRequired = authToken !== undefined;
+  const loopback =
+    host === "127.0.0.1" || host === "::1" || host === "localhost";
+  if (!loopback && !authRequired) {
+    throw new Error("non-loopback hosts require authToken");
+  }
   const port = options.port ?? 4517;
   const allowReveal = options.allowReveal === true;
   const uiRoot = resolve(options.uiRoot ?? UI_ROOT);
@@ -274,6 +288,24 @@ export async function createObservabilityServer(
         return;
       }
       const search = requestUrl.searchParams;
+      if (
+        authToken !== undefined &&
+        path.startsWith("/api/") &&
+        path !== "/api/health" &&
+        !isAuthorized(req, authToken)
+      ) {
+        sendJson(
+          req,
+          res,
+          401,
+          {
+            error: "unauthorized",
+            message: "A valid access token is required.",
+          },
+          { "WWW-Authenticate": 'Bearer realm="opencode-observability"' },
+        );
+        return;
+      }
       const revealRequested = bool(search, "reveal");
       if (revealRequested && !allowReveal) {
         sendJson(req, res, 403, {
@@ -293,6 +325,7 @@ export async function createObservabilityServer(
           source: service.describe(),
           dbPath: basename(dbPath),
           revealAllowed: allowReveal,
+          authRequired,
           readOnly: true,
         });
         return;

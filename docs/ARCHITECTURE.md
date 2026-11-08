@@ -42,7 +42,7 @@ flowchart LR
 | Projection | `core/project.ts` | Group events into turns/steps, attach non-step events, identify unattached events, build compaction transactions and capabilities. |
 | Metrics | `core/metrics.ts` | Pure formulas for prompt tokens, cache hit rate, durations, residual, speed, context delta. |
 | Service | `core/service.ts` | Load a dataset, cache briefly, redact, filter, keyset-page, detail, export. |
-| Presentation | `server/http.ts`, `ui/*` | Local HTTP API, static UI, view state. |
+| Presentation | `server/http.ts`, `server/auth.ts`, `server/token-file.ts`, `ui/*` | Local HTTP API, access token, static UI, view state. |
 | Integration | `plugin/index.ts`, `rpc.ts`, `service.ts`, `tui.ts` | OpenCode 2 server RPC + TUI commands. |
 | Export | `core/export.ts` | Self-contained reports. |
 
@@ -131,11 +131,14 @@ It caches a dataset for ~4 seconds, keyed by `session.time.updated`, message cou
 - The analysis endpoint strips full tool input/output and caps step prose; the full payload is available only via the event detail endpoint.
 - List DTOs contain previews only.
 - Reveal is a separate request parameter and is gated by the server/plugin option.
+- API data routes require a per-run access token by default. The token is compared in constant time, checked before the reveal policy, and never reflected in errors or logs.
+- The token travels in the URL fragment, is stored in `sessionStorage`, and is sent as an `Authorization` header. A per-port token file lets the TUI reuse it; `--no-auth` is loopback-only.
 
 ## UI layer
 
 - Vanilla ES modules, no build step, no external assets.
 - `ui/app.js` owns state, routing (`#/s/<id>/<view>?event=…`), filters, views, drawer, export, theme, shortcuts.
+- `ui/auth.js` consumes the fragment token, stores it per tab and adds the request header.
 - `ui/virtual.js` is a variable-height virtual list. Only visible rows (plus overscan) are in the DOM.
 - Statistics uses one `<tbody>` per turn with `content-visibility: auto` and an expandable step detail row.
 - `ui/markdown.js` renders a safe Markdown subset (raw HTML is escaped first).
