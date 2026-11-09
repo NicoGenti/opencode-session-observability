@@ -10,3 +10,17 @@ coverage/
 .DS_Store
 docs/audit/
 docs/*design*
+
+# --- Bootstrap tooling artifacts (profiler-created, local only) ---
+.opencode/
+.context/
+plan/
+
+# --- Local environment and generated artifacts (audit) ---
+.env
+.env.*
+!.env.example
+*.log
+*.tsbuildinfo
+Thumbs.db
+Desktop.ini
