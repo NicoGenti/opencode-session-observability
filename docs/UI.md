@@ -42,7 +42,7 @@ Rows are chronological by recorded session sequence. Turn headers and step heade
 
 | Control | Behavior |
 |---|---|
-| Search | Full-text over prompts, reasoning, assistant text, tool names, tool payloads and serialized event payloads. Redacted text is searched by default. |
+| Search | Full-text over prompts, reasoning, assistant text, tool names, tool payloads and serialized event payloads. The field label names the scope; the placeholder is only a hint. Redacted text is searched by default. |
 | Kind | `assistant`, `reasoning`, `text`, `tool`, `user`, `synthetic`, `system`, `skill`, `shell`, `compaction`, switches, `idle`, `retry`, `error`, `session`, `unknown` |
 | Agent | Event agent, including delegated subagent agents |
 | Model | `provider/id` |
@@ -69,6 +69,7 @@ Filters are applied on the server, so search spans the whole session, not only t
 ### Detail drawer
 
 - Event metadata: IDs, seq/order, turn/step, agent, model/provider, status, timestamps, tokens, cost, uncertainty.
+  Fields without a recorded value collapse under **Not recorded (N)**; IDs, timestamp, turn and order always stay visible.
 - Text/reasoning.
 - Tool call: status, duration, input JSON, output, error, metadata, diff patches, subagent links.
 - Compaction transaction: before/after/removed/summary size/output tokens/cost/duration.
@@ -78,7 +79,7 @@ Filters are applied on the server, so search spans the whole session, not only t
 
 ## Statistics
 
-One row per turn. The first click expands steps; clicking a step expands its detail row.
+One row per turn. The first click expands steps; clicking a step expands its detail row. Expanded step rows use the same column meanings as turns; nested step counts and per-step context delta are unavailable and marked `—`.
 
 ### Turn columns
 
@@ -119,6 +120,8 @@ Each compaction is a distinct transaction card:
 
 The final row is labelled **Session total** when the loaded range covers the whole session, otherwise **Window total**. It shows turn/step counts, token sums, weighted cache hit rate, cost, model/tool times, output speed, and both context figures. `Recorded by OpenCode` compares with the session-row totals.
 
+On desktop, the `#`, Trigger and Status columns stay visible while the 19-column table scrolls horizontally. The frozen columns are released below 700 px so the narrow layout keeps its scroll area.
+
 ## Access token
 
 By default every `/api` route except `/api/health` requires an access token. The printed URL carries it in the fragment (`#/?token=…` or `#/s/<id>/<view>?token=…`). On load the UI:
@@ -134,7 +137,7 @@ The token is sent as `Authorization: Bearer …` (or `X-Observability-Token`) an
 ## Reveal secrets
 
 - Default: credential-shaped values are redacted server-side.
-- `Reveal secrets` asks for confirmation, then reloads the session and events with raw payloads.
+- `Reveal secrets` opens a themed confirmation dialog, then reloads the session and events with raw payloads.
 - While active, a persistent warning is shown and the button changes to `Hide secrets`.
 - Reveal is disabled unless the server starts with `--reveal`; the button is disabled and the API returns 403 for `reveal=1`. When a token is enabled, a valid token is also required before the reveal policy is evaluated.
 
@@ -183,6 +186,8 @@ Shortcuts are ignored while typing in an input, textarea or select.
 
 - Text labels accompany every status/badge; color is never the only signal.
 - Focus-visible outlines; skip link; dialog roles and labels.
+- The drawer, Settings, Shortcuts and confirmation dialogs trap focus; closing returns focus to the control that opened them.
+- While a dialog or the drawer is open, other keyboard shortcuts are ignored so they cannot act on content behind it.
 - Multiple dark and light themes; system preference (`auto`) plus a manual picker in Settings.
 - Reduced-motion media query disables transitions.
 - Tables use tabular numerals for alignment.

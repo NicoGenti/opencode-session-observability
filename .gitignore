@@ -8,3 +8,5 @@ vendor-inspect/
 dist/
 coverage/
 .DS_Store
+docs/audit/
+docs/*design*

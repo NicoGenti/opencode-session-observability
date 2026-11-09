@@ -112,6 +112,9 @@ const state = {
     Array.isArray(get("expandedParents")) ? get("expandedParents") : [],
   ),
   settingsOpener: null,
+  drawerOpener: null,
+  shortcutsOpener: null,
+  confirmOpener: null,
   loading: false,
 };
 
@@ -318,6 +321,7 @@ async function selectSession(sessionID, view = state.view, eventID = null) {
     state.page = null;
     state.scrollTop = 0;
     state.detailEvent = null;
+    state.drawerOpener = null;
     closeDrawer();
   }
   updateHash();
@@ -526,8 +530,8 @@ function filterBarHtml() {
     )}</button>`;
   return `<div class="filter-bar" role="search" aria-label="Event filters">
     <div class="field grow">
-      <label for="event-search">Search</label>
-      <input id="event-search" type="search" placeholder="Search prompts, outputs, reasoning, tool payloads…" value="${escapeAttr(
+      <label for="event-search">Search prompts, outputs and tool payloads</label>
+      <input id="event-search" type="search" placeholder="Search events…" value="${escapeAttr(
         f.q,
       )}" autocomplete="off" spellcheck="false">
     </div>
@@ -769,15 +773,18 @@ function renderSessionNode(node, forceExpand = false) {
   const { session, children, depth } = node;
   const hasChildren = children.length > 0 && state.sessionTree;
   const collapsed = !forceExpand && !state.expandedParents.has(session.id);
+  const label = session.title || session.id;
   const toggle = hasChildren
     ? forceExpand
-      ? `<span class="tree-toggle" aria-hidden="true">▾</span>`
+      ? `<span class="tree-toggle expanded" aria-hidden="true"><span class="tree-caret"></span></span>`
       : `<button type="button" class="tree-toggle" data-parent-toggle="${escapeAttr(
           session.id,
-        )}" aria-expanded="${!collapsed}" title="${
+        )}" aria-expanded="${!collapsed}" aria-label="${
           collapsed ? "Expand" : "Collapse"
-        } children">${collapsed ? "▸" : "▾"}</button>`
-    : `<span class="tree-toggle placeholder" aria-hidden="true">·</span>`;
+        } ${escapeAttr(label)} children" title="${
+          collapsed ? "Expand" : "Collapse"
+        } children"><span class="tree-caret"></span></button>`
+    : `<span class="tree-toggle placeholder" aria-hidden="true"></span>`;
   const nested = depth > 0 ? " nested" : "";
   const childHtml =
     hasChildren && !collapsed
@@ -1000,13 +1007,13 @@ function renderView() {
 // Rendering: Trajectory
 // ---------------------------------------------------------------------------
 
-function eventRowHtml(event) {
+function hasEventSubLine(event) {
+  return Boolean(event.agent || event.model || event.tool || event.stepID);
+}
+
+function eventSubLine(event) {
   const tool = event.tool;
-  const titleBadges = [
-    badge(event.kind, event.kind === "error" ? "error" : event.kind === "tool" ? "tool" : "neutral"),
-    eventBadges(event),
-  ].join("");
-  const sub = [
+  return [
     event.agent ? `agent ${escapeHtml(event.agent)}` : "",
     event.model ? escapeHtml(modelLabel(event.model)) : "",
     tool ? `tool ${escapeHtml(tool.name)} (${escapeHtml(tool.status)})` : "",
@@ -1014,6 +1021,10 @@ function eventRowHtml(event) {
   ]
     .filter(Boolean)
     .join(" · ");
+}
+
+function eventMetrics(event) {
+  const tool = event.tool;
   const metrics = [];
   if (event.tokens) {
     const prompt =
@@ -1030,6 +1041,34 @@ function eventRowHtml(event) {
   if (event.cost !== null && event.cost !== undefined) {
     metrics.push(formatCost(event.cost));
   }
+  return metrics;
+}
+
+function eventRowHeight(event) {
+  const lineHeights = [20, 18, 18, 17];
+  const present = [
+    true,
+    hasEventSubLine(event),
+    Boolean(event.textPreview),
+    eventMetrics(event).length > 0,
+  ];
+  let height = 16;
+  let count = 0;
+  for (let index = 0; index < present.length; index++) {
+    if (!present[index]) continue;
+    height += (count > 0 ? 3 : 0) + lineHeights[index];
+    count++;
+  }
+  return Math.ceil(height + 2);
+}
+
+function eventRowHtml(event) {
+  const titleBadges = [
+    badge(event.kind, event.kind === "error" ? "error" : event.kind === "tool" ? "tool" : "neutral"),
+    eventBadges(event),
+  ].join("");
+  const sub = hasEventSubLine(event) ? eventSubLine(event) : "";
+  const metrics = eventMetrics(event);
   return `<button type="button" class="ledger-row${
     event.id === state.selectedEventID ? " selected" : ""
   }" data-event-id="${escapeAttr(event.id)}" aria-label="${escapeAttr(
@@ -1050,7 +1089,7 @@ function eventRowHtml(event) {
           ? `<div class="row-preview">${escapeHtml(event.meta?.description || event.textPreview)}</div>`
           : ""
       }
-      ${metrics.length ? `<div class="row-metrics">${metrics.map((m) => `<span class="row-metric">${escapeHtml(m)}</span>`).join("")}</div>` : ""}
+      ${metrics.length ? `<div class="row-metrics" title="${escapeAttr(metrics.join(" · "))}">${metrics.map((m) => `<span class="row-metric">${escapeHtml(m)}</span>`).join("")}</div>` : ""}
     </div>
     <div class="row-tail" aria-hidden="true">›</div>
   </button>`;
@@ -1136,7 +1175,7 @@ function renderTrajectory(options = {}) {
       <span>·</span><span>TTFT, approvals, request headers and tool-set changes are not recorded by OpenCode 2.</span>
     </div>
     <div class="ledger">
-      <div class="ledger-scroll" id="ledger-scroll"></div>
+      <div class="ledger-scroll" id="ledger-scroll" tabindex="-1"></div>
       <div class="ledger-foot">
         <span class="grow">${
           state.page
@@ -1168,7 +1207,7 @@ function renderTrajectory(options = {}) {
   state.ledger?.destroy();
   state.ledger = new VirtualList(scroller, {
     heightFor: (row) =>
-      row.type === "turn" ? 46 : row.type === "step" ? 32 : 84,
+      row.type === "turn" ? 46 : row.type === "step" ? 32 : eventRowHeight(row.event),
     renderRow: (row) => ledgerRowHtml(row),
     overscan: 8,
   });
@@ -1224,10 +1263,10 @@ function statisticsRowHtml(turn, expanded) {
   return `<tr class="turn-row${expanded ? " expanded" : ""}" data-turn-id="${escapeAttr(
     turn.id,
   )}">
-    <td class="mono"><button type="button" class="turn-toggle" aria-label="${
+    <td class="mono col-index"><button type="button" class="turn-toggle" aria-label="${
       expanded ? "Collapse" : "Expand"
     } turn ${turn.index}">${expanded ? "▾" : "▸"}</button>${turn.index}</td>
-    <td>${escapeHtml(turn.trigger.label)}</td>
+    <td class="col-trigger">${escapeHtml(turn.trigger.label)}</td>
     <td class="mono">${escapeHtml(formatTime(turn.startTime))}<div class="sub-label">→ ${escapeHtml(
       formatTime(turn.endTime),
     )}</div></td>
@@ -1250,7 +1289,7 @@ function statisticsRowHtml(turn, expanded) {
     <td class="num">${metricHtml(turn.residualTime, formatDuration)}</td>
     <td class="num">${metricHtml(turn.outputSpeed, (value) => `${value.toFixed(1)} tok/s`)}</td>
     <td class="num">${metricHtml(turn.cost, formatCost)}</td>
-    <td><span class="status ${statusClass(turn.status)}">${escapeHtml(
+    <td class="col-status"><span class="status ${statusClass(turn.status)}">${escapeHtml(
       turn.status,
     )}</span>${turn.uncertainty.length ? ` ${badge("!", "uncertain", turn.uncertainty.join(", "))}` : ""}</td>
   </tr>`;
@@ -1264,8 +1303,11 @@ function stepRowHtml(turn, step) {
   )}" data-turn-id="${escapeAttr(turn.id)}" title="${escapeAttr(
     `Trigger: ${step.trigger}`,
   )}">
-    <td class="mono step-cell">${turn.index}.${step.index} ${
+    <td class="mono step-cell col-index">${turn.index}.${step.index} ${
       expanded ? "▾" : "▸"
+    }</td>
+    <td class="col-trigger">${escapeHtml(step.trigger)}${
+      step.agent ? `<div class="sub-label">${escapeHtml(step.agent)}</div>` : ""
     }</td>
     <td class="mono">${
       step.startUnknown
@@ -1274,31 +1316,30 @@ function stepRowHtml(turn, step) {
             formatTime(step.endTime),
           )}</div>`
     }</td>
-    <td>${escapeHtml(step.agent || "—")}<div class="sub-label">${escapeHtml(
-      step.trigger,
-    )}</div></td>
+    <td class="num">${metricHtml(step.totalTime, formatDuration)}</td>
     <td class="mono">${escapeHtml(model.id)}<div class="sub-label">${escapeHtml(
       `${model.provider}${model.variant ? `#${model.variant}` : ""}`,
     )}</div></td>
-    <td class="num">${metricHtml(step.promptTokens, formatNumber)}</td>
+    <td class="num" title="Steps are not nested inside a step">—</td>
     <td class="num">${formatNumber(step.tokens?.input)}</td>
     <td class="num">${formatNumber(step.tokens?.output)}</td>
     <td class="num">${formatNumber(step.tokens?.reasoning)}</td>
     <td class="num">${formatNumber(step.tokens?.cacheRead)} / ${formatNumber(step.tokens?.cacheWrite)}</td>
     <td class="num">${metricHtml(step.cacheHitRate, formatPercent)}</td>
-    <td class="num">${metricHtml(step.ttft, formatDuration)}</td>
+    <td class="num">${metricHtml(step.promptTokens, formatNumber)}</td>
+    <td class="num" title="Context delta is computed per turn">—</td>
     <td class="num">${metricHtml(step.modelTime, formatDuration)}</td>
     <td class="num">${metricHtml(step.toolTime, formatDuration)}</td>
-    <td class="num">${metricHtml(step.totalTime, formatDuration)}</td>
     <td class="num">${metricHtml(step.residualTime, formatDuration)}</td>
     <td class="num">${metricHtml(step.outputSpeed, (value) => `${value.toFixed(1)} tok/s`)}</td>
-    <td>${escapeHtml(step.toolNames.join(", ") || "—")}</td>
-    <td>${escapeHtml(step.subagentSessionIDs.join(", ") || "—")}</td>
-    <td><span class="status ${statusClass(step.status)}">${escapeHtml(
+    <td class="num">${
+      step.cost === null || step.cost === undefined ? "—" : formatCost(step.cost)
+    }</td>
+    <td class="col-status"><span class="status ${statusClass(step.status)}">${escapeHtml(
       step.status,
-    )}</span> <button type="button" class="turn-toggle" data-jump-step="${escapeAttr(
+    )}</span> <button type="button" class="jump-link" data-jump-step="${escapeAttr(
       step.eventIDs[0] ?? "",
-    )}" title="Open this step in Trajectory">↗</button></td>
+    )}" title="Open step ${turn.index}.${step.index} in Trajectory" aria-label="Open step ${turn.index}.${step.index} in Trajectory">View</button></td>
   </tr>`;
 }
 
@@ -1408,7 +1449,7 @@ function totalsRowHtml() {
     )}">—</td>
     <td class="num">${metricHtml(totals.outputSpeed, (value) => `${value.toFixed(1)} tok/s`)}</td>
     <td class="num">${metricHtml(totals.cost, formatCost)}</td>
-    <td>${formatNumber(totals.turns)} turns</td>
+    <td class="col-status">${formatNumber(totals.turns)} turns</td>
   </tr>`;
 }
 
@@ -1469,15 +1510,15 @@ function basicTurnRowHtml(turn, expanded) {
   return `<tr class="turn-row${expanded ? " expanded" : ""}" data-turn-id="${escapeAttr(
     turn.id,
   )}">
-    <td class="mono"><button type="button" class="turn-toggle" aria-label="${
+    <td class="mono col-index"><button type="button" class="turn-toggle" aria-label="${
       expanded ? "Collapse" : "Expand"
     } turn ${turn.index}">${expanded ? "▾" : "▸"}</button>${turn.index}</td>
-    <td>${escapeHtml(turn.trigger.label)}</td>
+    <td class="col-trigger">${escapeHtml(turn.trigger.label)}</td>
     <td class="num">${metricHtml(turn.totalTime, formatDuration)}</td>
     <td class="num">${formatNumber(tokens.input)}</td>
     <td class="num">${formatNumber(tokens.output)}</td>
     <td class="num">${metricHtml(turn.cost, formatCost)}</td>
-    <td><span class="status ${statusClass(turn.status)}">${escapeHtml(
+    <td class="col-status"><span class="status ${statusClass(turn.status)}">${escapeHtml(
       turn.status,
     )}</span>${turn.uncertainty.length ? ` ${badge("!", "uncertain", turn.uncertainty.join(", "))}` : ""}</td>
   </tr>`;
@@ -1501,9 +1542,9 @@ function basicStepRowHtml(turn, step) {
     }</td>
     <td><span class="status ${statusClass(step.status)}">${escapeHtml(
       step.status,
-    )}</span> <button type="button" class="turn-toggle" data-jump-step="${escapeAttr(
+    )}</span> <button type="button" class="jump-link" data-jump-step="${escapeAttr(
       step.eventIDs[0] ?? "",
-    )}" title="Open this step in Trajectory">↗</button></td>
+    )}" title="Open step ${turn.index}.${step.index} in Trajectory" aria-label="Open step ${turn.index}.${step.index} in Trajectory">View</button></td>
   </tr>`;
 }
 
@@ -1697,13 +1738,13 @@ function renderStatistics() {
       }</button>
     </div>
     <div class="table-wrap">
-      <table class="stats-table">
+      <table class="stats-table advanced-stats">
         <thead><tr>
-          <th>#</th><th>Trigger</th><th>Start</th><th>Duration</th><th>Model</th><th>Steps</th>
+          <th class="col-index">#</th><th class="col-trigger">Trigger</th><th>Start</th><th>Duration</th><th>Model</th><th>Steps</th>
           <th class="num">In</th><th class="num">Out</th><th class="num">Reason</th><th class="num">Cache R/W</th>
           <th class="num">Hit</th><th class="num">Context</th><th class="num">Δ context</th>
           <th class="num">Model time</th><th class="num">Tool time</th><th class="num">Residual</th>
-          <th class="num">Out/s</th><th class="num">Cost</th><th>Status</th>
+          <th class="num">Out/s</th><th class="num">Cost</th><th class="col-status">Status</th>
         </tr></thead>
         ${turnBlocks.join("")}
         <tbody>${totalsRowHtml()}</tbody>
@@ -1848,6 +1889,11 @@ async function jumpToEvent(eventID) {
 
 async function openDetail(eventID) {
   if (!state.sessionID) return;
+  if (dom.drawer.hidden) {
+    const active = document.activeElement;
+    state.drawerOpener =
+      active instanceof HTMLElement && active !== document.body ? active : null;
+  }
   try {
     await ensureEventLoaded(eventID);
     const data = await api(
@@ -1876,11 +1922,20 @@ async function openDetail(eventID) {
 }
 
 function closeDrawer() {
-  if (dom.drawer) dom.drawer.hidden = true;
+  if (!dom.drawer || dom.drawer.hidden) return;
+  const opener = state.drawerOpener;
+  const eventID = state.selectedEventID;
+  state.drawerOpener = null;
+  dom.drawer.hidden = true;
   if (dom.drawerBackdrop) dom.drawerBackdrop.hidden = true;
   state.detailEvent = null;
   state.selectedEventID = null;
   updateHash();
+  const row = eventID
+    ? document.querySelector(`.ledger-row[data-event-id="${CSS.escape(eventID)}"]`)
+    : null;
+  const target = opener?.isConnected ? opener : row ?? $("#ledger-scroll");
+  if (target instanceof HTMLElement) target.focus();
 }
 
 function compactionFor(eventID) {
@@ -1914,26 +1969,40 @@ function drawerHtml(event) {
       : JSON.stringify(event.payload, null, 2);
   const text = event.text ?? "";
   const meta = event.meta ?? {};
-  const metaRows = [
-    ["Event ID", event.id],
-    ["Message ID", event.messageID],
-    ["Session", event.sessionID],
-    ["Seq / order", `${event.seq} / ${event.order}`],
-    ["Turn", event.turnID || "unattached"],
-    ["Step", event.stepID || "—"],
-    ["Agent", event.agent || "—"],
-    ["Model", event.model ? modelLabel(event.model) : "—"],
-    ["Provider", event.provider || "—"],
-    ["Status", event.status || "—"],
-    ["Timestamp", formatDateTime(event.timestamp)],
-    ["End", event.endTimestamp ? formatDateTime(event.endTimestamp) : "—"],
-    ["Duration", event.endTimestamp ? formatDuration(event.endTimestamp - event.timestamp) : "—"],
-    ["Tokens", event.tokens ? JSON.stringify(event.tokens) : "—"],
-    ["Cost", event.cost === null || event.cost === undefined ? "—" : formatCost(event.cost)],
-    ["Uncertainty", event.uncertainty.length ? event.uncertainty.join(", ") : "—"],
-  ]
+  const metaEntries = [
+    ["Event ID", event.id, true],
+    ["Message ID", event.messageID, true],
+    ["Session", event.sessionID, true],
+    ["Seq / order", `${event.seq} / ${event.order}`, true],
+    ["Turn", event.turnID || "unattached", true],
+    ["Timestamp", formatDateTime(event.timestamp), true],
+    ["Step", event.stepID],
+    ["Agent", event.agent],
+    ["Model", event.model ? modelLabel(event.model) : ""],
+    ["Provider", event.provider],
+    ["Status", event.status],
+    ["End", event.endTimestamp ? formatDateTime(event.endTimestamp) : ""],
+    ["Duration", event.endTimestamp ? formatDuration(event.endTimestamp - event.timestamp) : ""],
+    ["Tokens", event.tokens ? JSON.stringify(event.tokens) : ""],
+    ["Cost", event.cost === null || event.cost === undefined ? "" : formatCost(event.cost)],
+    ["Uncertainty", event.uncertainty.length ? event.uncertainty.join(", ") : ""],
+  ];
+  const presentMeta = metaEntries.filter(
+    ([, value, always]) =>
+      always ||
+      (value !== null && value !== undefined && String(value).trim() !== "" && value !== "—"),
+  );
+  const missingLabels = metaEntries
+    .filter((entry) => !presentMeta.includes(entry))
+    .map(([label]) => label);
+  const metaRows = presentMeta
     .map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd>`)
     .join("");
+  const missingMeta = missingLabels.length
+    ? `<details class="drawer-missing"><summary>Not recorded (${missingLabels.length})</summary><ul>${missingLabels
+        .map((label) => `<li>${escapeHtml(label)}</li>`)
+        .join("")}</ul></details>`
+    : "";
 
   const toolSection = tool
     ? `<div class="drawer-section"><h3>Tool call</h3>
@@ -2001,9 +2070,13 @@ function drawerHtml(event) {
         <div class="drawer-title">${escapeHtml(event.title)}</div>
         <div class="drawer-sub">${escapeHtml(event.kind)} · ${escapeHtml(
           formatDateTime(event.timestamp),
-        )} · <span class="status ${statusClass(event.status)}">${escapeHtml(
-          event.status || "—",
-        )}</span> ${eventBadges(event)}</div>
+        )}${
+          event.status
+            ? ` · <span class="status ${statusClass(event.status)}">${escapeHtml(
+                event.status,
+              )}</span>`
+            : ""
+        } ${eventBadges(event)}</div>
       </div>
       <button type="button" class="icon-btn drawer-close" aria-label="Close detail">×</button>
     </div>
@@ -2021,7 +2094,7 @@ function drawerHtml(event) {
             : ""
         }
       </div>
-      <div class="drawer-section"><h3>Event</h3><dl class="kv">${metaRows}</dl></div>
+      <div class="drawer-section"><h3>Event</h3><dl class="kv">${metaRows}</dl>${missingMeta}</div>
       ${
         text
           ? `<div class="drawer-section"><h3>Text</h3><pre id="detail-text">${escapeHtml(
@@ -2167,9 +2240,12 @@ async function toggleReveal() {
     return;
   }
   if (!state.reveal) {
-    const confirmed = window.confirm(
-      "Reveal raw session payloads? API keys, tokens and credentials may appear on screen and in exports.",
-    );
+    const confirmed = await askConfirm({
+      title: "Reveal raw payloads?",
+      message:
+        "API keys, tokens and credentials may appear on screen and in exports. Turn reveal off when you are finished.",
+      acceptLabel: "Reveal secrets",
+    });
     if (!confirmed) return;
   }
   state.reveal = !state.reveal;
@@ -2232,8 +2308,56 @@ function setMode(mode) {
 function toggleShortcuts(force) {
   if (!dom.shortcuts) return;
   const show = force ?? dom.shortcuts.hidden;
-  dom.shortcuts.hidden = !show;
-  if (show) dom.shortcuts.querySelector(".modal-close")?.focus();
+  if (show === !dom.shortcuts.hidden) return;
+  if (show) {
+    state.shortcutsOpener =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    dom.shortcuts.hidden = false;
+    dom.shortcuts.querySelector(".modal-close")?.focus();
+    return;
+  }
+  dom.shortcuts.hidden = true;
+  const opener = state.shortcutsOpener;
+  state.shortcutsOpener = null;
+  if (opener?.isConnected) opener.focus();
+}
+
+let confirmResolve = null;
+
+function askConfirm({ title, message, acceptLabel = "Continue", danger = true }) {
+  if (!dom.confirm) return Promise.resolve(false);
+  if (confirmResolve) {
+    const previous = confirmResolve;
+    confirmResolve = null;
+    previous(false);
+  }
+  state.confirmOpener =
+    document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const titleElement = $("#confirm-title");
+  const messageElement = $("#confirm-message");
+  const accept = $("#confirm-accept");
+  if (titleElement) titleElement.textContent = title;
+  if (messageElement) messageElement.textContent = message;
+  if (accept) {
+    accept.textContent = acceptLabel;
+    accept.classList.toggle("danger", danger);
+  }
+  dom.confirm.hidden = false;
+  accept?.focus();
+  return new Promise((resolve) => {
+    confirmResolve = resolve;
+  });
+}
+
+function settleConfirm(value) {
+  if (!dom.confirm || dom.confirm.hidden) return;
+  dom.confirm.hidden = true;
+  const resolve = confirmResolve;
+  confirmResolve = null;
+  resolve?.(value);
+  const opener = state.confirmOpener;
+  state.confirmOpener = null;
+  if (opener?.isConnected) opener.focus();
 }
 
 function selectOptionsHtml(entries, selected) {
@@ -2399,7 +2523,7 @@ function closeSettings() {
 
 function trapFocus(event, container) {
   const focusable = [...container.querySelectorAll(
-    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
   )].filter((element) => element.getClientRects().length > 0);
   if (focusable.length === 0) return;
   const first = focusable[0];
@@ -2547,6 +2671,15 @@ function bindStaticEvents() {
       toggleShortcuts(false);
     }
   });
+  dom.confirm?.addEventListener("click", (event) => {
+    if (event.target === dom.confirm) {
+      settleConfirm(false);
+      return;
+    }
+    const button = event.target.closest("[data-confirm]");
+    if (!button) return;
+    settleConfirm(button.dataset.confirm === "accept");
+  });
   dom.exportBtn?.addEventListener("click", () => {
     const open = dom.exportMenu.hidden;
     dom.exportMenu.hidden = !open;
@@ -2571,12 +2704,42 @@ function bindStaticEvents() {
 }
 
 function onKeyDown(event) {
+  if (!dom.confirm?.hidden) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      settleConfirm(false);
+    } else if (event.key === "Tab") {
+      trapFocus(event, dom.confirm);
+    }
+    return;
+  }
   if (!dom.settings?.hidden) {
     if (event.key === "Escape") {
       event.preventDefault();
       closeSettings();
     } else if (event.key === "Tab") {
       trapFocus(event, dom.settings);
+    }
+    return;
+  }
+  if (!dom.shortcuts?.hidden) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      toggleShortcuts(false);
+    } else if (event.key === "?") {
+      event.preventDefault();
+      toggleShortcuts(false);
+    } else if (event.key === "Tab") {
+      trapFocus(event, dom.shortcuts);
+    }
+    return;
+  }
+  if (!dom.drawer?.hidden) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeDrawer();
+    } else if (event.key === "Tab") {
+      trapFocus(event, dom.drawer);
     }
     return;
   }
@@ -2589,15 +2752,7 @@ function onKeyDown(event) {
       target.isContentEditable);
 
   if (event.key === "Escape") {
-    if (!dom.settings?.hidden) {
-      closeSettings();
-    } else if (!dom.shortcuts?.hidden) {
-      toggleShortcuts(false);
-    } else if (!dom.drawer?.hidden) {
-      closeDrawer();
-    } else {
-      dom.shell?.classList.remove("sidebar-open");
-    }
+    dom.shell?.classList.remove("sidebar-open");
     return;
   }
   if (typing) return;
@@ -2690,6 +2845,7 @@ function collectDom() {
   dom.toast = $("#toast");
   dom.shortcuts = $("#shortcuts");
   dom.settings = $("#settings");
+  dom.confirm = $("#confirm");
   dom.settingsBody = $("#settings-body");
   dom.revealToggle = $("#reveal-toggle");
   dom.revealWarning = $("#reveal-warning");

@@ -223,6 +223,75 @@ function themeEntry(theme) {
   return THEMES.find((entry) => entry.id === theme && entry.page) ?? null;
 }
 
+function parseHexColor(value) {
+  if (typeof value !== "string") return null;
+  const hex = value.trim().replace(/^#/, "");
+  if (!/^(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(hex)) return null;
+  const full =
+    hex.length === 3
+      ? hex
+          .split("")
+          .map((character) => character + character)
+          .join("")
+      : hex.slice(0, 6);
+  return {
+    r: parseInt(full.slice(0, 2), 16),
+    g: parseInt(full.slice(2, 4), 16),
+    b: parseInt(full.slice(4, 6), 16),
+  };
+}
+
+function mixColor(text, page, percent) {
+  return {
+    r: Math.round(text.r * percent + page.r * (1 - percent)),
+    g: Math.round(text.g * percent + page.g * (1 - percent)),
+    b: Math.round(text.b * percent + page.b * (1 - percent)),
+  };
+}
+
+function linearChannel(value) {
+  const channel = value / 255;
+  return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+}
+
+function luminance(color) {
+  return (
+    0.2126 * linearChannel(color.r) +
+    0.7152 * linearChannel(color.g) +
+    0.0722 * linearChannel(color.b)
+  );
+}
+
+function contrastRatio(a, b) {
+  const first = luminance(a);
+  const second = luminance(b);
+  return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
+}
+
+function hexColor(color) {
+  return `#${[color.r, color.g, color.b]
+    .map((channel) => channel.toString(16).padStart(2, "0"))
+    .join("")}`;
+}
+
+/**
+ * Secondary text must stay readable on the surface, not only on the page.
+ * 50% text was too light on paper themes; raise the mix until AA holds.
+ */
+function mutedColor(text, page, dark) {
+  const textColor = parseHexColor(text);
+  const pageColor = parseHexColor(page);
+  if (!textColor || !pageColor) {
+    return `color-mix(in srgb, ${text} 68%, ${page})`;
+  }
+  const surface = mixColor(textColor, pageColor, dark ? 0.1 : 0.04);
+  for (const percent of [0.66, 0.72, 0.78]) {
+    const candidate = mixColor(textColor, pageColor, percent);
+    if (contrastRatio(candidate, surface) >= 4.5) return hexColor(candidate);
+  }
+  return text;
+}
+
 function applyEntry(root, entry) {
   const dark = entry.mode !== "light";
   const mix = (percent) =>
@@ -235,7 +304,7 @@ function applyEntry(root, entry) {
   setThemeVar(root, "--surface-3", dark ? mix(22) : mix(10));
   setThemeVar(root, "--text", entry.text);
   setThemeVar(root, "--text-2", `color-mix(in srgb, ${entry.text} 78%, ${entry.page})`);
-  setThemeVar(root, "--muted", `color-mix(in srgb, ${entry.text} 50%, ${entry.page})`);
+  setThemeVar(root, "--muted", mutedColor(entry.text, entry.page, dark));
   setThemeVar(root, "--border", `color-mix(in srgb, ${entry.text} 13%, transparent)`);
   setThemeVar(root, "--border-strong", `color-mix(in srgb, ${entry.text} 24%, transparent)`);
   setThemeVar(root, "--grid", dark ? mix(18) : mix(9));

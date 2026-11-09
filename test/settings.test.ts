@@ -154,3 +154,54 @@ test("theme is read from the route fragment without touching other params", () =
   assert.equal(readThemeFromHash("#/s/ses_1/trajectory"), null);
   assert.equal(readThemeFromHash(""), null);
 });
+
+function channels(hex: string): [number, number, number] {
+  const value = hex.replace("#", "");
+  return [
+    parseInt(value.slice(0, 2), 16),
+    parseInt(value.slice(2, 4), 16),
+    parseInt(value.slice(4, 6), 16),
+  ];
+}
+
+function luminance(hex: string): number {
+  const linear = (value: number) => {
+    const ratio = value / 255;
+    return ratio <= 0.04045 ? ratio / 12.92 : ((ratio + 0.055) / 1.055) ** 2.4;
+  };
+  const [r, g, b] = channels(hex);
+  return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
+}
+
+function contrast(a: string, b: string): number {
+  const first = luminance(a);
+  const second = luminance(b);
+  return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
+}
+
+function mix(text: string, page: string, percent: number): string {
+  const [tr, tg, tb] = channels(text);
+  const [pr, pg, pb] = channels(page);
+  const channel = (a: number, b: number) =>
+    Math.round(a * percent + b * (1 - percent))
+      .toString(16)
+      .padStart(2, "0");
+  return `#${channel(tr, pr)}${channel(tg, pg)}${channel(tb, pb)}`;
+}
+
+test("derived themes keep muted text above AA on the derived surface", () => {
+  const cases = [
+    { page: "#f4f4f4", text: "#1b1b1b", mode: "light", surfacePercent: 0.04 },
+    { page: "#101010", text: "#e6e6e6", mode: "dark", surfacePercent: 0.1 },
+  ];
+  for (const entry of cases) {
+    applyPalette(entry);
+    const muted = variables.get("--muted");
+    assert.match(muted ?? "", /^#[0-9a-f]{6}$/);
+    const surface = mix(entry.text, entry.page, entry.surfacePercent);
+    assert.ok(
+      contrast(muted!, surface) >= 4.5,
+      `${entry.page} muted is ${contrast(muted!, surface).toFixed(2)}:1 on ${surface}`,
+    );
+  }
+});
