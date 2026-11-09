@@ -85,6 +85,8 @@ export interface SessionMeta {
 export interface SessionSummary {
   id: string;
   parentID?: string;
+  projectID?: string;
+  slug?: string;
   title?: string;
   directory?: string;
   agent?: string;

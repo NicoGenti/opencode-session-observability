@@ -4,11 +4,35 @@ The UI is a local browser application served by the same read-only process that 
 
 ## Layout
 
-- **Sidebar** — searchable session list; the current session's family (parent/children) appears above the list.
-- **Header** — session metadata and stat tiles (turns, input tokens, cache, cost, model/tool time, errors, output speed).
+- **Sidebar** — searchable session list grouped by project directory, with child sessions nested under their parents; the current session's family (parent/children) appears above the list.
+- **Header** — session metadata and stat tiles (turns, input tokens, cache, cost, model/tool time, errors, output speed). Basic mode shows the four headline tiles.
 - **Tabs** — Trajectory and Statistics.
-- **Topbar** — refresh, optional 10s live refresh, reveal secrets, export.
+- **Topbar** — Basic/Advanced view toggle, refresh, optional 10s live refresh, reveal secrets, export.
 - **Detail drawer** — full event or step information, copy actions and links.
+- **Settings** — the gear in the sidebar opens theme, view mode, grouping and statistics defaults.
+
+## View modes
+
+The topbar switches between two persisted modes:
+
+| Mode | Header | Trajectory filters | Statistics |
+|---|---|---|---|
+| **Basic** | Turns, input tokens, cost, errors | Search, kind and the error/tool/compaction/retry/subagent/context chips | Turns with trigger, duration, in/out tokens, cost, status; expandable steps |
+| **Advanced** | All eight tiles | Every filter and range control | Full 19-column turn/step table |
+
+The mode is stored per browser and can also be changed from Settings.
+
+## Themes
+
+Settings lists the OpenCode 2 built-in theme names — `aura`, `ayu`, `carbonfox`, `catppuccin` (plus Frappé and Macchiato), `cobalt2`, `cursor`, `dracula`, `everforest`, `flexoki`, `github`, `gruvbox`, `kanagawa`, `lucent-orng`, `material`, `matrix`, `mercury`, `monokai`, `nightowl`, `nord`, `one-dark`, `opencode`, `orng`, `osaka-jade`, `palenight`, `rosepine`, `solarized`, `synthwave84`, `tokyonight`, `vercel`, `vesper` and `zenburn` — plus `System / Auto`, `Light`, `Dark` and `OpenCode (current)`.
+
+`OpenCode (current)` mirrors the theme running in the TUI exactly: the TUI sends the resolved OpenCode colors in a `?palette=` fragment parameter, and the browser validates and applies them. A `?theme=<name>` parameter is kept as a fallback for older clients.
+
+When the page is opened directly (without a TUI deep link), `/api/health` reports the `theme` selected in OpenCode 2's CLI config (`~/.opencode2/config/opencode/cli.json`, with XDG/platform fallbacks), and the UI applies that theme on load. An explicit pick in Settings wins from then on; unknown names fall back to `auto` or the closest light/dark match.
+
+## Session grouping
+
+Sessions are grouped by `directory` (falling back to `projectID`, then “(no project)”). Project groups start collapsed and show the session count; expanding one reveals its sessions. Child sessions are nested under their parent, and those families also start collapsed. Expanded projects and parents persist per browser; grouping and nesting can be turned off in Settings. Searching auto-expands matching branches.
 
 ## Trajectory
 
@@ -159,7 +183,7 @@ Shortcuts are ignored while typing in an input, textarea or select.
 
 - Text labels accompany every status/badge; color is never the only signal.
 - Focus-visible outlines; skip link; dialog roles and labels.
-- Dark and light themes; system preference plus a manual toggle.
+- Multiple dark and light themes; system preference (`auto`) plus a manual picker in Settings.
 - Reduced-motion media query disables transitions.
 - Tables use tabular numerals for alignment.
 - Mobile: off-canvas sidebar, horizontally scrollable dense table, two-column stat tiles.

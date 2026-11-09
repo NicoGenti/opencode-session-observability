@@ -14,13 +14,19 @@ export function buildTuiUrl(
   route: RouteLike,
   view: "trajectory" | "statistics",
   token: string | null,
+  theme: string | null = null,
+  palette: Record<string, string> | null = null,
 ): string {
   const path =
     route.type === "session" && route.sessionID
       ? `#/s/${encodeURIComponent(route.sessionID)}/${view}`
       : "#/";
+  const params: string[] = [];
+  if (token) params.push(`token=${encodeURIComponent(token)}`);
+  if (theme) params.push(`theme=${encodeURIComponent(theme)}`);
+  if (palette) params.push(`palette=${encodeURIComponent(JSON.stringify(palette))}`);
   const url = `${base}/${path}`;
-  return token ? `${url}?token=${encodeURIComponent(token)}` : url;
+  return params.length > 0 ? `${url}?${params.join("&")}` : url;
 }
 
 function withoutToken(url: string): string {
@@ -46,6 +52,75 @@ async function tokenFromFile(base: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+function configuredTheme(context: {
+  options: Readonly<Record<string, unknown>>;
+}): string | null {
+  const configured = context.options.theme;
+  if (typeof configured === "string" && configured.trim().length > 0) {
+    return configured.trim();
+  }
+  if (configured && typeof configured === "object") {
+    const name = (configured as Record<string, unknown>).name;
+    if (typeof name === "string" && name.trim().length > 0) return name.trim();
+  }
+  return null;
+}
+
+function themeColor(theme: unknown, path: string[]): string | null {
+  let cursor: unknown = theme;
+  for (const key of path) {
+    if (!cursor || typeof cursor !== "object") return null;
+    cursor = (cursor as Record<string, unknown>)[key];
+  }
+  if (typeof cursor === "string" && /^#[0-9a-f]{3,8}$/i.test(cursor.trim())) {
+    return cursor.trim();
+  }
+  if (cursor && typeof cursor === "object") {
+    const base = (cursor as Record<string, unknown>).base;
+    if (typeof base === "string" && /^#[0-9a-f]{3,8}$/i.test(base.trim())) {
+      return base.trim();
+    }
+  }
+  return null;
+}
+
+/**
+ * Extracts the colors OpenCode already resolved for its own TUI. Sending them
+ * in the deep link makes the browser match the user's actual theme, including
+ * custom themes that this UI does not bundle.
+ */
+export function themePalette(context: {
+  theme?: unknown;
+  themeMode?: unknown;
+}): Record<string, string> | null {
+  const theme = context.theme;
+  const page = themeColor(theme, ["background", "base"]);
+  const text = themeColor(theme, ["text", "base"]);
+  if (!page || !text) return null;
+  const palette: Record<string, string> = {
+    page,
+    text,
+    mode: context.themeMode === "light" ? "light" : "dark",
+  };
+  const optional: Array<[string, string[]]> = [
+    ["surface", ["background", "raised", "base"]],
+    ["surface2", ["background", "raised", "high"]],
+    ["surface3", ["background", "action", "secondary", "base"]],
+    ["text2", ["text", "muted"]],
+    ["muted", ["text", "faint"]],
+    ["border", ["border", "base"]],
+    ["accent", ["text", "action", "primary", "base"]],
+    ["good", ["text", "feedback", "success", "base"]],
+    ["warning", ["text", "feedback", "warning", "base"]],
+    ["critical", ["text", "feedback", "error", "base"]],
+  ];
+  for (const [key, path] of optional) {
+    const value = themeColor(theme, path);
+    if (value) palette[key] = value;
+  }
+  return palette;
 }
 
 function baseUrl(value: unknown): string {
@@ -140,7 +215,15 @@ export default defineTuiPlugin({
         });
         return;
       }
-      const url = buildTuiUrl(base, context.ui.router.current(), view, token);
+      const explicitTheme = configuredTheme(context);
+      const url = buildTuiUrl(
+        base,
+        context.ui.router.current(),
+        view,
+        token,
+        explicitTheme,
+        explicitTheme ? null : themePalette(context),
+      );
       if (!openBrowser(url)) {
         context.ui.toast.show({
           title: "Session observability",

@@ -109,7 +109,14 @@ export class ObservabilityService {
     const needle = query.toLowerCase();
     return visible
       .filter((session) =>
-        [session.id, session.title, session.directory, session.agent]
+        [
+          session.id,
+          session.slug,
+          session.title,
+          session.directory,
+          session.projectID,
+          session.agent,
+        ]
           .filter((value): value is string => typeof value === "string")
           .some((value) => value.toLowerCase().includes(needle)),
       )

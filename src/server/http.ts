@@ -8,6 +8,7 @@ import { DatabaseBusyError, UnsupportedSchemaError } from "../core/adapters/sqli
 import { openWorkerSqliteSource } from "../core/adapters/sqlite-worker-source.ts";
 import type { ObservabilitySource } from "../core/types.ts";
 import { isAuthorized } from "./auth.ts";
+import { readOpenCodeTheme } from "./opencode-theme.ts";
 import {
   EventNotFoundError,
   ObservabilityService,
@@ -327,6 +328,7 @@ export async function createObservabilityServer(
           revealAllowed: allowReveal,
           authRequired,
           readOnly: true,
+          theme: readOpenCodeTheme(),
         });
         return;
       }

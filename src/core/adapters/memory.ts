@@ -16,6 +16,8 @@ function summary(session: SessionMeta): SessionSummary {
   return {
     id: session.id,
     ...(session.parentID ? { parentID: session.parentID } : {}),
+    ...(session.projectID ? { projectID: session.projectID } : {}),
+    ...(session.slug ? { slug: session.slug } : {}),
     ...(session.title ? { title: session.title } : {}),
     ...(session.directory ? { directory: session.directory } : {}),
     ...(session.agent ? { agent: session.agent } : {}),

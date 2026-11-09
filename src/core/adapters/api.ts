@@ -63,6 +63,8 @@ function apiSessionMeta(value: unknown): SessionMeta | null {
   if (projectID) meta.projectID = projectID;
   const title = str(info.title);
   if (title) meta.title = title;
+  const slug = str(info.slug);
+  if (slug) meta.slug = slug;
   const directory = str(location.directory);
   if (directory) meta.directory = directory;
   const agent = str(info.agent);
@@ -85,6 +87,8 @@ function summary(meta: SessionMeta): SessionSummary {
   return {
     id: meta.id,
     ...(meta.parentID ? { parentID: meta.parentID } : {}),
+    ...(meta.projectID ? { projectID: meta.projectID } : {}),
+    ...(meta.slug ? { slug: meta.slug } : {}),
     ...(meta.title ? { title: meta.title } : {}),
     ...(meta.directory ? { directory: meta.directory } : {}),
     ...(meta.agent ? { agent: meta.agent } : {}),
@@ -164,7 +168,14 @@ export class ApiSource implements ObservabilitySource {
     return (await this.rawSessions())
       .filter((session) => {
         if (!query) return true;
-        return [session.title, session.directory, session.id, session.agent]
+        return [
+          session.title,
+          session.directory,
+          session.id,
+          session.slug,
+          session.projectID,
+          session.agent,
+        ]
           .filter((value): value is string => typeof value === "string")
           .some((value) => value.toLowerCase().includes(query));
       })

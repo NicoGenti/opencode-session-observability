@@ -28,6 +28,23 @@ import {
 } from "./auth.js";
 import { renderMarkdown } from "./markdown.js";
 import { mergePages } from "./paging.js";
+import {
+  THEMES,
+  VIEW_MODES,
+  applyPalette,
+  applyTheme,
+  applyViewMode,
+  get,
+  getTheme,
+  getViewMode,
+  migrate,
+  readPaletteFromHash,
+  readThemeFromHash,
+  reset as resetSettings,
+  set as setSetting,
+  setTheme,
+  setViewMode,
+} from "./settings.js";
 import { VirtualList } from "./virtual.js";
 
 const eventKinds = [
@@ -73,8 +90,9 @@ const state = {
   page: null,
   reveal: false,
   revealAllowed: false,
-  contextBasis: "latest",
-  showEventRows: false,
+  viewMode: getViewMode(),
+  contextBasis: get("contextBasis") === "cumulative" ? "cumulative" : "latest",
+  showEventRows: get("showEventRows") === true,
   expandedTurns: new Set(),
   expandedSteps: new Set(),
   selectedEventID: null,
@@ -83,18 +101,23 @@ const state = {
   detailEvent: null,
   liveTimer: null,
   sessionQuery: "",
-  responseLimit: loadResponseLimit(),
+  responseLimit: responseLimitSetting(),
+  groupByProject: get("groupByProject") !== false,
+  sessionTree: get("sessionTree") !== false,
+  // Branches start collapsed; these sets remember what the user expanded.
+  expandedProjects: new Set(
+    Array.isArray(get("expandedProjects")) ? get("expandedProjects") : [],
+  ),
+  expandedParents: new Set(
+    Array.isArray(get("expandedParents")) ? get("expandedParents") : [],
+  ),
+  settingsOpener: null,
   loading: false,
 };
 
-function loadResponseLimit() {
-  try {
-    const value = Number(localStorage.getItem("observability-response-limit"));
-    if ([4_000, 12_000, 20_000, 50_000, 80_000].includes(value)) return value;
-  } catch {
-    // localStorage may be unavailable
-  }
-  return 20_000;
+function responseLimitSetting() {
+  const value = Number(get("responseLimit"));
+  return [4_000, 12_000, 20_000, 50_000, 80_000].includes(value) ? value : 20_000;
 }
 
 const dom = {};
@@ -126,9 +149,13 @@ function filtersActive() {
 
 function activeFilterCount() {
   const f = state.filters;
+  const advanced = state.viewMode === "advanced";
   let count = 0;
   if (f.q.trim()) count++;
-  for (const key of ["kinds", "agents", "models", "providers", "tools", "statuses"]) {
+  const listKeys = advanced
+    ? ["kinds", "agents", "models", "providers", "tools", "statuses"]
+    : ["kinds"];
+  for (const key of listKeys) {
     if (f[key].length > 0) count++;
   }
   for (const key of [
@@ -140,10 +167,10 @@ function activeFilterCount() {
   ]) {
     if (f[key]) count++;
   }
-  if (f.from) count++;
-  if (f.to) count++;
-  if (f.minPromptTokens) count++;
-  if (f.maxPromptTokens) count++;
+  if (advanced && f.from) count++;
+  if (advanced && f.to) count++;
+  if (advanced && f.minPromptTokens) count++;
+  if (advanced && f.maxPromptTokens) count++;
   return count;
 }
 
@@ -239,25 +266,30 @@ function toast(message) {
 
 function filterParams() {
   const f = state.filters;
-  const from = f.from ? Date.parse(f.from) : undefined;
-  const to = f.to ? Date.parse(f.to) : undefined;
+  const advanced = state.viewMode === "advanced";
+  const from = advanced && f.from ? Date.parse(f.from) : undefined;
+  const to = advanced && f.to ? Date.parse(f.to) : undefined;
   return {
     q: f.q.trim() || undefined,
     kind: f.kinds,
-    agent: f.agents,
-    model: f.models,
-    provider: f.providers,
-    tool: f.tools,
-    status: f.statuses,
+    ...(advanced
+      ? {
+          agent: f.agents,
+          model: f.models,
+          provider: f.providers,
+          tool: f.tools,
+          status: f.statuses,
+          from: Number.isFinite(from) ? from : undefined,
+          to: Number.isFinite(to) ? to : undefined,
+          minPromptTokens: f.minPromptTokens || undefined,
+          maxPromptTokens: f.maxPromptTokens || undefined,
+        }
+      : {}),
     errors: f.errorsOnly || undefined,
     retries: f.retriesOnly || undefined,
     compactions: f.compactionsOnly || undefined,
     subagents: f.subagentsOnly || undefined,
     context: f.contextOnly || undefined,
-    from: Number.isFinite(from) ? from : undefined,
-    to: Number.isFinite(to) ? to : undefined,
-    minPromptTokens: f.minPromptTokens || undefined,
-    maxPromptTokens: f.maxPromptTokens || undefined,
   };
 }
 
@@ -487,6 +519,7 @@ function filterBarHtml() {
     statuses: [],
   };
   const toolsActive = f.kinds.length === 1 && f.kinds[0] === "tool";
+  const advanced = state.viewMode === "advanced" ? "" : " advanced-only";
   const chip = (kind, label, active) =>
     `<button type="button" class="chip${active ? " active" : ""}" data-chip="${kind}" aria-pressed="${active}">${escapeHtml(
       label,
@@ -506,7 +539,7 @@ function filterBarHtml() {
         "All kinds",
       )}</select>
     </div>
-    <div class="field">
+    <div class="field${advanced}">
       <label for="filter-agent">Agent</label>
       <select id="filter-agent" data-filter="agents">${selectOptions(
         facets.agents,
@@ -514,7 +547,7 @@ function filterBarHtml() {
         "All agents",
       )}</select>
     </div>
-    <div class="field">
+    <div class="field${advanced}">
       <label for="filter-model">Model</label>
       <select id="filter-model" data-filter="models">${selectOptions(
         facets.models,
@@ -522,7 +555,7 @@ function filterBarHtml() {
         "All models",
       )}</select>
     </div>
-    <div class="field">
+    <div class="field${advanced}">
       <label for="filter-provider">Provider</label>
       <select id="filter-provider" data-filter="providers">${selectOptions(
         facets.providers,
@@ -530,7 +563,7 @@ function filterBarHtml() {
         "All providers",
       )}</select>
     </div>
-    <div class="field">
+    <div class="field${advanced}">
       <label for="filter-tool">Tool</label>
       <select id="filter-tool" data-filter="tools">${selectOptions(
         facets.tools,
@@ -538,7 +571,7 @@ function filterBarHtml() {
         "All tools",
       )}</select>
     </div>
-    <div class="field">
+    <div class="field${advanced}">
       <label for="filter-status">Status</label>
       <select id="filter-status" data-filter="statuses">${selectOptions(
         facets.statuses,
@@ -546,25 +579,25 @@ function filterBarHtml() {
         "All statuses",
       )}</select>
     </div>
-    <div class="field">
+    <div class="field${advanced}">
       <label for="filter-from">From</label>
       <input id="filter-from" type="datetime-local" data-filter="from" value="${escapeAttr(
         f.from,
       )}">
     </div>
-    <div class="field">
+    <div class="field${advanced}">
       <label for="filter-to">To</label>
       <input id="filter-to" type="datetime-local" data-filter="to" value="${escapeAttr(
         f.to,
       )}">
     </div>
-    <div class="field">
+    <div class="field${advanced}">
       <label for="filter-min-tokens">Min prompt tokens</label>
       <input id="filter-min-tokens" type="number" min="0" step="1" data-filter="minPromptTokens" value="${escapeAttr(
         f.minPromptTokens,
       )}">
     </div>
-    <div class="field">
+    <div class="field${advanced}">
       <label for="filter-max-tokens">Max prompt tokens</label>
       <input id="filter-max-tokens" type="number" min="0" step="1" data-filter="maxPromptTokens" value="${escapeAttr(
         f.maxPromptTokens,
@@ -644,44 +677,161 @@ function renderEmpty(title, message = "") {
   }<p class="small">Start OpenCode 2 once, or launch this app with <code>--db &lt;path&gt;</code>.</p></div>`;
 }
 
+function sessionMatchesQuery(session, query) {
+  if (!query) return true;
+  return [
+    session.title,
+    session.id,
+    session.slug,
+    session.agent,
+    session.directory,
+    session.projectID,
+  ]
+    .filter(Boolean)
+    .some((value) => String(value).toLowerCase().includes(query));
+}
+
+function projectKey(session) {
+  return session.directory || session.projectID || "(no project)";
+}
+
+/** Builds parent/child nodes from the flat session list already loaded. */
+function buildSessionTree(sessions) {
+  const nodes = new Map(
+    sessions.map((session) => [
+      session.id,
+      { session, children: [], depth: 0 },
+    ]),
+  );
+  const roots = [];
+  for (const node of nodes.values()) {
+    let parent = node.session.parentID ? nodes.get(node.session.parentID) : null;
+    // A self-reference or a cycle must not hide sessions from the list.
+    const seen = new Set([node.session.id]);
+    let cursor = parent;
+    while (cursor) {
+      if (seen.has(cursor.session.id)) {
+        parent = null;
+        break;
+      }
+      seen.add(cursor.session.id);
+      cursor = cursor.session.parentID ? nodes.get(cursor.session.parentID) : null;
+    }
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+  }
+  const sortNodes = (list) =>
+    list.sort(
+      (a, b) =>
+        (a.session.timeCreated ?? 0) - (b.session.timeCreated ?? 0) ||
+        String(a.session.id).localeCompare(String(b.session.id)),
+    );
+  const assignDepth = (node, depth) => {
+    node.depth = depth;
+    sortNodes(node.children);
+    for (const child of node.children) assignDepth(child, depth + 1);
+  };
+  roots.sort(
+    (a, b) =>
+      (b.session.timeUpdated ?? b.session.timeCreated ?? 0) -
+        (a.session.timeUpdated ?? a.session.timeCreated ?? 0) ||
+      String(a.session.id).localeCompare(String(b.session.id)),
+  );
+  for (const root of roots) assignDepth(root, 0);
+  return roots;
+}
+
+function sessionItemHtml(session) {
+  const totalIn =
+    (session.tokens?.input ?? 0) +
+    (session.tokens?.cacheRead ?? 0) +
+    (session.tokens?.cacheWrite ?? 0);
+  return `<button type="button" class="session-item${
+    session.id === state.sessionID ? " active" : ""
+  }" data-session-id="${escapeAttr(session.id)}" role="option" aria-selected="${
+    session.id === state.sessionID
+  }">
+    <span class="session-title">${escapeHtml(session.title || session.id)}</span>
+    <span class="session-meta"><span>${escapeHtml(
+      session.agent || "—",
+    )}</span><span>${escapeHtml(
+      session.model ? `${session.model.providerID}/${session.model.id}` : "—",
+    )}</span><span>${escapeHtml(formatRelative(session.timeUpdated ?? session.timeCreated))}</span></span>
+    <span class="session-stats">${formatCompact(totalIn)} in · ${formatCompact(
+      session.tokens?.output,
+    )} out${
+      session.cost !== undefined ? ` · ${formatCost(session.cost)}` : ""
+    }${session.parentID ? " · subagent" : ""}</span>
+  </button>`;
+}
+
+function renderSessionNode(node, forceExpand = false) {
+  const { session, children, depth } = node;
+  const hasChildren = children.length > 0 && state.sessionTree;
+  const collapsed = !forceExpand && !state.expandedParents.has(session.id);
+  const toggle = hasChildren
+    ? forceExpand
+      ? `<span class="tree-toggle" aria-hidden="true">▾</span>`
+      : `<button type="button" class="tree-toggle" data-parent-toggle="${escapeAttr(
+          session.id,
+        )}" aria-expanded="${!collapsed}" title="${
+          collapsed ? "Expand" : "Collapse"
+        } children">${collapsed ? "▸" : "▾"}</button>`
+    : `<span class="tree-toggle placeholder" aria-hidden="true">·</span>`;
+  const nested = depth > 0 ? " nested" : "";
+  const childHtml =
+    hasChildren && !collapsed
+      ? children
+          .map((child) => renderSessionNode(child, forceExpand))
+          .join("")
+      : "";
+  return `<div class="session-node${nested}" style="--depth:${depth}">${toggle}${sessionItemHtml(
+    session,
+  )}</div>${childHtml}`;
+}
+
 function renderSessionList() {
   if (!dom.sessionList) return;
   const query = state.sessionQuery.trim().toLowerCase();
-  const sessions = state.sessions.filter((session) => {
-    if (!query) return true;
-    return [session.title, session.id, session.agent, session.directory]
-      .filter(Boolean)
-      .some((value) => String(value).toLowerCase().includes(query));
-  });
+  const searching = query.length > 0;
+  const sessions = state.sessions.filter((session) => sessionMatchesQuery(session, query));
   if (sessions.length === 0) {
     dom.sessionList.innerHTML = `<div class="empty"><p>No sessions found.</p></div>`;
     return;
   }
-  dom.sessionList.innerHTML = sessions
-    .map((session) => {
-      const totalIn =
-        (session.tokens?.input ?? 0) +
-        (session.tokens?.cacheRead ?? 0) +
-        (session.tokens?.cacheWrite ?? 0);
-      return `<button type="button" class="session-item${
-        session.id === state.sessionID ? " active" : ""
-      }" data-session-id="${escapeAttr(session.id)}" role="option" aria-selected="${
-        session.id === state.sessionID
-      }">
-        <span class="session-title">${escapeHtml(
-          session.title || session.id,
-        )}</span>
-        <span class="session-meta"><span>${escapeHtml(
-          session.agent || "—",
-        )}</span><span>${escapeHtml(
-          session.model ? `${session.model.providerID}/${session.model.id}` : "—",
-        )}</span><span>${escapeHtml(formatRelative(session.timeUpdated ?? session.timeCreated))}</span></span>
-        <span class="session-stats">${formatCompact(totalIn)} in · ${formatCompact(
-          session.tokens?.output,
-        )} out${
-          session.cost !== undefined ? ` · ${formatCost(session.cost)}` : ""
-        }${session.parentID ? " · subagent" : ""}</span>
-      </button>`;
+
+  const groups = new Map();
+  for (const session of sessions) {
+    const key = state.groupByProject ? projectKey(session) : "";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(session);
+  }
+
+  dom.sessionList.innerHTML = [...groups.entries()]
+    .map(([key, groupSessions]) => {
+      const roots = buildSessionTree(groupSessions);
+      const body = state.sessionTree
+        ? roots.map((node) => renderSessionNode(node, searching)).join("")
+        : groupSessions.map((session) => sessionItemHtml(session)).join("");
+      if (!state.groupByProject) return body;
+      const collapsed = !searching && !state.expandedProjects.has(key);
+      const heading = searching
+        ? `<div class="project-head" title="${escapeAttr(key)}">
+            <span aria-hidden="true">▾</span>
+            <span class="project-path">${escapeHtml(key)}</span>
+            <span class="project-count">${formatNumber(groupSessions.length)}</span>
+          </div>`
+        : `<button type="button" class="project-head" data-project-toggle="${escapeAttr(
+            key,
+          )}" aria-expanded="${!collapsed}" title="${escapeAttr(key)}">
+            <span aria-hidden="true">${collapsed ? "▸" : "▾"}</span>
+            <span class="project-path">${escapeHtml(key)}</span>
+            <span class="project-count">${formatNumber(groupSessions.length)}</span>
+          </button>`;
+      return `<section class="project-group">
+        ${heading}
+        ${collapsed ? "" : body}
+      </section>`;
     })
     .join("");
 }
@@ -723,38 +873,67 @@ function renderHeader() {
   const totals = analysis.totals;
   const title = session.title || session.slug || session.id;
   const scope = totals.scope === "session" ? "Session total" : "Window total";
-  const tiles = [
-    tile("Turns", formatNumber(totals.turns), `${formatNumber(totals.steps)} steps`),
-    tile(
-      "Input tokens",
-      formatNumber(totals.tokens.input),
-      `out ${formatCompact(totals.tokens.output)} · reas ${formatCompact(
-        totals.tokens.reasoning,
-      )}`,
-    ),
-    tile(
-      "Cache",
-      metricHtml(totals.cacheHitRate, formatPercent),
-      `R ${formatCompact(totals.tokens.cacheRead)} · W ${formatCompact(
-        totals.tokens.cacheWrite,
-      )}`,
-    ),
-    tile("Cost", metricHtml(totals.cost, formatCost), "steps + compactions"),
-    tile("Model time", metricHtml(totals.modelTime, formatDuration), "created → streamed"),
-    tile("Tool time", metricHtml(totals.toolTime, formatDuration), "sum; may overlap"),
-    tile(
-      "Errors",
-      formatNumber(totals.errors.total),
-      `${formatNumber(totals.retries)} retries · ${formatNumber(
-        totals.compactions,
-      )} compactions`,
-    ),
-    tile(
-      "Output speed",
-      metricHtml(totals.outputSpeed, (value) => `${value.toFixed(1)} tok/s`),
-      "output / model time",
-    ),
-  ].join("");
+  const allTiles = [
+    {
+      id: "turns",
+      html: tile("Turns", formatNumber(totals.turns), `${formatNumber(totals.steps)} steps`),
+    },
+    {
+      id: "tokens",
+      html: tile(
+        "Input tokens",
+        formatNumber(totals.tokens.input),
+        `out ${formatCompact(totals.tokens.output)} · reas ${formatCompact(
+          totals.tokens.reasoning,
+        )}`,
+      ),
+    },
+    {
+      id: "cache",
+      html: tile(
+        "Cache",
+        metricHtml(totals.cacheHitRate, formatPercent),
+        `R ${formatCompact(totals.tokens.cacheRead)} · W ${formatCompact(
+          totals.tokens.cacheWrite,
+        )}`,
+      ),
+    },
+    {
+      id: "cost",
+      html: tile("Cost", metricHtml(totals.cost, formatCost), "steps + compactions"),
+    },
+    {
+      id: "model-time",
+      html: tile("Model time", metricHtml(totals.modelTime, formatDuration), "created → streamed"),
+    },
+    {
+      id: "tool-time",
+      html: tile("Tool time", metricHtml(totals.toolTime, formatDuration), "sum; may overlap"),
+    },
+    {
+      id: "errors",
+      html: tile(
+        "Errors",
+        formatNumber(totals.errors.total),
+        `${formatNumber(totals.retries)} retries · ${formatNumber(
+          totals.compactions,
+        )} compactions`,
+      ),
+    },
+    {
+      id: "speed",
+      html: tile(
+        "Output speed",
+        metricHtml(totals.outputSpeed, (value) => `${value.toFixed(1)} tok/s`),
+        "output / model time",
+      ),
+    },
+  ];
+  const basicTileIds = new Set(["turns", "tokens", "cost", "errors"]);
+  const tiles = allTiles
+    .filter((item) => state.viewMode === "advanced" || basicTileIds.has(item.id))
+    .map((item) => item.html)
+    .join("");
 
   dom.sessionHeader.innerHTML = `<div class="session-headline">
       <div style="flex:1;min-width:220px">
@@ -1123,7 +1302,7 @@ function stepRowHtml(turn, step) {
   </tr>`;
 }
 
-function stepDetailHtml(turn, step) {
+function stepDetailHtml(turn, step, colspan = 19) {
   const hasResponse = (step.responseText || "").trim().length > 0;
   const hasReasoning = (step.reasoningText || "").trim().length > 0;
   const primary = hasResponse ? step.responseText : step.reasoningText;
@@ -1160,7 +1339,7 @@ function stepDetailHtml(turn, step) {
         )
         .join("")
     : `<p class="muted small">No tool calls in this step.</p>`;
-  return `<tr class="step-detail-row"><td colspan="19"><div class="step-detail">
+  return `<tr class="step-detail-row"><td colspan="${colspan}"><div class="step-detail">
     <div>
       <h4>${hasResponse ? "Response" : "Reasoning"}${response.truncated ? " (truncated)" : ""}</h4>
       <div class="markdown">${response.html || '<p class="muted">No response text recorded.</p>'}</div>
@@ -1285,12 +1464,166 @@ function compactionCardsHtml() {
     .join("");
 }
 
+function basicTurnRowHtml(turn, expanded) {
+  const tokens = turn.tokens;
+  return `<tr class="turn-row${expanded ? " expanded" : ""}" data-turn-id="${escapeAttr(
+    turn.id,
+  )}">
+    <td class="mono"><button type="button" class="turn-toggle" aria-label="${
+      expanded ? "Collapse" : "Expand"
+    } turn ${turn.index}">${expanded ? "▾" : "▸"}</button>${turn.index}</td>
+    <td>${escapeHtml(turn.trigger.label)}</td>
+    <td class="num">${metricHtml(turn.totalTime, formatDuration)}</td>
+    <td class="num">${formatNumber(tokens.input)}</td>
+    <td class="num">${formatNumber(tokens.output)}</td>
+    <td class="num">${metricHtml(turn.cost, formatCost)}</td>
+    <td><span class="status ${statusClass(turn.status)}">${escapeHtml(
+      turn.status,
+    )}</span>${turn.uncertainty.length ? ` ${badge("!", "uncertain", turn.uncertainty.join(", "))}` : ""}</td>
+  </tr>`;
+}
+
+function basicStepRowHtml(turn, step) {
+  return `<tr class="step-row" data-step-id="${escapeAttr(
+    step.id,
+  )}" data-turn-id="${escapeAttr(turn.id)}" title="${escapeAttr(
+    `Trigger: ${step.trigger}`,
+  )}">
+    <td class="mono step-cell">${turn.index}.${step.index}</td>
+    <td>${escapeHtml(step.agent || "—")}<div class="sub-label">${escapeHtml(
+      step.trigger,
+    )}</div></td>
+    <td class="num">${metricHtml(step.totalTime, formatDuration)}</td>
+    <td class="num">${formatNumber(step.tokens?.input)}</td>
+    <td class="num">${formatNumber(step.tokens?.output)}</td>
+    <td class="num">${
+      step.cost === null || step.cost === undefined ? "—" : formatCost(step.cost)
+    }</td>
+    <td><span class="status ${statusClass(step.status)}">${escapeHtml(
+      step.status,
+    )}</span> <button type="button" class="turn-toggle" data-jump-step="${escapeAttr(
+      step.eventIDs[0] ?? "",
+    )}" title="Open this step in Trajectory">↗</button></td>
+  </tr>`;
+}
+
+function basicTotalsRowHtml() {
+  const totals = state.analysis.totals;
+  const scope = totals.scope === "session" ? "Session total" : "Window total";
+  return `<tr class="total-row">
+    <td colspan="2">${escapeHtml(scope)}</td>
+    <td class="num">${metricHtml(totals.wallClockTime, formatDuration)}</td>
+    <td class="num">${formatNumber(totals.tokens.input)}</td>
+    <td class="num">${formatNumber(totals.tokens.output)}</td>
+    <td class="num">${metricHtml(totals.cost, formatCost)}</td>
+    <td>${formatNumber(totals.turns)} turns · ${formatNumber(totals.steps)} steps</td>
+  </tr>`;
+}
+
+function renderStatisticsBasic() {
+  const analysis = state.analysis;
+  const turnBlocks = [];
+  for (const turn of analysis.turns) {
+    const expanded = state.expandedTurns.has(turn.id);
+    const rows = [basicTurnRowHtml(turn, expanded)];
+    if (expanded) {
+      for (const step of turn.steps) {
+        rows.push(basicStepRowHtml(turn, step));
+        if (state.expandedSteps.has(`${turn.id}:${step.id}`)) {
+          rows.push(stepDetailHtml(turn, step, 7));
+        }
+      }
+    }
+    turnBlocks.push(`<tbody class="turn-block">${rows.join("")}</tbody>`);
+  }
+  dom.view.innerHTML = `<div class="stats-toolbar">
+      <h2 class="stats-title">${analysis.totals.scope === "session" ? "Session total" : "Window total"}</h2>
+      <span class="muted small">${formatNumber(analysis.totals.turns)} turns · ${formatNumber(
+        analysis.totals.steps,
+      )} steps · ${formatNumber(analysis.totals.toolCalls)} tool calls</span>
+      <span class="grow"></span>
+      <span class="muted small">Basic view · switch to Advanced in the top bar or Settings</span>
+      <button type="button" class="btn ghost" id="expand-all">${
+        analysis.turns.every((turn) => state.expandedTurns.has(turn.id))
+          ? "Collapse all"
+          : "Expand all"
+      }</button>
+    </div>
+    <div class="table-wrap">
+      <table class="stats-table basic-stats">
+        <thead><tr>
+          <th>#</th><th>Trigger</th><th class="num">Duration</th>
+          <th class="num">In</th><th class="num">Out</th><th class="num">Cost</th><th>Status</th>
+        </tr></thead>
+        ${turnBlocks.join("")}
+        <tbody>${basicTotalsRowHtml()}</tbody>
+      </table>
+    </div>
+    <div class="compactions">
+      <h2 class="stats-title">Compactions</h2>
+      ${compactionCardsHtml()}
+    </div>`;
+  bindBasicStatistics();
+}
+
+function bindBasicStatistics() {
+  $("#expand-all")?.addEventListener("click", () => {
+    const turns = state.analysis?.turns ?? [];
+    const allOpen = turns.every((turn) => state.expandedTurns.has(turn.id));
+    if (allOpen) {
+      state.expandedTurns.clear();
+      state.expandedSteps.clear();
+    } else {
+      for (const turn of turns) state.expandedTurns.add(turn.id);
+    }
+    renderStatistics();
+  });
+  for (const row of dom.view.querySelectorAll("tr.turn-row")) {
+    row.addEventListener("click", () => {
+      const turnID = row.dataset.turnId;
+      if (state.expandedTurns.has(turnID)) state.expandedTurns.delete(turnID);
+      else state.expandedTurns.add(turnID);
+      renderStatistics();
+    });
+  }
+  for (const row of dom.view.querySelectorAll("tr.step-row")) {
+    row.addEventListener("click", () => {
+      const key = `${row.dataset.turnId}:${row.dataset.stepId}`;
+      if (state.expandedSteps.has(key)) state.expandedSteps.delete(key);
+      else state.expandedSteps.add(key);
+      state.expandedTurns.add(row.dataset.turnId);
+      renderStatistics();
+    });
+  }
+  for (const button of dom.view.querySelectorAll("[data-jump-step]")) {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void jumpToEvent(button.dataset.jumpStep);
+    });
+  }
+  for (const element of dom.view.querySelectorAll("[data-event-id]")) {
+    element.addEventListener("click", () => {
+      const eventID = element.dataset.eventId;
+      if (eventID) void jumpToEvent(eventID);
+    });
+  }
+  for (const element of dom.view.querySelectorAll("[data-session-id]")) {
+    element.addEventListener("click", () => {
+      void selectSession(element.dataset.sessionId);
+    });
+  }
+}
+
 function renderStatistics() {
   if (!dom.view) return;
   dom.view.className = "view";
   const analysis = state.analysis;
   if (!analysis) {
     renderEmpty("No session selected");
+    return;
+  }
+  if (state.viewMode === "basic") {
+    renderStatisticsBasic();
     return;
   }
   const totals = analysis.totals;
@@ -1422,25 +1755,20 @@ function renderStatistics() {
 function bindStatistics() {
   const contextBasis = $("#context-basis");
   contextBasis?.addEventListener("change", () => {
-    state.contextBasis = contextBasis.value;
+    state.contextBasis = contextBasis.value === "cumulative" ? "cumulative" : "latest";
+    setSetting("contextBasis", state.contextBasis);
     renderStatistics();
   });
   const showEvents = $("#show-event-rows");
   showEvents?.addEventListener("change", () => {
     state.showEventRows = showEvents.checked;
+    setSetting("showEventRows", state.showEventRows);
     renderStatistics();
   });
   const responseLimit = $("#response-limit");
   responseLimit?.addEventListener("change", () => {
     state.responseLimit = Number(responseLimit.value) || 20_000;
-    try {
-      localStorage.setItem(
-        "observability-response-limit",
-        String(state.responseLimit),
-      );
-    } catch {
-      // localStorage may be unavailable
-    }
+    setSetting("responseLimit", state.responseLimit);
     renderStatistics();
   });
   const expandAll = $("#expand-all");
@@ -1455,7 +1783,7 @@ function bindStatistics() {
     }
     renderStatistics();
   });
-  for (const row of document.querySelectorAll("tr.turn-row")) {
+  for (const row of dom.view.querySelectorAll("tr.turn-row")) {
     row.addEventListener("click", (event) => {
       if (event.target.closest("button[data-step-id]")) return;
       const turnID = row.dataset.turnId;
@@ -1464,7 +1792,7 @@ function bindStatistics() {
       renderStatistics();
     });
   }
-  for (const row of document.querySelectorAll("tr.step-row")) {
+  for (const row of dom.view.querySelectorAll("tr.step-row")) {
     row.addEventListener("click", () => {
       const key = `${row.dataset.turnId}:${row.dataset.stepId}`;
       if (state.expandedSteps.has(key)) state.expandedSteps.delete(key);
@@ -1473,13 +1801,13 @@ function bindStatistics() {
       renderStatistics();
     });
   }
-  for (const button of document.querySelectorAll("[data-jump-step]")) {
+  for (const button of dom.view.querySelectorAll("[data-jump-step]")) {
     button.addEventListener("click", (event) => {
       event.stopPropagation();
       void jumpToEvent(button.dataset.jumpStep);
     });
   }
-  for (const element of document.querySelectorAll("[data-event-id]")) {
+  for (const element of dom.view.querySelectorAll("[data-event-id]")) {
     element.addEventListener("click", (event) => {
       if (event.target.closest("button[data-session-id]")) return;
       const eventID = element.dataset.eventId;
@@ -1487,7 +1815,7 @@ function bindStatistics() {
       void jumpToEvent(eventID);
     });
   }
-  for (const element of document.querySelectorAll("[data-session-id]")) {
+  for (const element of dom.view.querySelectorAll("[data-session-id]")) {
     element.addEventListener("click", () => {
       void selectSession(element.dataset.sessionId);
     });
@@ -1852,27 +2180,52 @@ async function toggleReveal() {
 }
 
 function applyStoredTheme() {
-  let stored = null;
-  try {
-    stored = localStorage.getItem("observability-theme");
-  } catch {
-    stored = null;
+  migrate();
+  // A TUI deep link may carry the exact resolved OpenCode palette (and the
+  // theme name as a fallback). It only wins until the user picks a theme here.
+  const hash = window.location.hash;
+  const linkedPalette = readPaletteFromHash(hash);
+  const linkedTheme = readThemeFromHash(hash);
+  const userSet = get("themeUserSet") === true;
+  if (!userSet && linkedPalette) {
+    applyPalette(linkedPalette);
+    setSetting("palette", linkedPalette);
+    setTheme("opencode-current", false);
+    return;
   }
-  if (stored === "light" || stored === "dark") {
-    document.documentElement.dataset.theme = stored;
+  if (!userSet && linkedTheme) {
+    setTheme(linkedTheme, false);
+    return;
+  }
+  if (!userSet && get("palette")) {
+    setTheme("opencode-current", false);
+    return;
+  }
+  applyTheme(getTheme());
+}
+
+function renderViewModeState() {
+  applyViewMode(state.viewMode);
+  for (const button of document.querySelectorAll("[data-view-mode-option]")) {
+    button.setAttribute(
+      "aria-pressed",
+      String(button.dataset.viewModeOption === state.viewMode),
+    );
   }
 }
 
-function toggleTheme() {
-  const current = document.documentElement.dataset.theme;
-  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  const effective = current === "light" || current === "dark" ? current : prefersDark ? "dark" : "light";
-  const next = effective === "dark" ? "light" : "dark";
-  document.documentElement.dataset.theme = next;
-  try {
-    localStorage.setItem("observability-theme", next);
-  } catch {
-    // Theme is a convenience; storage may be unavailable.
+function setMode(mode) {
+  const next = mode === "advanced" ? "advanced" : "basic";
+  if (state.viewMode === next) return;
+  state.viewMode = setViewMode(next);
+  renderViewModeState();
+  renderHeader();
+  if (state.sessionID) {
+    // Advanced filters may be hidden but still present in state; reloading
+    // applies only the filters the new mode actually shows.
+    void loadEvents({ reset: true });
+  } else {
+    renderView();
   }
 }
 
@@ -1881,6 +2234,186 @@ function toggleShortcuts(force) {
   const show = force ?? dom.shortcuts.hidden;
   dom.shortcuts.hidden = !show;
   if (show) dom.shortcuts.querySelector(".modal-close")?.focus();
+}
+
+function selectOptionsHtml(entries, selected) {
+  return entries
+    .map(
+      (entry) =>
+        `<option value="${escapeAttr(entry.id)}"${
+          entry.id === selected ? " selected" : ""
+        }>${escapeHtml(entry.label)}</option>`,
+    )
+    .join("");
+}
+
+function renderSettingsForm() {
+  if (!dom.settingsBody) return;
+  const theme = getTheme();
+  const themes = THEMES.filter(
+    (entry) => entry.id !== "opencode-current" || get("palette"),
+  );
+  const viewMode = getViewMode();
+  const responseLimit = responseLimitSetting();
+  dom.settingsBody.innerHTML = `<div class="settings-group">
+      <h3>Appearance</h3>
+      <div class="settings-field">
+        <label for="setting-theme">Theme</label>
+        <select id="setting-theme" data-setting="theme">${selectOptionsHtml(themes, theme)}</select>
+      </div>
+      <div class="settings-field">
+        <label for="setting-view-mode">View mode</label>
+        <select id="setting-view-mode" data-setting="viewMode">${selectOptionsHtml(
+          VIEW_MODES,
+          viewMode,
+        )}</select>
+      </div>
+    </div>
+    <div class="settings-group">
+      <h3>Sessions</h3>
+      <label class="switch"><input type="checkbox" data-setting="groupByProject"${
+        get("groupByProject") !== false ? " checked" : ""
+      }> Group sessions by project path</label>
+      <label class="switch"><input type="checkbox" data-setting="sessionTree"${
+        get("sessionTree") !== false ? " checked" : ""
+      }> Nest child sessions under parents</label>
+    </div>
+    <div class="settings-group">
+      <h3>Statistics</h3>
+      <div class="settings-field">
+        <label for="setting-context-basis">Context basis</label>
+        <select id="setting-context-basis" data-setting="contextBasis">
+          <option value="latest"${state.contextBasis === "latest" ? " selected" : ""}>Latest</option>
+          <option value="cumulative"${
+            state.contextBasis === "cumulative" ? " selected" : ""
+          }>Cumulative</option>
+        </select>
+      </div>
+      <div class="settings-field">
+        <label for="setting-response-limit">Response limit</label>
+        <select id="setting-response-limit" data-setting="responseLimit">
+          ${[4_000, 12_000, 20_000, 50_000, 80_000]
+            .map(
+              (value) =>
+                `<option value="${value}"${
+                  responseLimit === value ? " selected" : ""
+                }>${value / 1_000}k chars</option>`,
+            )
+            .join("")}
+        </select>
+      </div>
+      <label class="switch"><input type="checkbox" data-setting="showEventRows"${
+        state.showEventRows ? " checked" : ""
+      }> Show event rows in Statistics</label>
+    </div>
+    <div class="settings-actions">
+      <button type="button" class="btn ghost" id="settings-reset">Restore defaults</button>
+      <button type="button" class="btn" data-close-settings>Done</button>
+    </div>`;
+  bindSettingsForm();
+}
+
+function bindSettingsForm() {
+  for (const element of dom.settingsBody.querySelectorAll("[data-setting]")) {
+    element.addEventListener("change", () => {
+      const key = element.dataset.setting;
+      const value =
+        element.type === "checkbox" ? element.checked : element.value;
+      if (key === "theme") {
+        setTheme(value, true);
+      } else {
+        setSetting(key, value);
+      }
+      applySettingToState(key, value);
+    });
+  }
+  $("#settings-reset")?.addEventListener("click", () => {
+    resetSettings();
+    state.viewMode = "basic";
+    state.contextBasis = "latest";
+    state.responseLimit = 20_000;
+    state.showEventRows = false;
+    state.groupByProject = true;
+    state.sessionTree = true;
+    state.expandedProjects.clear();
+    state.expandedParents.clear();
+    renderViewModeState();
+    renderSettingsForm();
+    renderHeader();
+    renderSessionList();
+    renderView();
+    if (state.sessionID) void loadEvents({ reset: true });
+    toast("Settings restored to defaults");
+  });
+}
+
+function applySettingToState(key, value) {
+  if (key === "viewMode") {
+    setMode(value);
+    return;
+  }
+  if (key === "contextBasis") {
+    state.contextBasis = value === "cumulative" ? "cumulative" : "latest";
+    if (state.view === "statistics") renderStatistics();
+    return;
+  }
+  if (key === "responseLimit") {
+    const selected = Number(value);
+    state.responseLimit = [4_000, 12_000, 20_000, 50_000, 80_000].includes(selected)
+      ? selected
+      : 20_000;
+    if (state.view === "statistics") renderStatistics();
+    return;
+  }
+  if (key === "showEventRows") {
+    state.showEventRows = value === true;
+    if (state.view === "statistics") renderStatistics();
+    return;
+  }
+  if (key === "groupByProject") {
+    state.groupByProject = value !== false;
+    renderSessionList();
+    return;
+  }
+  if (key === "sessionTree") {
+    state.sessionTree = value !== false;
+    renderSessionList();
+  }
+}
+
+function openSettings() {
+  if (!dom.settings) return;
+  state.settingsOpener =
+    document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  renderSettingsForm();
+  dom.settings.hidden = false;
+  dom.settings.querySelector(".modal-close")?.focus();
+}
+
+function closeSettings() {
+  if (!dom.settings || dom.settings.hidden) return;
+  dom.settings.hidden = true;
+  state.settingsOpener?.focus?.();
+  state.settingsOpener = null;
+}
+
+function trapFocus(event, container) {
+  const focusable = [...container.querySelectorAll(
+    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  )].filter((element) => element.getClientRects().length > 0);
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (!container.contains(document.activeElement)) {
+    event.preventDefault();
+    first.focus();
+  } else if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 function toggleLive() {
@@ -1945,6 +2478,30 @@ async function onHashChange() {
 
 function bindStaticEvents() {
   dom.sessionList?.addEventListener("click", (event) => {
+    const parent = event.target.closest("[data-parent-toggle]");
+    if (parent) {
+      const id = parent.dataset.parentToggle;
+      if (state.expandedParents.has(id)) state.expandedParents.delete(id);
+      else state.expandedParents.add(id);
+      setSetting("expandedParents", [...state.expandedParents]);
+      renderSessionList();
+      dom.sessionList
+        .querySelector(`[data-parent-toggle="${CSS.escape(id)}"]`)
+        ?.focus();
+      return;
+    }
+    const project = event.target.closest("[data-project-toggle]");
+    if (project) {
+      const key = project.dataset.projectToggle;
+      if (state.expandedProjects.has(key)) state.expandedProjects.delete(key);
+      else state.expandedProjects.add(key);
+      setSetting("expandedProjects", [...state.expandedProjects]);
+      renderSessionList();
+      dom.sessionList
+        .querySelector(`[data-project-toggle="${CSS.escape(key)}"]`)
+        ?.focus();
+      return;
+    }
     const item = event.target.closest("[data-session-id]");
     if (!item) return;
     void selectSession(item.dataset.sessionId);
@@ -1972,7 +2529,15 @@ function bindStaticEvents() {
   $("#refresh")?.addEventListener("click", () => void refreshCurrent());
   dom.liveToggle?.addEventListener("change", toggleLive);
   dom.revealToggle?.addEventListener("click", () => void toggleReveal());
-  $("#theme-toggle")?.addEventListener("click", toggleTheme);
+  $("#settings-btn")?.addEventListener("click", openSettings);
+  for (const button of document.querySelectorAll("[data-view-mode-option]")) {
+    button.addEventListener("click", () => setMode(button.dataset.viewModeOption));
+  }
+  dom.settings?.addEventListener("click", (event) => {
+    if (event.target === dom.settings || event.target.closest("[data-close-settings]")) {
+      closeSettings();
+    }
+  });
   $("#sidebar-toggle")?.addEventListener("click", () =>
     dom.shell?.classList.toggle("sidebar-open"),
   );
@@ -2006,6 +2571,15 @@ function bindStaticEvents() {
 }
 
 function onKeyDown(event) {
+  if (!dom.settings?.hidden) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeSettings();
+    } else if (event.key === "Tab") {
+      trapFocus(event, dom.settings);
+    }
+    return;
+  }
   const target = event.target;
   const typing =
     target instanceof HTMLElement &&
@@ -2015,7 +2589,9 @@ function onKeyDown(event) {
       target.isContentEditable);
 
   if (event.key === "Escape") {
-    if (!dom.shortcuts?.hidden) {
+    if (!dom.settings?.hidden) {
+      closeSettings();
+    } else if (!dom.shortcuts?.hidden) {
       toggleShortcuts(false);
     } else if (!dom.drawer?.hidden) {
       closeDrawer();
@@ -2113,6 +2689,8 @@ function collectDom() {
   dom.drawerBackdrop = $("#drawer-backdrop");
   dom.toast = $("#toast");
   dom.shortcuts = $("#shortcuts");
+  dom.settings = $("#settings");
+  dom.settingsBody = $("#settings-body");
   dom.revealToggle = $("#reveal-toggle");
   dom.revealWarning = $("#reveal-warning");
   dom.exportBtn = $("#export-btn");
@@ -2124,8 +2702,13 @@ function collectDom() {
 
 async function boot() {
   state.token = consumeTokenFromLocation(window.location, window.history);
+  const linkedTheme = Boolean(
+    readThemeFromHash(window.location.hash) ||
+      readPaletteFromHash(window.location.hash),
+  );
   collectDom();
   applyStoredTheme();
+  renderViewModeState();
   bindStaticEvents();
   renderRevealState();
   try {
@@ -2133,6 +2716,17 @@ async function boot() {
     state.revealAllowed = health.revealAllowed !== false;
     setText(dom.dbInfo, health.dbPath ?? "");
     if (dom.dbInfo) dom.dbInfo.title = health.dbPath ?? "";
+    const serverTheme = health.theme?.name;
+    if (
+      !linkedTheme &&
+      get("themeUserSet") !== true &&
+      typeof serverTheme === "string" &&
+      serverTheme.trim().length > 0
+    ) {
+      // Open the same theme that OpenCode 2 has selected in its CLI config,
+      // even when the user did not come through a TUI deep link.
+      setTheme(serverTheme.trim(), false);
+    }
     renderRevealState();
     await loadSessions("");
     const route = parseHash();

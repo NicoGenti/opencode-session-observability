@@ -138,6 +138,8 @@ It caches a dataset for ~4 seconds, keyed by `session.time.updated`, message cou
 
 - Vanilla ES modules, no build step, no external assets.
 - `ui/app.js` owns state, routing (`#/s/<id>/<view>?event=…`), filters, views, drawer, export, theme, shortcuts.
+- `ui/settings.js` is the typed per-browser preference store (theme, view mode, grouping, statistics defaults). It tolerates unavailable storage.
+- `server/opencode-theme.ts` reads OpenCode 2's CLI-selected theme (`cli.json`) so a direct page open matches the TUI; the UI applies it unless the user picked a theme or arrived through a palette deep link.
 - `ui/auth.js` consumes the fragment token, stores it per tab and adds the request header.
 - `ui/virtual.js` is a variable-height virtual list. Only visible rows (plus overscan) are in the DOM.
 - Statistics uses one `<tbody>` per turn with `content-visibility: auto` and an expandable step detail row.

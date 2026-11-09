@@ -126,6 +126,8 @@ function summaryFromMeta(meta: SessionMeta): SessionSummary {
   return {
     id: meta.id,
     ...(meta.parentID ? { parentID: meta.parentID } : {}),
+    ...(meta.projectID ? { projectID: meta.projectID } : {}),
+    ...(meta.slug ? { slug: meta.slug } : {}),
     ...(meta.title ? { title: meta.title } : {}),
     ...(meta.directory ? { directory: meta.directory } : {}),
     ...(meta.agent ? { agent: meta.agent } : {}),

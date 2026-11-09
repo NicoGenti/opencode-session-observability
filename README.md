@@ -19,10 +19,10 @@ The implementation is original and targets OpenCode 2.2.x. It was built against 
 | Normalization | Typed `NormalizedEvent` stream for every persisted message type and assistant content block |
 | Projection | Turns, steps, tool calls, subagents, compactions, non-step events, unattached events |
 | Metrics | Prompt/context tokens, cache hit rate, model/tool/residual/total time, output speed, cost, context deltas |
-| UI | Local browser app: Trajectory + Statistics, filters, full-text search, detail drawer, copy, export |
+| UI | Local browser app: Trajectory + Statistics, Basic/Advanced modes, OpenCode themes, project-grouped session tree, settings, filters, full-text search, detail drawer, copy, export |
 | Integration | OpenCode 2 server plugin with read-only RPC + TUI commands `/observability`, `/trajectory`, `/statistics` |
 | Export | Self-contained HTML, Markdown and JSON |
-| Tests | 88 tests: parsing, projection, metrics, paging, scroll preservation, redaction, authentication, adapters, HTTP API, RPC, exports, read-only guarantees |
+| Tests | 102 tests: parsing, projection, metrics, paging, scroll preservation, redaction, authentication, adapters, HTTP API, RPC, exports, settings/theme persistence, read-only guarantees |
 
 ---
 

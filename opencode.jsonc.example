@@ -6,6 +6,11 @@
       "options": {
         "url": "http://127.0.0.1:4517",
         "allowReveal": false,
+        // Optional. Seeds the browser UI theme on first open. Use any OpenCode 2
+        // built-in theme name (for example "tokyonight"), or "auto". The TUI
+        // already forwards the running theme and its resolved palette; this
+        // option only overrides that default.
+        "theme": "",
         // Optional override. The TUI reads the per-port token file by default.
         // An explicit --token=<value> is not persisted; provide it here or in
         // OPENCODE_OBSERVABILITY_TOKEN instead.
