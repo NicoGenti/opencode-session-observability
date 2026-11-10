@@ -1155,6 +1155,78 @@ function ledgerRowHtml(row) {
   return eventRowHtml(row.event);
 }
 
+function recoveryLabel(recoveryState) {
+  if (recoveryState === "recovered") return "Recovery observed";
+  if (recoveryState === "possible-recovery") return "Possible recovery";
+  if (recoveryState === "no-recovery-evidence") return "No recovery evidence";
+  if (recoveryState === "insufficient-data") return "Insufficient data";
+  return "Insufficient data";
+}
+
+/**
+ * Map an engine recovery state onto an existing semantic badge kind.
+ * "good" and "accent" are token-only aliases of the existing badge classes;
+ * the two evidence-free states use the existing dashed neutral treatment.
+ */
+function recoveryBadgeKind(recoveryState) {
+  if (recoveryState === "recovered") return "good";
+  if (recoveryState === "possible-recovery") return "accent";
+  return "uncertain";
+}
+
+/**
+ * One incident card, shared by every view that renders diagnostics.
+ * Text-only: `why` and the trigger label are escaped, and the DTO carries no
+ * tool input/output to leak.
+ */
+function diagnosticCardHtml(incident) {
+  const tool = incident.tool ?? "—";
+  const triggerLabel = incident.trigger?.label ?? "—";
+  const openLabel = `Open ${tool} incident in Trajectory`;
+  return `<div class="diagnostic-card">
+    <div class="diagnostic-head">
+      ${badge(tool, "tool")}
+      ${badge(recoveryLabel(incident.recovery), recoveryBadgeKind(incident.recovery))}
+      <span class="muted small">Turn ${formatNumber(incident.turn)}</span>
+      <span class="diagnostic-trigger">${escapeHtml(triggerLabel)}</span>
+      <span class="grow"></span>
+      <button type="button" class="link-button" data-open-incident data-event-id="${escapeAttr(
+        incident.firstFailureEventID,
+      )}" aria-label="${escapeAttr(openLabel)}">Open in Trajectory</button>
+    </div>
+    <div class="diagnostic-grid">
+      <div class="diagnostic-stat"><div class="label">Attempts</div><div class="value">${formatNumber(
+        incident.attempts,
+      )}</div></div>
+      <div class="diagnostic-stat"><div class="label">Elapsed (context)</div><div class="value">${metricHtml(
+        incident.elapsed,
+        formatDuration,
+      )}</div></div>
+      <div class="diagnostic-stat"><div class="label">Step cost sum (context)</div><div class="value">${metricHtml(
+        incident.stepCostSum,
+        formatCost,
+      )}</div></div>
+    </div>
+    <p class="small muted diagnostic-why">${escapeHtml(incident.why)}</p>
+    <p class="small muted">Footprint values are contextual to this incident; they are not a recovery signal.</p>
+  </div>`;
+}
+
+function recoveryMapHtml() {
+  const incidents = state.analysis?.diagnostics?.incidents ?? [];
+  const cards =
+    incidents.length === 0
+      ? `<p class="muted small">No diagnostic incidents recorded in this session.</p>`
+      : incidents.map((incident) => diagnosticCardHtml(incident)).join("");
+  return `<section class="recovery-map" aria-label="Recovery map">
+    <div class="recovery-map-head">
+      <h2 class="recovery-map-title">Recovery map</h2>
+      <span class="muted small">${formatNumber(incidents.length)} incident(s) from the deterministic diagnostics engine</span>
+    </div>
+    <div class="recovery-cards">${cards}</div>
+  </section>`;
+}
+
 function renderTrajectory(options = {}) {
   if (!dom.view) return;
   const previousScrollTop =
@@ -1174,6 +1246,7 @@ function renderTrajectory(options = {}) {
       )} derived</span><span>${badge("E", "neutral")} estimated</span>
       <span>·</span><span>TTFT, approvals, request headers and tool-set changes are not recorded by OpenCode 2.</span>
     </div>
+    ${recoveryMapHtml()}
     <div class="ledger">
       <div class="ledger-scroll" id="ledger-scroll" tabindex="-1"></div>
       <div class="ledger-foot">
