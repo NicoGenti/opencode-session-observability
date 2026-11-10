@@ -379,9 +379,10 @@ src/
     rpc-define.ts       local Rpc.define equivalent
     service.ts          RPC handlers
     tui.ts              TUI commands
+    tui.tsx             typed OpenTUI JSX sidecar (provide-only)
 test/
   fixtures/build.ts     synthetic OpenCode 2 fixtures
-  *.test.ts             201 tests
+  *.test.ts             204 tests
 docs/
   DATA-SOURCES.md
   ARCHITECTURE.md
