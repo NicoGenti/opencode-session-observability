@@ -18,11 +18,15 @@ export {
   currentSessionID,
 } from "./tui-native.ts";
 
+// The status badge seam lives in one module so the slot wiring (#6) imports the
+// formatter and the cached fetcher from the same place as the commands.
+export { formatStatusBadge, fetchSessionStatus } from "./tui-status.ts";
+
 const DEFAULT_URL = "http://127.0.0.1:4517";
 
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
 
-type Reachability = "ok" | "auth" | "down";
+export type Reachability = "ok" | "auth" | "down";
 type RouteLike = { type: string; sessionID?: string };
 type ViewOpener = (view: "trajectory" | "statistics") => void | false | Promise<void>;
 
@@ -248,11 +252,14 @@ export function baseUrl(value: unknown): string {
   }
 }
 
-async function reachable(url: string): Promise<Reachability> {
+export async function reachable(
+  url: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<Reachability> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 1_500);
   try {
-    const response = await fetch(`${url}/api/health`, {
+    const response = await fetchImpl(`${url}/api/health`, {
       signal: controller.signal,
       headers: { Accept: "application/json" },
     });
