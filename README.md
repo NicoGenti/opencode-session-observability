@@ -24,7 +24,7 @@ The implementation is original and targets OpenCode 2.2.x. It was built against 
 | Projection | Turns, steps, tool calls, subagents, compactions, non-step events, unattached events |
 | Metrics | Prompt/context tokens, cache hit rate, model/tool/residual/total time, output speed, cost, context deltas |
 | UI | Local browser app: Trajectory + Statistics, Basic/Advanced modes, OpenCode themes, project-grouped session tree, settings, filters, full-text search, detail drawer, copy, export |
-| Integration | OpenCode 2 server plugin with read-only RPC + TUI commands `/observability`, `/trajectory`, `/statistics` |
+| Integration | OpenCode 2 server plugin with read-only RPC + TUI commands `/observability`, `/trajectory`, `/statistics` (alias `/stats`, web variant `/statistics:web`) |
 | Export | Self-contained HTML, Markdown and JSON |
 | Tests | 201 tests: parsing, projection, metrics, paging, scroll preservation, redaction, authentication, adapters, HTTP API, RPC, exports, settings/theme persistence, read-only guarantees |
 
@@ -208,9 +208,11 @@ Then in the OpenCode 2 TUI:
 /observability   open the Trajectory view for the current session
 /trajectory      same, explicit Trajectory
 /statistics      open the Statistics view for the current session
+/stats           alias of /statistics
+/stats:web       open the Statistics web UI (also /statistics --web)
 ```
 
-If the UI is not running, the command shows a toast with the command to start it. If the UI requires a token and the plugin has none, it shows how to provide one instead of opening an unauthenticated page. The URL is configurable with the plugin option `url`; it must point at a loopback address (`127.0.0.1`, `localhost` or `::1`).
+If the UI is not running, the command shows a toast with the command to start it. If the UI requires a token and the plugin has none, it shows how to provide one instead of opening an unauthenticated page. The URL is configurable with the plugin option `url`; it must point at a loopback address (`127.0.0.1`, `localhost` or `::1`). Native in-TUI rendering becomes live only when sibling issues #6/#8 register the `statistics` view through `registerNativeView`; until then `/statistics` falls back to the browser with an info toast.
 
 ### RPC namespace
 
