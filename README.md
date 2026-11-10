@@ -1,4 +1,7 @@
 # OpenCode Session Observability
+
+Every OpenCode 2 session leaves behind a rich event ledger — prompts, tool calls, retries, errors, compactions, tokens and cost — that is painful to reconstruct by hand. This tool opens that ledger locally and read-only: no telemetry, no writes to your data.
+
 [![CI](https://github.com/NicoGenti/opencode-statistics/actions/workflows/ci.yml/badge.svg)](https://github.com/NicoGenti/opencode-statistics/actions/workflows/ci.yml)
 
 A local-first, read-only observability layer for **OpenCode 2** sessions. It adds two views:
@@ -23,7 +26,19 @@ The implementation is original and targets OpenCode 2.2.x. It was built against 
 | UI | Local browser app: Trajectory + Statistics, Basic/Advanced modes, OpenCode themes, project-grouped session tree, settings, filters, full-text search, detail drawer, copy, export |
 | Integration | OpenCode 2 server plugin with read-only RPC + TUI commands `/observability`, `/trajectory`, `/statistics` |
 | Export | Self-contained HTML, Markdown and JSON |
-| Tests | 102 tests: parsing, projection, metrics, paging, scroll preservation, redaction, authentication, adapters, HTTP API, RPC, exports, settings/theme persistence, read-only guarantees |
+| Tests | 179 tests: parsing, projection, metrics, paging, scroll preservation, redaction, authentication, adapters, HTTP API, RPC, exports, settings/theme persistence, read-only guarantees |
+
+Screenshots of both views in dark and light mode (1440×900):
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/trajectory-dark.png">
+  <img src="docs/screenshots/trajectory-light.png" alt="Trajectory view in light mode">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/statistics-dark.png">
+  <img src="docs/screenshots/statistics-light.png" alt="Statistics view in light mode">
+</picture>
 
 ---
 
@@ -91,7 +106,7 @@ Other flags:
 Run the checks:
 
 ```bash
-npm run check       # typecheck + 88 tests (node:test)
+npm run check       # typecheck + 179 tests (node:test)
 npm run audit:prod  # production dependency audit (0 advisories)
 ```
 
@@ -142,7 +157,7 @@ For a local checkout, copy `opencode.jsonc.example` into your OpenCode config an
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
-      "package": "E:/MyProjects/opencode-statistics",
+      "package": "<path-to-repo>",
       "options": {
         "url": "http://127.0.0.1:4517",
         "allowReveal": false
@@ -164,6 +179,20 @@ For a published package:
 The TUI loads the TUI parts of plugins its server loads. The TUI commands only open the browser; they never inject a prompt into the session.
 
 The TUI reads the per-port token file written by `npm start`. The optional `token` plugin option, or the `OPENCODE_OBSERVABILITY_TOKEN` environment variable, overrides it. An explicit `--token=<value>` is never written to disk, so it must be provided through one of those two settings. The TUI never prints the token in a toast.
+
+### Config examples: `opencode.jsonc.example` vs `cli.json.example`
+
+Two example configs ship with the repo:
+
+- `opencode.jsonc.example` — the full plugin entry with the `url`, `allowReveal`, `theme` and `token` options, as shown above. Use it for a local checkout or to change the port or allow reveal.
+- `cli.json.example` — the minimal registration-only list for the bare CLI config, when the defaults are enough (loopback `http://127.0.0.1:4517`, reveal off, theme forwarded by the TUI, token read from the per-port file):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["opencode-session-observability"]
+}
+```
 
 ### Use
 
@@ -350,7 +379,7 @@ src/
     tui.ts              TUI commands
 test/
   fixtures/build.ts     synthetic OpenCode 2 fixtures
-  *.test.ts             88 tests
+  *.test.ts             179 tests
 docs/
   DATA-SOURCES.md
   ARCHITECTURE.md
@@ -364,9 +393,11 @@ docs/
 ## Testing
 
 ```bash
-npm run check       # typecheck + 88 tests
+npm run check       # typecheck + 179 tests
 npm run audit:prod  # production dependency audit
 ```
+
+The suite is pinned at **179 tests** for this revision (v0.1.0) and grows with each new suite.
 
 The fixtures cover: a simple session, multiple tool calls (including parallel and error), subagents, retry + error, compaction, a long paging session, an incomplete/interrupted run, out-of-order timestamps, secrets, and an empty session. The HTTP tests start the real server on an ephemeral port against a synthetic SQLite database.
 
