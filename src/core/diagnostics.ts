@@ -49,8 +49,6 @@ export interface DiagnosticIncident {
   turnID: string;
   /** Number of failures in the maximal run. */
   attempts: number;
-  /** Event ids of the failing calls, in recorded order. Names the run's events. */
-  failureEventIDs: string[];
   /**
    * Event id of the same-tool success that actually closed the run as
    * recovered. Null in every other recovery state, including a different-shape
@@ -482,7 +480,6 @@ function buildIncident(
     turn: run.turn.index,
     turnID: run.turn.id,
     attempts: run.failures.length,
-    failureEventIDs: run.failures.map((event) => event.id),
     recoveryEventID: recovery === "recovered" && success ? success.id : null,
     recovery,
     basis: recovery === "insufficient-data" ? "measured" : "derived",

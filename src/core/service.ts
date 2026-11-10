@@ -4,7 +4,6 @@ import { promptTokensMetric } from "./metrics.ts";
 import { evaluateDiagnostics } from "./diagnostics.ts";
 import { redactValue, truncate } from "./util.ts";
 import { exportSession } from "./export.ts";
-import { evaluateDiagnostics } from "./diagnostics.ts";
 import { listDiagnosticEpisodes } from "./episodes.ts";
 import { compareEpisodeData } from "./episodeCompare.ts";
 import type { Diagnostics } from "./diagnostics.ts";
