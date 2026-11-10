@@ -27,6 +27,10 @@ const VERSION = "0.1.0";
 export const SESSION_DIAGNOSTICS_PATTERN =
   /^\/api\/sessions\/([^/]+)\/diagnostics$/;
 
+/** `/api/sessions/{id}/family-recovery`, shared with the tests that call it. */
+export const SESSION_FAMILY_RECOVERY_PATTERN =
+  /^\/api\/sessions\/([^/]+)\/family-recovery$/;
+
 /** Episode comparison endpoint, shared with the tests that call it. */
 export const EPISODE_COMPARE_PATH = "/api/episodes/compare";
 
@@ -420,6 +424,14 @@ export async function createObservabilityServer(
         const sessionID = match[1]!;
         const data = await service.diagnostics(sessionID, { reveal });
         sendJson(req, res, 200, { ...data, revealAllowed: allowReveal });
+        return;
+      }
+
+      match = SESSION_FAMILY_RECOVERY_PATTERN.exec(path);
+      if (match) {
+        const sessionID = match[1]!;
+        const recovery = await service.familyRecovery(sessionID, { reveal });
+        sendJson(req, res, 200, { recovery, revealAllowed: allowReveal });
         return;
       }
 
