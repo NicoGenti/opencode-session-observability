@@ -21,12 +21,12 @@ Use `npm ci` rather than `npm install`: `package-lock.json` is committed and the
 ```bash
 npm run check       # typecheck + full test suite — the standard gate
 npm run typecheck   # tsc --noEmit only
-npm test            # node:test, 21 files, 179 tests at v0.1.0
+npm test            # node:test, 23 files, 201 tests at v0.1.0
 npm run audit:prod  # production dependency audit
 npm run serve       # start the local UI (alias of npm start)
 ```
 
-`npm run check` must be green before you open a pull request. The suite is pinned at 179 tests for this revision and grows with each new suite.
+`npm run check` must be green before you open a pull request. The suite is pinned at 201 tests for this revision and grows with each new suite.
 
 ## Architecture pointers
 
@@ -41,10 +41,10 @@ Deeper context lives in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [DESIGN
 
 ## Branching and commits
 
-- One issue = one git worktree, branched off `master`, so the main checkout stays clean.
+- One issue = one git worktree, branched off `main`, so the main checkout stays clean.
 - Use conventional commit prefixes: `feat(core|server|ui|plugin): ...`, `fix(scope): ...`, `docs: ...`, `ci: ...`.
 - One logical change per commit; keep refactors and behavior changes in separate commits.
-- Rebase or merge `master` as the maintainer prefers; do not rewrite published history.
+- Rebase or merge `main` as the maintainer prefers; do not rewrite published history.
 
 ## Pull requests
 

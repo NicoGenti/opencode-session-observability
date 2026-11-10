@@ -26,7 +26,7 @@ The implementation is original and targets OpenCode 2.2.x. It was built against 
 | UI | Local browser app: Trajectory + Statistics, Basic/Advanced modes, OpenCode themes, project-grouped session tree, settings, filters, full-text search, detail drawer, copy, export |
 | Integration | OpenCode 2 server plugin with read-only RPC + TUI commands `/observability`, `/trajectory`, `/statistics` |
 | Export | Self-contained HTML, Markdown and JSON |
-| Tests | 179 tests: parsing, projection, metrics, paging, scroll preservation, redaction, authentication, adapters, HTTP API, RPC, exports, settings/theme persistence, read-only guarantees |
+| Tests | 201 tests: parsing, projection, metrics, paging, scroll preservation, redaction, authentication, adapters, HTTP API, RPC, exports, settings/theme persistence, read-only guarantees |
 
 Screenshots of both views in dark and light mode (1440×900):
 
@@ -106,7 +106,7 @@ Other flags:
 Run the checks:
 
 ```bash
-npm run check       # typecheck + 179 tests (node:test)
+npm run check       # typecheck + 201 tests (node:test)
 npm run audit:prod  # production dependency audit (0 advisories)
 ```
 
@@ -379,7 +379,7 @@ src/
     tui.ts              TUI commands
 test/
   fixtures/build.ts     synthetic OpenCode 2 fixtures
-  *.test.ts             179 tests
+  *.test.ts             201 tests
 docs/
   DATA-SOURCES.md
   ARCHITECTURE.md
@@ -393,11 +393,11 @@ docs/
 ## Testing
 
 ```bash
-npm run check       # typecheck + 179 tests
+npm run check       # typecheck + 201 tests
 npm run audit:prod  # production dependency audit
 ```
 
-The suite is pinned at **179 tests** for this revision (v0.1.0) and grows with each new suite.
+The suite is pinned at **201 tests** for this revision (v0.1.0) and grows with each new suite.
 
 The fixtures cover: a simple session, multiple tool calls (including parallel and error), subagents, retry + error, compaction, a long paging session, an incomplete/interrupted run, out-of-order timestamps, secrets, and an empty session. The HTTP tests start the real server on an ephemeral port against a synthetic SQLite database.
 
