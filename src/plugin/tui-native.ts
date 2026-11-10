@@ -10,7 +10,15 @@ import type { Plugin as TuiSDK } from "@opencode/plugin/tui";
  * and the SDK is imported for types only.
  */
 
-/** Plugin `Page.name` reserved for the Statistics view. */
+/**
+ * Plugin `Page.name` reserved for the Statistics view.
+ *
+ * @deprecated Router-page seam (issue #6, decision D1). `/statistics` ships as
+ * the `session.panel` fullscreen panel opened by `openStatisticsPanel` in
+ * `tui.ts`, and `registerNativeView` has no production caller. The constant and
+ * the registry stay exported for host compatibility only; new views should
+ * claim `session.panel` instead of registering a router page.
+ */
 export const STATISTICS_ROUTE = "statistics";
 
 /** Plugin `Page.name` reserved for the Trajectory view. */
@@ -59,6 +67,11 @@ function isValidName(name: unknown): name is string {
  * Announces a native view for `name`. Registrations are ref-counted: the
  * returned cleanup removes exactly one reference, and calling it twice removes
  * one. Blank names are rejected so they cannot corrupt the registry.
+ *
+ * @deprecated Router-page seam (issue #6, decision D1). Statistics renders
+ * through the `session.panel` slot, so no view is registered in production.
+ * The registry stays exported and functional for host compatibility; new views
+ * should claim `session.panel` and skip this registration step.
  */
 export function registerNativeView(name: string): () => void {
   if (!isValidName(name)) {
