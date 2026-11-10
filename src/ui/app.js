@@ -1167,18 +1167,24 @@ function ledgerRowHtml(row) {
   return eventRowHtml(row.event);
 }
 
+/**
+ * DR-2 labels for the four engine recovery states. Anything else (an unknown
+ * state from a newer engine, or a missing field) is surfaced as "Unknown"
+ * instead of being folded into the real "Insufficient data" verdict.
+ */
 function recoveryLabel(recoveryState) {
   if (recoveryState === "recovered") return "Recovery observed";
   if (recoveryState === "possible-recovery") return "Possible recovery";
   if (recoveryState === "no-recovery-evidence") return "No recovery evidence";
   if (recoveryState === "insufficient-data") return "Insufficient data";
-  return "Insufficient data";
+  return "Unknown";
 }
 
 /**
  * Map an engine recovery state onto an existing semantic badge kind.
  * "good" and "accent" are token-only aliases of the existing badge classes;
  * the two evidence-free states use the existing dashed neutral treatment.
+ * Unknown states fall through to the same dashed neutral treatment.
  */
 function recoveryBadgeKind(recoveryState) {
   if (recoveryState === "recovered") return "good";
