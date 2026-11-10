@@ -10,6 +10,7 @@ import type { ObservabilitySource } from "../core/types.ts";
 import { isAuthorized } from "./auth.ts";
 import { readOpenCodeTheme } from "./opencode-theme.ts";
 import {
+  EpisodeNotFoundError,
   EventNotFoundError,
   ObservabilityService,
   SessionNotFoundError,
@@ -18,6 +19,16 @@ import type { EventFilter, EventKind, ExportOptions } from "../core/types.ts";
 
 const UI_ROOT = fileURLToPath(new URL("../ui/", import.meta.url));
 const VERSION = "0.1.0";
+
+/**
+ * `/api/sessions/{id}/diagnostics`. Exported so tests build requests from the
+ * same shape the router matches instead of re-typing the pattern.
+ */
+export const SESSION_DIAGNOSTICS_PATTERN =
+  /^\/api\/sessions\/([^/]+)\/diagnostics$/;
+
+/** Episode comparison endpoint, shared with the tests that call it. */
+export const EPISODE_COMPARE_PATH = "/api/episodes/compare";
 
 export interface ServerOptions {
   dbPath?: string;
@@ -112,6 +123,9 @@ function errorBody(error: unknown): {
   }
   if (error instanceof EventNotFoundError) {
     return { status: 404, code: "event_not_found", message: error.message };
+  }
+  if (error instanceof EpisodeNotFoundError) {
+    return { status: 404, code: "episode_not_found", message: error.message };
   }
   if (error instanceof DatabaseBusyError) {
     return {
@@ -229,6 +243,41 @@ function filterFromSearch(search: URLSearchParams): EventFilter {
     minPromptTokens: numberParam(search, "minPromptTokens"),
     maxPromptTokens: numberParam(search, "maxPromptTokens"),
   };
+}
+
+interface CompareQuery {
+  leftSessionID: string;
+  leftEpisodeID: string;
+  rightSessionID: string;
+  rightEpisodeID: string;
+}
+
+const COMPARE_REQUIRED_PARAMS = [
+  "leftSession",
+  "leftEpisode",
+  "rightSession",
+  "rightEpisode",
+] as const;
+
+/**
+ * Reads the four required comparison parameters. Returns null when one is
+ * absent or empty; `decodeURIComponent` is strict, so a malformed sequence
+ * throws `URIError` and the route answers with a stable 400 instead of a 500.
+ * A single encoding is already undone by `URLSearchParams`; the second decode
+ * only matters for ids a client encoded by hand with `encodeURIComponent`.
+ */
+function compareQuery(search: URLSearchParams): CompareQuery | null {
+  const values: string[] = [];
+  for (const name of COMPARE_REQUIRED_PARAMS) {
+    const raw = search.get(name);
+    if (raw === null || raw === "") return null;
+    values.push(decodeURIComponent(raw));
+  }
+  const [leftSessionID, leftEpisodeID, rightSessionID, rightEpisodeID] = values;
+  if (!leftSessionID || !leftEpisodeID || !rightSessionID || !rightEpisodeID) {
+    return null;
+  }
+  return { leftSessionID, leftEpisodeID, rightSessionID, rightEpisodeID };
 }
 
 export async function createObservabilityServer(
@@ -366,6 +415,14 @@ export async function createObservabilityServer(
         return;
       }
 
+      match = SESSION_DIAGNOSTICS_PATTERN.exec(path);
+      if (match) {
+        const sessionID = match[1]!;
+        const data = await service.diagnostics(sessionID, { reveal });
+        sendJson(req, res, 200, { ...data, revealAllowed: allowReveal });
+        return;
+      }
+
       match = /^\/api\/sessions\/([^/]+)\/events\/(.+)$/.exec(path);
       if (match) {
         const sessionID = match[1]!;
@@ -415,6 +472,30 @@ export async function createObservabilityServer(
           "Content-Disposition": `attachment; filename="${result.filename.replaceAll('"', "")}"`,
           "X-Observability-Redacted": String(result.redacted),
         });
+        return;
+      }
+
+      if (path === EPISODE_COMPARE_PATH) {
+        let query: CompareQuery | null;
+        try {
+          query = compareQuery(search);
+        } catch {
+          sendJson(req, res, 400, {
+            error: "invalid_query",
+            message: "Malformed query string.",
+          });
+          return;
+        }
+        if (!query) {
+          sendJson(req, res, 400, {
+            error: "invalid_query",
+            message:
+              "leftSession, leftEpisode, rightSession and rightEpisode are required.",
+          });
+          return;
+        }
+        const comparison = await service.compareEpisodes({ ...query, reveal });
+        sendJson(req, res, 200, { comparison, revealAllowed: allowReveal });
         return;
       }
 
