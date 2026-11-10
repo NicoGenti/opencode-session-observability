@@ -1,6 +1,22 @@
 import { spawn } from "node:child_process";
 import { readTokenFile } from "../server/token-file.ts";
 import { defineTuiPlugin } from "./define.ts";
+import {
+  TUI_PLUGIN_ID,
+  openNativeStatistics,
+  type BrowserFallback,
+} from "./tui-native.ts";
+
+// The native routing seam lives in one module so sibling issues (#6/#8) import
+// the reserved page names and the registry from a single place.
+export {
+  STATISTICS_ROUTE,
+  TRAJECTORY_ROUTE,
+  registerNativeView,
+  hasNativeView,
+  openNativeStatistics,
+  currentSessionID,
+} from "./tui-native.ts";
 
 const DEFAULT_URL = "http://127.0.0.1:4517";
 
@@ -9,6 +25,11 @@ const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
 type Reachability = "ok" | "auth" | "down";
 type RouteLike = { type: string; sessionID?: string };
 type ViewOpener = (view: "trajectory" | "statistics") => void | false | Promise<void>;
+
+/** Opens the native Statistics route, handing the seam its browser fallback. */
+export type NativeStatisticsOpener = (
+  browserFallback: BrowserFallback,
+) => void | false | Promise<void>;
 
 /** Where `/statistics` should render: the TUI route, or the local web UI. */
 export type StatsTarget = "native" | "web";
@@ -42,18 +63,20 @@ export type TuiCommandDefinition = {
 
 /**
  * Builds the read-only Observability command surface. Pure: the caller
- * supplies the view opener, so tests can scan the surface without the SDK.
+ * supplies the view opener and the native Statistics opener, so tests can scan
+ * the surface — and the `/statistics` routing — without the SDK.
  */
 export function tuiCommandDefinitions(
   openView: ViewOpener,
+  openNative: NativeStatisticsOpener = (browserFallback) => browserFallback(),
 ): readonly TuiCommandDefinition[] {
   const openStatistics = (input?: string): void | false | Promise<void> => {
     if (parseStatsArg(input) === "web") {
       return openView("statistics");
     }
-    // Phase 2 seam: the native route attempt lands here; until the native
-    // view ships, the existing browser path stays the interim behaviour.
-    return openView("statistics");
+    // Native route first; the seam falls back to the browser and explains the
+    // gap when no native view is registered yet.
+    return openNative(() => openView("statistics"));
   };
 
   return [
@@ -272,7 +295,7 @@ function openBrowser(url: string): boolean {
  * in the TUI, or explain how to start the UI when it is not running.
  */
 export default defineTuiPlugin({
-  id: "opencode-session-observability.tui",
+  id: TUI_PLUGIN_ID,
   setup(context) {
     const base = baseUrl(context.options.url);
 
@@ -328,7 +351,9 @@ export default defineTuiPlugin({
     };
 
     context.keymap.layer(() => ({
-      commands: tuiCommandDefinitions(openView),
+      commands: tuiCommandDefinitions(openView, (browserFallback) => {
+        openNativeStatistics(context, browserFallback);
+      }),
     }));
   },
 });
