@@ -1,4 +1,4 @@
-import { createMemo, createSignal, untrack, type Accessor } from "solid-js";
+import { createSignal, untrack, type Accessor } from "solid-js";
 import type { OpenCodeClient } from "@opencode/client";
 
 import type { Analysis, Metric, Turn } from "../../../core/types.ts";
@@ -51,9 +51,15 @@ export interface StatisticsKeyboardHandlers {
  * Mutable hand-off between the keymap layer and the mounted panel. The panel
  * installs its handlers on mount and clears them on cleanup, so commands are
  * no-ops whenever the panel is not rendered.
+ *
+ * `focused` mirrors the host's `PanelInput.focused` (`null` when the host did
+ * not report it). The keymap layer refuses keys while it is `false`, so another
+ * focusable surface cannot leak keystrokes into the panel; an unreported value
+ * leaves the panel-name gate as the floor.
  */
 export interface StatisticsKeyboardBridge {
   handlers: StatisticsKeyboardHandlers | null;
+  focused: boolean | null;
 }
 
 /** Clamps an index into `[0, count - 1]`; an empty list always yields 0. */
@@ -98,7 +104,7 @@ export function createStatisticsState(client: RpcCapable): StatisticsState {
   );
   let request = 0;
 
-  const totals = createMemo<StatisticsTotals | null>(() => {
+  const totals = (): StatisticsTotals | null => {
     const value = analysis();
     if (!value) return null;
     const source = value.totals;
@@ -111,9 +117,12 @@ export function createStatisticsState(client: RpcCapable): StatisticsState {
           ? source.turns
           : (value.turns?.length ?? 0),
     };
-  });
+  };
 
-  const turns = createMemo<readonly Turn[]>(() => analysis()?.turns ?? []);
+  // Plain accessors: each derives from the one analysis signal, so the view
+  // tracks it through JSX. This also keeps the state usable outside a Solid
+  // root, where `createMemo` would freeze at its first value.
+  const turns = (): readonly Turn[] => analysis()?.turns ?? [];
 
   function setSelectedIndex(index: number): void {
     setSelectedIndexSignal(clampIndex(index, turns().length));

@@ -20,7 +20,7 @@ import {
   formatNumber,
   formatPercent,
 } from "../../../core/format.ts";
-import { themePalette } from "../../tui.ts";
+import { bridgeFocus, themePalette } from "../../tui.ts";
 import {
   formatHeader,
   formatRow,
@@ -47,6 +47,8 @@ const FALLBACK_BACKGROUND = "#000000";
 export interface StatisticsPanelInput {
   readonly sessionID: string;
   readonly width: number;
+  /** Host-reported panel focus; `undefined` on hosts that do not publish it. */
+  readonly focused?: boolean;
 }
 
 function colorOf(palette: Palette, key: string): string {
@@ -251,6 +253,7 @@ function Table(props: {
 function StatisticsPanel(props: {
   sessionID: string;
   width: number;
+  focused?: boolean;
   keyboard: StatisticsKeyboardBridge;
 }) {
   const context = usePlugin();
@@ -273,7 +276,15 @@ function StatisticsPanel(props: {
   onCleanup(() => {
     if (props.keyboard.handlers === keyboardHandlers) {
       props.keyboard.handlers = null;
+      props.keyboard.focused = null;
     }
+  });
+
+  createEffect(() => {
+    // F-m3: the slot input reports whether the host gave this panel focus. A
+    // reported `false` closes the keymap gate; `undefined` (host does not
+    // publish the field) stays `null`, so the panel-name gate remains the floor.
+    props.keyboard.focused = bridgeFocus(props.focused);
   });
 
   createEffect(() => {
@@ -326,6 +337,7 @@ export function StatisticsView(props: {
   readonly context: Context;
   readonly sessionID: string;
   readonly width: number;
+  readonly focused?: boolean;
   readonly keyboard: StatisticsKeyboardBridge;
 }) {
   return (
@@ -333,6 +345,7 @@ export function StatisticsView(props: {
       <StatisticsPanel
         sessionID={props.sessionID}
         width={props.width}
+        focused={props.focused}
         keyboard={props.keyboard}
       />
     </PluginContextProvider>
@@ -353,6 +366,7 @@ export function statisticsPanelElement(
       context={context}
       sessionID={input.sessionID}
       width={input.width}
+      focused={input.focused}
       keyboard={keyboard}
     />
   );

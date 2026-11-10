@@ -50,9 +50,15 @@ export interface TrajectoryKeyboardHandlers {
  * Mutable hand-off between the keymap layer and the mounted panel. The panel
  * installs its handlers on mount and clears them on cleanup, so commands are
  * no-ops whenever the panel is not rendered.
+ *
+ * `focused` mirrors the host's `PanelInput.focused` (`null` when the host did
+ * not report it). The keymap layer refuses keys while it is `false`, so another
+ * focusable surface cannot leak keystrokes into the panel; an unreported value
+ * leaves the panel-name gate as the floor.
  */
 export interface TrajectoryKeyboardBridge {
   handlers: TrajectoryKeyboardHandlers | null;
+  focused: boolean | null;
 }
 
 /** The SDK slice the trajectory state reads. */

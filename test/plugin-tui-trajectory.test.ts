@@ -154,6 +154,7 @@ test("the fallback toasts once and hands over to the browser", () => {
 test("the keymap layer dispatches through the open panel's bridge", () => {
   const calls: string[] = [];
   const statistics: PanelKeyboardBridge = {
+    focused: null,
     handlers: {
       moveSelection: (delta) => {
         calls.push(`statistics:${delta}`);
@@ -164,6 +165,7 @@ test("the keymap layer dispatches through the open panel's bridge", () => {
     },
   };
   const trajectory: PanelKeyboardBridge = {
+    focused: null,
     handlers: {
       moveSelection: (delta) => {
         calls.push(`trajectory:${delta}`);
@@ -184,6 +186,48 @@ test("the keymap layer dispatches through the open panel's bridge", () => {
   active("trajectory")?.handlers?.moveSelection(1);
   active("statistics")?.handlers?.toggleExpand();
   assert.deepEqual(calls, ["trajectory:1", "statistics:toggle"]);
+});
+
+test("the keymap gate rejects keys while the open panel is unfocused (F-m3)", () => {
+  const unfocused: PanelKeyboardBridge = { handlers: null, focused: false };
+  const focused: PanelKeyboardBridge = { handlers: null, focused: true };
+  const unreported: PanelKeyboardBridge = { handlers: null, focused: null };
+
+  // A reported `false` closes the gate even though the panel is open.
+  assert.equal(
+    activePanelKeyboard("statistics", {
+      statistics: unfocused,
+      trajectory: focused,
+    }),
+    null,
+  );
+
+  // A reported `true` keeps the name gate open.
+  assert.equal(
+    activePanelKeyboard("trajectory", {
+      statistics: unfocused,
+      trajectory: focused,
+    }),
+    focused,
+  );
+
+  // Unreported focus keeps the panel-name gate as the floor (host-dependent).
+  assert.equal(
+    activePanelKeyboard("statistics", {
+      statistics: unreported,
+      trajectory: focused,
+    }),
+    unreported,
+  );
+
+  // Unknown or closed panels still yield no bridge.
+  assert.equal(
+    activePanelKeyboard("home", {
+      statistics: focused,
+      trajectory: focused,
+    }),
+    null,
+  );
 });
 
 test("both panels claim session.panel without colliding", async () => {

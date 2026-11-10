@@ -1,5 +1,5 @@
 import { createComponent, createElement, setProp, insert, insertNode, createTextNode, effect, memo } from '@opentui/solid';
-import { createSignal, createMemo, untrack, onMount, onCleanup, createEffect, Show, For } from 'solid-js';
+import { createSignal, untrack, createMemo, onMount, onCleanup, createEffect, Show, For } from 'solid-js';
 import { PluginContextProvider, usePlugin } from '@opencode/plugin/tui';
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
@@ -277,10 +277,13 @@ function openPanelOrFallback(panel, open, toast, browserFallback) {
   void browserFallback();
   return false;
 }
+function bridgeFocus(value) {
+  return typeof value === "boolean" ? value : null;
+}
 function activePanelKeyboard(name, bridges) {
-  if (name === STATISTICS_PANEL) return bridges.statistics;
-  if (name === TRAJECTORY_PANEL) return bridges.trajectory;
-  return null;
+  const bridge = name === STATISTICS_PANEL ? bridges.statistics : name === TRAJECTORY_PANEL ? bridges.trajectory : null;
+  if (!bridge) return null;
+  return bridge.focused === false ? null : bridge;
 }
 const WEB_FLAGS = /* @__PURE__ */ new Set(["--web", "-w", "web"]);
 function parseStatsArg(input) {
@@ -433,8 +436,14 @@ const tui = defineTuiPlugin({
     const { statusBadgeElement } = await Promise.resolve().then(() => statusBadge);
     const openStatisticsPanel = () => context.ui.panel.open(STATISTICS_PANEL, { presentation: "fullscreen" });
     const openTrajectoryPanel = () => context.ui.panel.open(TRAJECTORY_PANEL, { presentation: "fullscreen" });
-    const statisticsKeyboard = { handlers: null };
-    const trajectoryKeyboard = { handlers: null };
+    const statisticsKeyboard = {
+      handlers: null,
+      focused: null
+    };
+    const trajectoryKeyboard = {
+      handlers: null,
+      focused: null
+    };
     context.ui.slot({
       append: "session.panel",
       render: (input) => input.name === STATISTICS_PANEL ? statisticsPanelElement(context, input, statisticsKeyboard) : null
@@ -760,8 +769,10 @@ function turnCellValues(turn) {
   };
 }
 function padCell$1(id, value) {
-  if (id === "status") return value.padEnd(columnWidth(id));
-  return value.padStart(columnWidth(id));
+  const width = columnWidth(id);
+  const clipped = value.length > width ? `${value.slice(0, Math.max(0, width - 1))}…` : value;
+  if (id === "status") return clipped.padEnd(width);
+  return clipped.padStart(width);
 }
 function formatHeader(columns) {
   return `  ${columns.map((id) => padCell$1(id, columnLabel(id))).join(" ")}`;
@@ -1138,7 +1149,7 @@ function createStatisticsState(client) {
     /* @__PURE__ */ new Set()
   );
   let request = 0;
-  const totals = createMemo(() => {
+  const totals = () => {
     const value = analysis();
     if (!value) return null;
     const source = value.totals;
@@ -1148,8 +1159,8 @@ function createStatisticsState(client) {
       cost: asMetric(source?.cost),
       turns: typeof source?.turns === "number" ? source.turns : value.turns?.length ?? 0
     };
-  });
-  const turns = createMemo(() => analysis()?.turns ?? []);
+  };
+  const turns = () => analysis()?.turns ?? [];
   function setSelectedIndex(index) {
     setSelectedIndexSignal(clampIndex(index, turns().length));
   }
@@ -1482,7 +1493,11 @@ function StatisticsPanel(props) {
   onCleanup(() => {
     if (props.keyboard.handlers === keyboardHandlers) {
       props.keyboard.handlers = null;
+      props.keyboard.focused = null;
     }
+  });
+  createEffect(() => {
+    props.keyboard.focused = bridgeFocus(props.focused);
   });
   createEffect(() => {
     const sessionID = props.sessionID;
@@ -1563,6 +1578,9 @@ function StatisticsView(props) {
         get width() {
           return props.width;
         },
+        get focused() {
+          return props.focused;
+        },
         get keyboard() {
           return props.keyboard;
         }
@@ -1578,6 +1596,9 @@ function statisticsPanelElement(context, input, keyboard) {
     },
     get width() {
       return input.width;
+    },
+    get focused() {
+      return input.focused;
     },
     keyboard
   });
@@ -1900,7 +1921,11 @@ function TrajectoryPanel(props) {
   onCleanup(() => {
     if (props.keyboard.handlers === keyboardHandlers) {
       props.keyboard.handlers = null;
+      props.keyboard.focused = null;
     }
+  });
+  createEffect(() => {
+    props.keyboard.focused = bridgeFocus(props.focused);
   });
   createEffect(() => {
     const sessionID = props.sessionID;
@@ -1981,6 +2006,9 @@ function TrajectoryView(props) {
         get width() {
           return props.width;
         },
+        get focused() {
+          return props.focused;
+        },
         get keyboard() {
           return props.keyboard;
         }
@@ -1996,6 +2024,9 @@ function trajectoryPanelElement(context, input, keyboard) {
     },
     get width() {
       return input.width;
+    },
+    get focused() {
+      return input.focused;
     },
     keyboard
   });
@@ -2043,4 +2074,4 @@ const statusBadge = /*#__PURE__*/Object.freeze(/*#__PURE__*/Object.definePropert
   statusBadgeElement
 }, Symbol.toStringTag, { value: 'Module' }));
 
-export { PANEL_FALLBACK, STATISTICS_PANEL, STATISTICS_ROUTE, TRAJECTORY_PANEL, TRAJECTORY_ROUTE, activePanelKeyboard, baseUrl, buildTuiUrl, currentSessionID, tui as default, fetchSessionStatus, formatStatusBadge, hasNativeView, openNativeStatistics, openPanelOrFallback, parseStatsArg, pluginToken, reachable, registerNativeView, statusBadgeText, themePalette, tokenFromFile, tuiCommandDefinitions };
+export { PANEL_FALLBACK, STATISTICS_PANEL, STATISTICS_ROUTE, TRAJECTORY_PANEL, TRAJECTORY_ROUTE, activePanelKeyboard, baseUrl, bridgeFocus, buildTuiUrl, currentSessionID, tui as default, fetchSessionStatus, formatStatusBadge, hasNativeView, openNativeStatistics, openPanelOrFallback, parseStatsArg, pluginToken, reachable, registerNativeView, statusBadgeText, themePalette, tokenFromFile, tuiCommandDefinitions };

@@ -116,15 +116,28 @@ export function openPanelOrFallback(
 
 /**
  * The keyboard bridge of the panel currently open, or `null` when the open
- * panel is not one of ours. The keymap layer dispatches through this, so both
- * native panels share the same bindings without seeing each other's handlers.
+ * panel is not one of ours or is not focused. The keymap layer dispatches
+ * through this, so both native panels share the same bindings without seeing
+ * each other's handlers and without claiming keys while another surface owns
+ * focus.
  */
 export type PanelKeyboardBridge = {
   handlers: {
     moveSelection(delta: number): void;
     toggleExpand(): void;
   } | null;
+  /** Host-reported focus: `false` blocks keys, `null` means unreported. */
+  focused: boolean | null;
 };
+
+/**
+ * Normalizes the host's `PanelInput.focused` for a bridge: only a real boolean
+ * is authoritative. `undefined` (an older host that does not publish the field)
+ * stays `null`, leaving the panel-name gate as the floor.
+ */
+export function bridgeFocus(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
 
 export function activePanelKeyboard(
   name: string | undefined,
@@ -133,9 +146,15 @@ export function activePanelKeyboard(
     readonly trajectory: PanelKeyboardBridge;
   },
 ): PanelKeyboardBridge | null {
-  if (name === STATISTICS_PANEL) return bridges.statistics;
-  if (name === TRAJECTORY_PANEL) return bridges.trajectory;
-  return null;
+  const bridge =
+    name === STATISTICS_PANEL
+      ? bridges.statistics
+      : name === TRAJECTORY_PANEL
+        ? bridges.trajectory
+        : null;
+  if (!bridge) return null;
+  // The name gate is the floor; a reported `focused: false` closes it.
+  return bridge.focused === false ? null : bridge;
 }
 
 /** Where `/statistics` should render: the TUI route, or the local web UI. */
@@ -393,8 +412,14 @@ export default defineTuiPlugin({
      * only forwards. When a panel is closed or not mounted, every command is a
      * no-op even before the `enabled` gate is considered.
      */
-    const statisticsKeyboard: StatisticsKeyboardBridge = { handlers: null };
-    const trajectoryKeyboard: TrajectoryKeyboardBridge = { handlers: null };
+    const statisticsKeyboard: StatisticsKeyboardBridge = {
+      handlers: null,
+      focused: null,
+    };
+    const trajectoryKeyboard: TrajectoryKeyboardBridge = {
+      handlers: null,
+      focused: null,
+    };
 
     context.ui.slot({
       append: "session.panel",
@@ -515,8 +540,10 @@ export default defineTuiPlugin({
      * permanently registered but gated on `ui.panel.current()`, so it only
      * claims keys while one of this plugin's panels is open; dispatch resolves
      * the active panel's bridge, so the two panels never see each other's
-     * handlers. `priority` makes it win over host bindings such as `escape`.
-     * The focus gate from the hardening phase is intentionally not applied yet.
+     * handlers. A reported `input.focused: false` also closes the gate, so keys
+     * cannot leak while the host focuses another surface; hosts that do not
+     * publish the field keep the panel-name gate as the floor. `priority` makes
+     * the layer win over host bindings such as `escape`.
      */
     context.keymap.layer(() => ({
       enabled: () => activeKeyboard() !== null,
