@@ -254,36 +254,70 @@ async function statusBadgeText(context, sessionID, options = {}) {
 }
 
 const STATISTICS_PANEL = "statistics";
+const TRAJECTORY_PANEL = "trajectory";
+const PANEL_FALLBACK = {
+  statistics: {
+    message: "No session is selected, so there is no statistics to show.",
+    variant: "warning"
+  },
+  trajectory: {
+    message: "No session is selected, so there is no trajectory to show.",
+    variant: "info"
+  }
+};
+function openPanelOrFallback(panel, open, toast, browserFallback) {
+  if (open()) return true;
+  const copy = PANEL_FALLBACK[panel];
+  toast({
+    title: "Session observability",
+    message: copy.message,
+    variant: copy.variant,
+    duration: 6e3
+  });
+  void browserFallback();
+  return false;
+}
+function activePanelKeyboard(name, bridges) {
+  if (name === STATISTICS_PANEL) return bridges.statistics;
+  if (name === TRAJECTORY_PANEL) return bridges.trajectory;
+  return null;
+}
 const WEB_FLAGS = /* @__PURE__ */ new Set(["--web", "-w", "web"]);
 function parseStatsArg(input) {
   if (typeof input !== "string") return "native";
   return WEB_FLAGS.has(input.trim().toLowerCase()) ? "web" : "native";
 }
-function tuiCommandDefinitions(openView, openNative = (browserFallback) => browserFallback()) {
+function tuiCommandDefinitions(openView, openNative = (browserFallback) => browserFallback(), openNativeTrajectory = (browserFallback) => browserFallback()) {
   const openStatistics = (input) => {
     if (parseStatsArg(input) === "web") {
       return openView("statistics");
     }
     return openNative(() => openView("statistics"));
   };
+  const openTrajectory = (input) => {
+    if (parseStatsArg(input) === "web") {
+      return openView("trajectory");
+    }
+    return openNativeTrajectory(() => openView("trajectory"));
+  };
   return [
     {
       id: "observability.open",
       title: "Open session observability",
-      description: "Open the local Trajectory/Statistics UI",
+      description: "Open the native Trajectory view; add --web for the local web UI",
       group: "Observability",
       palette: true,
-      slash: { name: "observability", aliases: ["obs"] },
-      run: () => openView("trajectory")
+      slash: { name: "observability", aliases: ["obs"], arguments: true },
+      run: openTrajectory
     },
     {
       id: "observability.trajectory",
       title: "Open session Trajectory",
-      description: "Open the event ledger for the current session",
+      description: "Open the native Trajectory view; add --web for the local web UI",
       group: "Observability",
       palette: true,
-      slash: { name: "trajectory" },
-      run: () => openView("trajectory")
+      slash: { name: "trajectory", arguments: true },
+      run: openTrajectory
     },
     {
       id: "observability.statistics",
@@ -395,12 +429,19 @@ const tui = defineTuiPlugin({
   async setup(context) {
     const base = baseUrl(context.options.url);
     const { statisticsPanelElement } = await Promise.resolve().then(() => StatisticsView$1);
+    const { trajectoryPanelElement } = await Promise.resolve().then(() => TrajectoryView$1);
     const { statusBadgeElement } = await Promise.resolve().then(() => statusBadge);
     const openStatisticsPanel = () => context.ui.panel.open(STATISTICS_PANEL, { presentation: "fullscreen" });
+    const openTrajectoryPanel = () => context.ui.panel.open(TRAJECTORY_PANEL, { presentation: "fullscreen" });
     const statisticsKeyboard = { handlers: null };
+    const trajectoryKeyboard = { handlers: null };
     context.ui.slot({
       append: "session.panel",
       render: (input) => input.name === STATISTICS_PANEL ? statisticsPanelElement(context, input, statisticsKeyboard) : null
+    });
+    context.ui.slot({
+      append: "session.panel",
+      render: (input) => input.name === TRAJECTORY_PANEL ? trajectoryPanelElement(context, input, trajectoryKeyboard) : null
     });
     context.ui.slot({
       append: "prompt.footer.status",
@@ -451,53 +492,67 @@ const tui = defineTuiPlugin({
         variant: "success"
       });
     };
+    const keymapBridges = {
+      statistics: statisticsKeyboard,
+      trajectory: trajectoryKeyboard
+    };
+    const activeKeyboard = () => activePanelKeyboard(context.ui.panel.current()?.name, keymapBridges);
     context.keymap.layer(() => ({
-      commands: tuiCommandDefinitions(openView, (browserFallback) => {
-        if (openStatisticsPanel()) return;
-        context.ui.toast.show({
-          title: "Session observability",
-          message: "No session is selected, so there is no statistics to show.",
-          variant: "warning",
-          duration: 6e3
-        });
-        return browserFallback();
-      })
+      commands: tuiCommandDefinitions(
+        openView,
+        (browserFallback) => {
+          openPanelOrFallback(
+            "statistics",
+            openStatisticsPanel,
+            (options) => context.ui.toast.show(options),
+            browserFallback
+          );
+        },
+        (browserFallback) => {
+          openPanelOrFallback(
+            "trajectory",
+            openTrajectoryPanel,
+            (options) => context.ui.toast.show(options),
+            browserFallback
+          );
+        }
+      )
     }));
     context.keymap.layer(() => ({
-      enabled: () => context.ui.panel.current()?.name === STATISTICS_PANEL,
+      enabled: () => activeKeyboard() !== null,
       priority: 10,
       commands: [
         {
-          id: "statistics.moveDown",
-          title: "Statistics: select next turn",
-          group: "Statistics",
+          id: "panel.moveDown",
+          title: "Session panel: select next turn",
+          group: "Session panel",
           bind: "j,down",
           run: () => {
-            statisticsKeyboard.handlers?.moveSelection(1);
+            activeKeyboard()?.handlers?.moveSelection(1);
           }
         },
         {
-          id: "statistics.moveUp",
-          title: "Statistics: select previous turn",
-          group: "Statistics",
+          id: "panel.moveUp",
+          title: "Session panel: select previous turn",
+          group: "Session panel",
           bind: "k,up",
           run: () => {
-            statisticsKeyboard.handlers?.moveSelection(-1);
+            activeKeyboard()?.handlers?.moveSelection(-1);
           }
         },
         {
-          id: "statistics.toggleExpand",
-          title: "Statistics: expand or collapse the selected turn",
-          group: "Statistics",
+          id: "panel.toggleExpand",
+          title: "Session panel: expand or collapse the selected turn",
+          group: "Session panel",
           bind: "return",
           run: () => {
-            statisticsKeyboard.handlers?.toggleExpand();
+            activeKeyboard()?.handlers?.toggleExpand();
           }
         },
         {
-          id: "statistics.close",
-          title: "Statistics: close the panel",
-          group: "Statistics",
+          id: "panel.close",
+          title: "Session panel: close the panel",
+          group: "Session panel",
           bind: "escape",
           run: () => {
             context.ui.panel.close();
@@ -1023,18 +1078,6 @@ const Observability = defineRpc({
   events: {}
 });
 
-function clampIndex(index, count) {
-  const total = Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0;
-  if (total === 0) return 0;
-  const value = Number.isFinite(index) ? Math.trunc(index) : 0;
-  return Math.min(Math.max(value, 0), total - 1);
-}
-function moveSelection(current, delta, count) {
-  const step = Number.isFinite(delta) ? Math.trunc(delta) : 0;
-  const base = Number.isFinite(current) ? Math.trunc(current) : 0;
-  return clampIndex(base + step, count);
-}
-const UNAVAILABLE = { value: null, basis: "unavailable" };
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -1068,6 +1111,19 @@ function parseAnalysisResponse(response) {
     message: "The analysis response was not recognized."
   };
 }
+
+function clampIndex(index, count) {
+  const total = Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0;
+  if (total === 0) return 0;
+  const value = Number.isFinite(index) ? Math.trunc(index) : 0;
+  return Math.min(Math.max(value, 0), total - 1);
+}
+function moveSelection(current, delta, count) {
+  const step = Number.isFinite(delta) ? Math.trunc(delta) : 0;
+  const base = Number.isFinite(current) ? Math.trunc(current) : 0;
+  return clampIndex(base + step, count);
+}
+const UNAVAILABLE = { value: null, basis: "unavailable" };
 function asMetric(value) {
   return value ?? UNAVAILABLE;
 }
@@ -1179,13 +1235,13 @@ function createStatisticsState(client) {
   };
 }
 
-const FALLBACK_FOREGROUND = "#ffffff";
-const FALLBACK_BACKGROUND = "#000000";
-function colorOf(palette, key) {
-  return palette[key] ?? palette.text ?? palette.text2 ?? FALLBACK_FOREGROUND;
+const FALLBACK_FOREGROUND$1 = "#ffffff";
+const FALLBACK_BACKGROUND$1 = "#000000";
+function colorOf$1(palette, key) {
+  return palette[key] ?? palette.text ?? palette.text2 ?? FALLBACK_FOREGROUND$1;
 }
-function backgroundOf(palette) {
-  return palette.page ?? FALLBACK_BACKGROUND;
+function backgroundOf$1(palette) {
+  return palette.page ?? FALLBACK_BACKGROUND$1;
 }
 function bannerMetric(metric, formatter) {
   if (!metric || metric.value === null || !Number.isFinite(metric.value)) {
@@ -1229,7 +1285,7 @@ function Banner(props) {
       get children() {
         var _el$7 = createElement("text");
         insertNode(_el$7, createTextNode(`redacted`));
-        effect((_$p) => setProp(_el$7, "fg", colorOf(props.palette, "warning"), _$p));
+        effect((_$p) => setProp(_el$7, "fg", colorOf$1(props.palette, "warning"), _$p));
         return _el$7;
       }
     }), _el$9);
@@ -1243,7 +1299,7 @@ function Banner(props) {
     insert(_el$10, () => `Cache hit ${bannerMetric(props.totals?.cacheHitRate, formatPercent)}`);
     insert(_el$11, () => `Cost ${bannerMetric(props.totals?.cost, formatCost)}`);
     effect((_p$) => {
-      var _v$ = colorOf(props.palette, "text2"), _v$2 = colorOf(props.palette, "text"), _v$3 = colorOf(props.palette, status().paletteKey), _v$4 = colorOf(props.palette, "muted"), _v$5 = colorOf(props.palette, "text"), _v$6 = colorOf(props.palette, "text"), _v$7 = colorOf(props.palette, "text");
+      var _v$ = colorOf$1(props.palette, "text2"), _v$2 = colorOf$1(props.palette, "text"), _v$3 = colorOf$1(props.palette, status().paletteKey), _v$4 = colorOf$1(props.palette, "muted"), _v$5 = colorOf$1(props.palette, "text"), _v$6 = colorOf$1(props.palette, "text"), _v$7 = colorOf$1(props.palette, "text");
       _v$ !== _p$.e && (_p$.e = setProp(_el$3, "fg", _v$, _p$.e));
       _v$2 !== _p$.t && (_p$.t = setProp(_el$5, "fg", _v$2, _p$.t));
       _v$3 !== _p$.a && (_p$.a = setProp(_el$6, "fg", _v$3, _p$.a));
@@ -1264,7 +1320,7 @@ function Banner(props) {
     return _el$;
   })();
 }
-function StateMessage(props) {
+function StateMessage$1(props) {
   return (() => {
     var _el$12 = createElement("box");
     setProp(_el$12, "flexDirection", "column");
@@ -1278,7 +1334,7 @@ function StateMessage(props) {
       get children() {
         var _el$13 = createElement("text");
         insertNode(_el$13, createTextNode(`Loading…`));
-        effect((_$p) => setProp(_el$13, "fg", colorOf(props.palette, "muted"), _$p));
+        effect((_$p) => setProp(_el$13, "fg", colorOf$1(props.palette, "muted"), _$p));
         return _el$13;
       }
     }), null);
@@ -1290,12 +1346,12 @@ function StateMessage(props) {
         return [(() => {
           var _el$15 = createElement("text");
           insert(_el$15, () => props.state.error());
-          effect((_$p) => setProp(_el$15, "fg", colorOf(props.palette, "critical"), _$p));
+          effect((_$p) => setProp(_el$15, "fg", colorOf$1(props.palette, "critical"), _$p));
           return _el$15;
         })(), (() => {
           var _el$16 = createElement("text");
           insertNode(_el$16, createTextNode(`Reopen the panel to retry.`));
-          effect((_$p) => setProp(_el$16, "fg", colorOf(props.palette, "muted"), _$p));
+          effect((_$p) => setProp(_el$16, "fg", colorOf$1(props.palette, "muted"), _$p));
           return _el$16;
         })()];
       }
@@ -1307,7 +1363,7 @@ function StateMessage(props) {
       get children() {
         var _el$18 = createElement("text");
         insertNode(_el$18, createTextNode(`Preparing…`));
-        effect((_$p) => setProp(_el$18, "fg", colorOf(props.palette, "muted"), _$p));
+        effect((_$p) => setProp(_el$18, "fg", colorOf$1(props.palette, "muted"), _$p));
         return _el$18;
       }
     }), null);
@@ -1323,7 +1379,7 @@ function Table(props) {
       return (() => {
         var _el$22 = createElement("text");
         insertNode(_el$22, createTextNode(`No turns for this session.`));
-        effect((_$p) => setProp(_el$22, "fg", colorOf(props.palette, "muted"), _$p));
+        effect((_$p) => setProp(_el$22, "fg", colorOf$1(props.palette, "muted"), _$p));
         return _el$22;
       })();
     },
@@ -1332,7 +1388,7 @@ function Table(props) {
         var _el$20 = createElement("text");
         setProp(_el$20, "wrapMode", "none");
         insert(_el$20, () => formatHeader(props.layout.columns));
-        effect((_$p) => setProp(_el$20, "fg", colorOf(props.palette, "text2"), _$p));
+        effect((_$p) => setProp(_el$20, "fg", colorOf$1(props.palette, "text2"), _$p));
         return _el$20;
       })(), (() => {
         var _el$21 = createElement("scrollbox");
@@ -1356,7 +1412,7 @@ function Table(props) {
               setProp(_el$26, "wrapMode", "none");
               insert(_el$26, () => row().status);
               effect((_p$) => {
-                var _v$8 = colorOf(props.palette, selected() ? "accent" : "text"), _v$9 = colorOf(props.palette, statusMark(turn.status).paletteKey);
+                var _v$8 = colorOf$1(props.palette, selected() ? "accent" : "text"), _v$9 = colorOf$1(props.palette, statusMark(turn.status).paletteKey);
                 _v$8 !== _p$.e && (_p$.e = setProp(_el$25, "fg", _v$8, _p$.e));
                 _v$9 !== _p$.t && (_p$.t = setProp(_el$26, "fg", _v$9, _p$.t));
                 return _p$;
@@ -1386,7 +1442,7 @@ function Table(props) {
                       setProp(_el$29, "wrapMode", "none");
                       insert(_el$29, () => stepRow().status);
                       effect((_p$) => {
-                        var _v$0 = colorOf(props.palette, "text2"), _v$1 = colorOf(props.palette, statusMark(step.status).paletteKey);
+                        var _v$0 = colorOf$1(props.palette, "text2"), _v$1 = colorOf$1(props.palette, statusMark(step.status).paletteKey);
                         _v$0 !== _p$.e && (_p$.e = setProp(_el$28, "fg", _v$0, _p$.e));
                         _v$1 !== _p$.t && (_p$.t = setProp(_el$29, "fg", _v$1, _p$.t));
                         return _p$;
@@ -1402,7 +1458,7 @@ function Table(props) {
             })];
           }
         }));
-        effect((_$p) => setProp(_el$21, "backgroundColor", backgroundOf(props.palette), _$p));
+        effect((_$p) => setProp(_el$21, "backgroundColor", backgroundOf$1(props.palette), _$p));
         return _el$21;
       })()];
     }
@@ -1442,7 +1498,7 @@ function StatisticsPanel(props) {
         return state.analysis();
       },
       get fallback() {
-        return createComponent(StateMessage, {
+        return createComponent(StateMessage$1, {
           state,
           get palette() {
             return palette();
@@ -1485,12 +1541,12 @@ function StatisticsPanel(props) {
         get children() {
           var _el$31 = createElement("text");
           insertNode(_el$31, createTextNode(`Loading…`));
-          effect((_$p) => setProp(_el$31, "fg", colorOf(palette(), "muted"), _$p));
+          effect((_$p) => setProp(_el$31, "fg", colorOf$1(palette(), "muted"), _$p));
           return _el$31;
         }
       })]
     }));
-    effect((_$p) => setProp(_el$30, "backgroundColor", backgroundOf(palette()), _$p));
+    effect((_$p) => setProp(_el$30, "backgroundColor", backgroundOf$1(palette()), _$p));
     return _el$30;
   })();
 }
@@ -1533,6 +1589,424 @@ const StatisticsView$1 = /*#__PURE__*/Object.freeze(/*#__PURE__*/Object.definePr
   statisticsPanelElement
 }, Symbol.toStringTag, { value: 'Module' }));
 
+function createTrajectoryState(client) {
+  const rpc = client.rpc(Observability);
+  const [analysis, setAnalysis] = createSignal(null);
+  const [loading, setLoading] = createSignal(false);
+  const [error, setError] = createSignal(null);
+  const [sessionID, setSessionID] = createSignal("");
+  const [selectedIndex, setSelectedIndexSignal] = createSignal(0);
+  const [expandedTurns, setExpandedTurns] = createSignal(
+    /* @__PURE__ */ new Set()
+  );
+  let request = 0;
+  const turns = () => analysis()?.turns ?? [];
+  function setSelectedIndex(index) {
+    setSelectedIndexSignal(clampIndex(index, turns().length));
+  }
+  function moveSelectionBy(delta) {
+    setSelectedIndexSignal(
+      (current) => moveSelection(current, delta, turns().length)
+    );
+  }
+  function toggleTurnExpand(turnID) {
+    const id = typeof turnID === "string" ? turnID.trim() : "";
+    if (id.length === 0) return;
+    setExpandedTurns((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  function isSelected(turn) {
+    const list = turns();
+    const index = selectedIndex();
+    return index >= 0 && index < list.length && list[index] === turn;
+  }
+  function reconcile(analysisValue) {
+    const list = analysisValue.turns ?? [];
+    setSelectedIndexSignal((current) => clampIndex(current, list.length));
+    const alive = new Set(list.map((turn) => turn.id));
+    setExpandedTurns((current) => {
+      const next = new Set([...current].filter((id) => alive.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }
+  async function fetchAnalysis(nextSessionID) {
+    const target = typeof nextSessionID === "string" ? nextSessionID.trim() : "";
+    const ticket = ++request;
+    const previous = untrack(sessionID);
+    if (target !== previous) {
+      setSelectedIndexSignal(0);
+      setExpandedTurns(/* @__PURE__ */ new Set());
+    }
+    setSessionID(target);
+    setAnalysis(null);
+    setError(null);
+    if (target.length === 0) {
+      setLoading(false);
+      setError("No session is selected.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const response = await rpc.analysis({ sessionID: target });
+      if (ticket !== request) return;
+      const parsed = parseAnalysisResponse(response);
+      if (!parsed.ok) {
+        setAnalysis(null);
+        setError(parsed.message);
+        return;
+      }
+      reconcile(parsed.analysis);
+      setAnalysis(parsed.analysis);
+    } catch {
+      if (ticket !== request) return;
+      setAnalysis(null);
+      setError("The analysis could not be loaded. Reopen the panel to retry.");
+    } finally {
+      if (ticket === request) setLoading(false);
+    }
+  }
+  return {
+    analysis,
+    loading,
+    error,
+    sessionID,
+    selectedIndex,
+    expandedTurns,
+    turns,
+    setSelectedIndex,
+    moveSelection: moveSelectionBy,
+    toggleTurnExpand,
+    isSelected,
+    fetchAnalysis
+  };
+}
+
+const FALLBACK_FOREGROUND = "#ffffff";
+const FALLBACK_BACKGROUND = "#000000";
+function colorOf(palette, key) {
+  return palette[key] ?? palette.text ?? palette.text2 ?? FALLBACK_FOREGROUND;
+}
+function backgroundOf(palette) {
+  return palette.page ?? FALLBACK_BACKGROUND;
+}
+function Header(props) {
+  const sessionID = () => props.analysis.session?.id ?? "unknown session";
+  return (() => {
+    var _el$ = createElement("box"), _el$2 = createElement("box"), _el$3 = createElement("text"), _el$5 = createElement("text"), _el$8 = createElement("text"), _el$9 = createElement("text");
+    insertNode(_el$, _el$2);
+    insertNode(_el$, _el$9);
+    setProp(_el$, "flexDirection", "column");
+    setProp(_el$, "flexShrink", 0);
+    setProp(_el$, "marginBottom", 1);
+    insertNode(_el$2, _el$3);
+    insertNode(_el$2, _el$5);
+    insertNode(_el$2, _el$8);
+    setProp(_el$2, "flexDirection", "row");
+    setProp(_el$2, "gap", 1);
+    insertNode(_el$3, createTextNode(`Session`));
+    insert(_el$5, sessionID);
+    insert(_el$2, createComponent(Show, {
+      get when() {
+        return props.analysis.redacted;
+      },
+      get children() {
+        var _el$6 = createElement("text");
+        insertNode(_el$6, createTextNode(`redacted`));
+        effect((_$p) => setProp(_el$6, "fg", colorOf(props.palette, "warning"), _$p));
+        return _el$6;
+      }
+    }), _el$8);
+    insert(_el$8, () => `${props.turns} turns`);
+    insertNode(_el$9, createTextNode(`Turn ledger · expand a turn to see its steps`));
+    effect((_p$) => {
+      var _v$ = colorOf(props.palette, "text2"), _v$2 = colorOf(props.palette, "text"), _v$3 = colorOf(props.palette, "muted"), _v$4 = colorOf(props.palette, "muted");
+      _v$ !== _p$.e && (_p$.e = setProp(_el$3, "fg", _v$, _p$.e));
+      _v$2 !== _p$.t && (_p$.t = setProp(_el$5, "fg", _v$2, _p$.t));
+      _v$3 !== _p$.a && (_p$.a = setProp(_el$8, "fg", _v$3, _p$.a));
+      _v$4 !== _p$.o && (_p$.o = setProp(_el$9, "fg", _v$4, _p$.o));
+      return _p$;
+    }, {
+      e: void 0,
+      t: void 0,
+      a: void 0,
+      o: void 0
+    });
+    return _el$;
+  })();
+}
+function StateMessage(props) {
+  return (() => {
+    var _el$1 = createElement("box");
+    setProp(_el$1, "flexDirection", "column");
+    setProp(_el$1, "flexGrow", 1);
+    setProp(_el$1, "justifyContent", "center");
+    setProp(_el$1, "alignItems", "center");
+    insert(_el$1, createComponent(Show, {
+      get when() {
+        return props.state.loading();
+      },
+      get children() {
+        var _el$10 = createElement("text");
+        insertNode(_el$10, createTextNode(`Loading…`));
+        effect((_$p) => setProp(_el$10, "fg", colorOf(props.palette, "muted"), _$p));
+        return _el$10;
+      }
+    }), null);
+    insert(_el$1, createComponent(Show, {
+      get when() {
+        return memo(() => !!!props.state.loading())() && props.state.error();
+      },
+      get children() {
+        return [(() => {
+          var _el$12 = createElement("text");
+          insert(_el$12, () => props.state.error());
+          effect((_$p) => setProp(_el$12, "fg", colorOf(props.palette, "critical"), _$p));
+          return _el$12;
+        })(), (() => {
+          var _el$13 = createElement("text");
+          insertNode(_el$13, createTextNode(`Reopen the panel to retry.`));
+          effect((_$p) => setProp(_el$13, "fg", colorOf(props.palette, "muted"), _$p));
+          return _el$13;
+        })()];
+      }
+    }), null);
+    insert(_el$1, createComponent(Show, {
+      get when() {
+        return memo(() => !!!props.state.loading())() && !props.state.error();
+      },
+      get children() {
+        var _el$15 = createElement("text");
+        insertNode(_el$15, createTextNode(`Preparing…`));
+        effect((_$p) => setProp(_el$15, "fg", colorOf(props.palette, "muted"), _$p));
+        return _el$15;
+      }
+    }), null);
+    return _el$1;
+  })();
+}
+function TurnLedger(props) {
+  return createComponent(Show, {
+    get when() {
+      return props.turns.length > 0;
+    },
+    get fallback() {
+      return (() => {
+        var _el$19 = createElement("text");
+        insertNode(_el$19, createTextNode(`No turns for this session.`));
+        effect((_$p) => setProp(_el$19, "fg", colorOf(props.palette, "muted"), _$p));
+        return _el$19;
+      })();
+    },
+    get children() {
+      return [(() => {
+        var _el$17 = createElement("text");
+        setProp(_el$17, "wrapMode", "none");
+        insert(_el$17, () => formatHeader(props.layout.columns));
+        effect((_$p) => setProp(_el$17, "fg", colorOf(props.palette, "text2"), _$p));
+        return _el$17;
+      })(), (() => {
+        var _el$18 = createElement("scrollbox");
+        setProp(_el$18, "flexGrow", 1);
+        setProp(_el$18, "scrollY", true);
+        insert(_el$18, createComponent(For, {
+          get each() {
+            return props.turns;
+          },
+          children: (turn) => {
+            const selected = () => props.isSelected(turn);
+            const expanded = () => props.expanded.has(turn.id);
+            const row = () => formatRow(turn, props.layout.columns, selected(), expanded());
+            return [(() => {
+              var _el$21 = createElement("box"), _el$22 = createElement("text"), _el$23 = createElement("text");
+              insertNode(_el$21, _el$22);
+              insertNode(_el$21, _el$23);
+              setProp(_el$21, "flexDirection", "row");
+              setProp(_el$22, "wrapMode", "none");
+              insert(_el$22, () => row().prefix);
+              setProp(_el$23, "wrapMode", "none");
+              insert(_el$23, () => row().status);
+              effect((_p$) => {
+                var _v$5 = colorOf(props.palette, selected() ? "accent" : "text"), _v$6 = colorOf(props.palette, statusMark(turn.status).paletteKey);
+                _v$5 !== _p$.e && (_p$.e = setProp(_el$22, "fg", _v$5, _p$.e));
+                _v$6 !== _p$.t && (_p$.t = setProp(_el$23, "fg", _v$6, _p$.t));
+                return _p$;
+              }, {
+                e: void 0,
+                t: void 0
+              });
+              return _el$21;
+            })(), createComponent(Show, {
+              get when() {
+                return memo(() => !!expanded())() && (turn.steps?.length ?? 0) > 0;
+              },
+              get children() {
+                return createComponent(For, {
+                  get each() {
+                    return turn.steps ?? [];
+                  },
+                  children: (step) => {
+                    const stepRow = () => formatStepRow(step, props.layout.width);
+                    return (() => {
+                      var _el$24 = createElement("box"), _el$25 = createElement("text"), _el$26 = createElement("text");
+                      insertNode(_el$24, _el$25);
+                      insertNode(_el$24, _el$26);
+                      setProp(_el$24, "flexDirection", "row");
+                      setProp(_el$25, "wrapMode", "none");
+                      insert(_el$25, () => stepRow().prefix);
+                      setProp(_el$26, "wrapMode", "none");
+                      insert(_el$26, () => stepRow().status);
+                      effect((_p$) => {
+                        var _v$7 = colorOf(props.palette, "text2"), _v$8 = colorOf(props.palette, statusMark(step.status).paletteKey);
+                        _v$7 !== _p$.e && (_p$.e = setProp(_el$25, "fg", _v$7, _p$.e));
+                        _v$8 !== _p$.t && (_p$.t = setProp(_el$26, "fg", _v$8, _p$.t));
+                        return _p$;
+                      }, {
+                        e: void 0,
+                        t: void 0
+                      });
+                      return _el$24;
+                    })();
+                  }
+                });
+              }
+            })];
+          }
+        }));
+        effect((_$p) => setProp(_el$18, "backgroundColor", backgroundOf(props.palette), _$p));
+        return _el$18;
+      })()];
+    }
+  });
+}
+function TrajectoryPanel(props) {
+  const context = usePlugin();
+  const state = createTrajectoryState(context.client);
+  const palette = createMemo(() => themePalette(context) ?? {});
+  const currentLayout = createMemo(() => resolveLayout(props.width));
+  const keyboardHandlers = {
+    moveSelection: (delta) => state.moveSelection(delta),
+    toggleExpand: () => {
+      const turn = state.turns()[state.selectedIndex()];
+      if (turn) state.toggleTurnExpand(turn.id);
+    }
+  };
+  onMount(() => {
+    props.keyboard.handlers = keyboardHandlers;
+  });
+  onCleanup(() => {
+    if (props.keyboard.handlers === keyboardHandlers) {
+      props.keyboard.handlers = null;
+    }
+  });
+  createEffect(() => {
+    const sessionID = props.sessionID;
+    void state.fetchAnalysis(sessionID);
+  });
+  return (() => {
+    var _el$27 = createElement("box");
+    setProp(_el$27, "flexDirection", "column");
+    setProp(_el$27, "flexGrow", 1);
+    setProp(_el$27, "padding", 1);
+    insert(_el$27, createComponent(Show, {
+      get when() {
+        return state.analysis();
+      },
+      get fallback() {
+        return createComponent(StateMessage, {
+          state,
+          get palette() {
+            return palette();
+          }
+        });
+      },
+      children: (analysis) => [createComponent(Header, {
+        get analysis() {
+          return analysis();
+        },
+        get turns() {
+          return state.turns().length;
+        },
+        get palette() {
+          return palette();
+        }
+      }), createComponent(Show, {
+        get when() {
+          return state.loading();
+        },
+        get fallback() {
+          return createComponent(TurnLedger, {
+            get layout() {
+              return currentLayout();
+            },
+            get turns() {
+              return state.turns();
+            },
+            get isSelected() {
+              return state.isSelected;
+            },
+            get expanded() {
+              return state.expandedTurns();
+            },
+            get palette() {
+              return palette();
+            }
+          });
+        },
+        get children() {
+          var _el$28 = createElement("text");
+          insertNode(_el$28, createTextNode(`Loading…`));
+          effect((_$p) => setProp(_el$28, "fg", colorOf(palette(), "muted"), _$p));
+          return _el$28;
+        }
+      })]
+    }));
+    effect((_$p) => setProp(_el$27, "backgroundColor", backgroundOf(palette()), _$p));
+    return _el$27;
+  })();
+}
+function TrajectoryView(props) {
+  return createComponent(PluginContextProvider, {
+    get value() {
+      return props.context;
+    },
+    get children() {
+      return createComponent(TrajectoryPanel, {
+        get sessionID() {
+          return props.sessionID;
+        },
+        get width() {
+          return props.width;
+        },
+        get keyboard() {
+          return props.keyboard;
+        }
+      });
+    }
+  });
+}
+function trajectoryPanelElement(context, input, keyboard) {
+  return createComponent(TrajectoryView, {
+    context,
+    get sessionID() {
+      return input.sessionID;
+    },
+    get width() {
+      return input.width;
+    },
+    keyboard
+  });
+}
+
+const TrajectoryView$1 = /*#__PURE__*/Object.freeze(/*#__PURE__*/Object.defineProperty({
+  __proto__: null,
+  TrajectoryView,
+  trajectoryPanelElement
+}, Symbol.toStringTag, { value: 'Module' }));
+
 function StatusBadge(props) {
   const [line, setLine] = createSignal(null);
   createEffect(() => {
@@ -1569,4 +2043,4 @@ const statusBadge = /*#__PURE__*/Object.freeze(/*#__PURE__*/Object.definePropert
   statusBadgeElement
 }, Symbol.toStringTag, { value: 'Module' }));
 
-export { STATISTICS_ROUTE, TRAJECTORY_ROUTE, baseUrl, buildTuiUrl, currentSessionID, tui as default, fetchSessionStatus, formatStatusBadge, hasNativeView, openNativeStatistics, parseStatsArg, pluginToken, reachable, registerNativeView, statusBadgeText, themePalette, tokenFromFile, tuiCommandDefinitions };
+export { PANEL_FALLBACK, STATISTICS_PANEL, STATISTICS_ROUTE, TRAJECTORY_PANEL, TRAJECTORY_ROUTE, activePanelKeyboard, baseUrl, buildTuiUrl, currentSessionID, tui as default, fetchSessionStatus, formatStatusBadge, hasNativeView, openNativeStatistics, openPanelOrFallback, parseStatsArg, pluginToken, reachable, registerNativeView, statusBadgeText, themePalette, tokenFromFile, tuiCommandDefinitions };

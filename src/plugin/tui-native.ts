@@ -21,7 +21,15 @@ import type { Plugin as TuiSDK } from "@opencode/plugin/tui";
  */
 export const STATISTICS_ROUTE = "statistics";
 
-/** Plugin `Page.name` reserved for the Trajectory view. */
+/**
+ * Plugin `Page.name` reserved for the Trajectory view.
+ *
+ * The native Trajectory **panel** is the operative path (issue #6, decision
+ * D2): `/trajectory` and `/observability` open the fullscreen `session.panel`
+ * claimed in `tui.ts`, so no router page is registered in production. The
+ * constant stays exported and reserved for router-page compatibility, matching
+ * how `STATISTICS_ROUTE` is handled after decision D1.
+ */
 export const TRAJECTORY_ROUTE = "trajectory";
 
 /** Plugin id the TUI host registers for this plugin; plugin routes carry it. */
