@@ -122,6 +122,16 @@ The final row is labelled **Session total** when the loaded range covers the who
 
 On desktop, the `#`, Trigger and Status columns stay visible while the 19-column table scrolls horizontally. The frozen columns are released below 700 px so the narrow layout keeps its scroll area.
 
+## Episode comparison
+
+`Compare episodes` in the session tabs opens the `#compare` modal. Each side picks a session (the current session, its parent or a child) and one diagnostic episode — one tool's failure run within one turn, together with any recorded recovery. The modal aligns the two episodes by recorded ordinal: attempt 1 with attempt 1, attempt 2 with attempt 2, and so on, so a missing attempt stays visible as a one-sided row instead of shifting later attempts. When a side records a recovery, one trailing recovery row is aligned after the attempts; differing tools, attempt counts and recovery states are named per side.
+
+An alignment row shows the recorded status, the attempt duration Δ (left − right), the input comparability (`comparable`, `absent`, `truncated` or `redacted`) and, when both inputs are comparable, the similarity verdict and overlap. Input text is shown only under reveal; without reveal the block shows the redacted value as returned by the API, the row carries a redacted marker, and no similarity is guessed. Session totals and the selected turn's metrics carry cost, model time, tool time, output speed and cache hit rate, and the time span (labelled “Active turn time” for the session and “Total time” for the turn), followed by session and turn token rows (input, output, reasoning, cache read, cache write). Deltas are always left − right, and metric values keep the same provenance markers as elsewhere: `M` measured, `D` derived, `E` estimated, `—` unavailable. If token counts are incomplete on either side, the token deltas are unavailable rather than partial.
+
+Differences are reported descriptively. No attempt is designated as better.
+
+The modal reads `GET /api/episodes/compare` (with `GET /api/sessions/{id}/diagnostics` supplying the episode pickers); like `/analysis`, both are read-only and follow the same reveal gate for raw inputs.
+
 ## Access token
 
 By default every `/api` route except `/api/health` requires an access token. The printed URL carries it in the fragment (`#/?token=…` or `#/s/<id>/<view>?token=…`). On load the UI:
@@ -182,11 +192,25 @@ The session ID and event ID are URL-encoded. Opening a link loads the event page
 
 Shortcuts are ignored while typing in an input, textarea or select.
 
+### Compare modal keys
+
+These keys are local to the open compare modal. Global shortcuts are ignored while it is open, and no new global shortcuts were added.
+
+| Key | Action |
+|---|---|
+| `Esc` | Close the modal and return focus to the control that opened it |
+| `Tab` / `Shift+Tab` | Trap focus inside the modal |
+| `↑` / `↓` | Select the previous/next alignment row, wrapping at both ends |
+| `←` / `→` | Move between the left and right input blocks of the selected row |
+
+Arrow keys keep their native behaviour while a select or input has focus. The modal's help line repeats the same model: “Esc closes · Tab moves · ↑/↓ select an alignment row · ←/→ move between left and right inputs”.
+
 ## Accessibility
 
 - Text labels accompany every status/badge; color is never the only signal.
 - Focus-visible outlines; skip link; dialog roles and labels.
-- The drawer, Settings, Shortcuts and confirmation dialogs trap focus; closing returns focus to the control that opened them.
+- The drawer, Settings, Shortcuts, the compare modal (`#compare`) and confirmation dialogs trap focus; closing returns focus to the control that opened them.
+- The compare modal uses a 960 px card instead of the 520 px modal standard (`DESIGN.md:76`). The override is deliberate: side-by-side left/right comparison columns do not fit 520 px. The exception is recorded in the plan.
 - While a dialog or the drawer is open, other keyboard shortcuts are ignored so they cannot act on content behind it.
 - Multiple dark and light themes; system preference (`auto`) plus a manual picker in Settings.
 - Reduced-motion media query disables transitions.
