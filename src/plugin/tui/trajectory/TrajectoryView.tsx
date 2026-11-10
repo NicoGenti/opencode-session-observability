@@ -14,7 +14,7 @@ import {
 } from "@opencode/plugin/tui";
 
 import type { Analysis, Turn } from "../../../core/types.ts";
-import { themePalette } from "../../tui.ts";
+import { bridgeFocus, themePalette } from "../../tui.ts";
 import {
   formatHeader,
   formatRow,
@@ -40,6 +40,8 @@ const FALLBACK_BACKGROUND = "#000000";
 export interface TrajectoryPanelInput {
   readonly sessionID: string;
   readonly width: number;
+  /** Host-reported panel focus; `undefined` on hosts that do not publish it. */
+  readonly focused?: boolean;
 }
 
 function colorOf(palette: Palette, key: string): string {
@@ -204,6 +206,7 @@ function TurnLedger(props: {
 function TrajectoryPanel(props: {
   sessionID: string;
   width: number;
+  focused?: boolean;
   keyboard: TrajectoryKeyboardBridge;
 }) {
   const context = usePlugin();
@@ -226,7 +229,15 @@ function TrajectoryPanel(props: {
   onCleanup(() => {
     if (props.keyboard.handlers === keyboardHandlers) {
       props.keyboard.handlers = null;
+      props.keyboard.focused = null;
     }
+  });
+
+  createEffect(() => {
+    // F-m3: mirror the slot input's focus flag into the shared bridge. A
+    // reported `false` closes the keymap gate; `undefined` leaves the
+    // panel-name gate as the floor on hosts that do not publish the field.
+    props.keyboard.focused = bridgeFocus(props.focused);
   });
 
   createEffect(() => {
@@ -279,6 +290,7 @@ export function TrajectoryView(props: {
   readonly context: Context;
   readonly sessionID: string;
   readonly width: number;
+  readonly focused?: boolean;
   readonly keyboard: TrajectoryKeyboardBridge;
 }) {
   return (
@@ -286,6 +298,7 @@ export function TrajectoryView(props: {
       <TrajectoryPanel
         sessionID={props.sessionID}
         width={props.width}
+        focused={props.focused}
         keyboard={props.keyboard}
       />
     </PluginContextProvider>
@@ -306,6 +319,7 @@ export function trajectoryPanelElement(
       context={context}
       sessionID={input.sessionID}
       width={input.width}
+      focused={input.focused}
       keyboard={keyboard}
     />
   );

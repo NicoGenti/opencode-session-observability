@@ -197,7 +197,7 @@ The TUI commands are intentionally non-mutating: they resolve the current sessio
 
 - `state.ts` binds `context.client.rpc(Observability)` once, then issues one `analysis` request per panel open or session change: the effect reacts only to the panel input because the fetch reads no signal in its synchronous window. It keeps loading/error/empty states and drops stale responses with a request ticket.
 - `columns.ts` owns breakpoints and ordered column sets; `status.ts` owns the symbol/label/palette table; `stepRows.ts` owns accordion rows. All three are pure and SDK-free, so they are unit-tested directly.
-- A keyboard layer gated on the open panel name maps `j`/`Down`, `k`/`Up`, `Enter` and `Esc` to the bridge the mounted panel installs and clears (see the trajectory section for the shared layer). Keys are inert when the panel is closed, and `Esc` closes the panel rather than leaking to the host.
+- A keyboard layer gated on the open panel name maps `j`/`Down`, `k`/`Up`, `Enter` and `Esc` to the bridge the mounted panel installs and clears (see the trajectory section for the shared layer). Keys are inert when the panel is closed and also when the host reports the panel as unfocused (`input.focused === false`, F-m3); a host that does not publish `focused` keeps the panel-name gate as the floor. Manual check on a host: open a panel, give focus to another surface and press `j`/`Enter` — rows must not move; return focus and the keys respond. `Esc` closes the panel rather than leaking to the host.
 - The view resolves colours only through `themePalette` keys; a status symbol always accompanies the colour.
 
 ### Native trajectory panel
@@ -215,7 +215,7 @@ The TUI commands are intentionally non-mutating: they resolve the current sessio
 - `trajectory/state.ts` mirrors the statistics state (same request ticket, reconcile rules and error strings) and reuses `analysisResponse.ts` — the response parser factored out for both panels — plus `clampIndex` and `moveSelection`. `TrajectoryView.tsx` reuses `columns.ts`, `stepRows.ts` and `status.ts`, so both panels stay aligned.
 - Each `session.panel` claim renders only for its own panel id and returns `null` otherwise, so the host picks by name and the claims do not collide.
 - Without a selected session the panel opener returns `false`: the command shows one toast and falls back to the browser, and `--web` (also on `/observability`) always takes the browser path.
-- The keyboard layer is gated on `ui.panel.current()?.name` being either native panel and dispatches to that panel's bridge. The per-panel focus gate is deferred to the hardening phase.
+- The keyboard layer is gated on `ui.panel.current()?.name` being either native panel and dispatches to that panel's bridge; it also closes when the host reports the open panel as unfocused, with the name gate as the floor on hosts that do not expose `focused` (F-m3).
 
 ## Read-only guarantees
 
