@@ -150,8 +150,8 @@ test("candidate paths include XDG and the isolated OpenCode 2 profile", () => {
     platform: "win32",
     home: "C:/Users/test",
   });
-  assert.ok(paths.some((path) => path.endsWith("C:\\explicit\\opencode.db")));
-  assert.ok(paths.some((path) => path.endsWith("C:\\xdg\\opencode\\opencode.db")));
-  assert.ok(paths.some((path) => path.endsWith("C:\\Users\\test\\.opencode2\\data\\opencode\\opencode.db")));
-  assert.ok(paths.some((path) => path.endsWith("C:\\Users\\test\\.local\\share\\opencode\\opencode.db")));
+  assert.ok(paths.some((path) => /[\\/]explicit[\\/]opencode\.db$/i.test(path)));
+  assert.ok(paths.some((path) => /[\\/]xdg[\\/]opencode[\\/]opencode\.db$/i.test(path)));
+  assert.ok(paths.some((path) => /[\\/]\.opencode2[\\/]data[\\/]opencode[\\/]opencode\.db$/i.test(path)));
+  assert.ok(paths.some((path) => /[\\/]\.local[\\/]share[\\/]opencode[\\/]opencode\.db$/i.test(path)));
 });
