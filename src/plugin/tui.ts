@@ -8,6 +8,94 @@ const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
 
 type Reachability = "ok" | "auth" | "down";
 type RouteLike = { type: string; sessionID?: string };
+type ViewOpener = (view: "trajectory" | "statistics") => void | false | Promise<void>;
+
+/** Where `/statistics` should render: the TUI route, or the local web UI. */
+export type StatsTarget = "native" | "web";
+
+const WEB_FLAGS = new Set(["--web", "-w", "web"]);
+
+/**
+ * Classifies the raw `/statistics` argument. Only the documented browser
+ * tokens select the web UI; everything else (empty, whitespace, non-string)
+ * keeps the native route.
+ */
+export function parseStatsArg(input: unknown): StatsTarget {
+  if (typeof input !== "string") return "native";
+  return WEB_FLAGS.has(input.trim().toLowerCase()) ? "web" : "native";
+}
+
+/** One TUI command definition, structurally compatible with the SDK keymap. */
+export type TuiCommandDefinition = {
+  readonly id: string;
+  readonly title: string;
+  readonly description: string;
+  readonly group: string;
+  readonly palette: true;
+  readonly slash: {
+    readonly name: string;
+    readonly aliases?: string[];
+    readonly arguments?: true;
+  };
+  readonly run: (input?: string) => void | false | Promise<void>;
+};
+
+/**
+ * Builds the read-only Observability command surface. Pure: the caller
+ * supplies the view opener, so tests can scan the surface without the SDK.
+ */
+export function tuiCommandDefinitions(
+  openView: ViewOpener,
+): readonly TuiCommandDefinition[] {
+  const openStatistics = (input?: string): void | false | Promise<void> => {
+    if (parseStatsArg(input) === "web") {
+      return openView("statistics");
+    }
+    // Phase 2 seam: the native route attempt lands here; until the native
+    // view ships, the existing browser path stays the interim behaviour.
+    return openView("statistics");
+  };
+
+  return [
+    {
+      id: "observability.open",
+      title: "Open session observability",
+      description: "Open the local Trajectory/Statistics UI",
+      group: "Observability",
+      palette: true,
+      slash: { name: "observability", aliases: ["obs"] },
+      run: () => openView("trajectory"),
+    },
+    {
+      id: "observability.trajectory",
+      title: "Open session Trajectory",
+      description: "Open the event ledger for the current session",
+      group: "Observability",
+      palette: true,
+      slash: { name: "trajectory" },
+      run: () => openView("trajectory"),
+    },
+    {
+      id: "observability.statistics",
+      title: "Open session Statistics",
+      description:
+        "Open the native Statistics view; add --web for the local web UI",
+      group: "Observability",
+      palette: true,
+      slash: { name: "statistics", aliases: ["stats"], arguments: true },
+      run: openStatistics,
+    },
+    {
+      id: "observability.statistics.web",
+      title: "Open session Statistics in the browser",
+      description: "Open the local Statistics web UI for the current session",
+      group: "Observability",
+      palette: true,
+      slash: { name: "statistics:web", aliases: ["stats:web"] },
+      run: () => openView("statistics"),
+    },
+  ];
+}
 
 export function buildTuiUrl(
   base: string,
@@ -33,13 +121,13 @@ function withoutToken(url: string): string {
   return url.replace(/([?&])token=[^&]*/g, "$1").replace(/[?&]$/, "");
 }
 
-function pluginToken(value: unknown): string | null {
+export function pluginToken(value: unknown): string | null {
   if (typeof value === "string" && value.trim().length > 0) return value.trim();
   const env = process.env.OPENCODE_OBSERVABILITY_TOKEN;
   return typeof env === "string" && env.trim().length > 0 ? env.trim() : null;
 }
 
-async function tokenFromFile(base: string): Promise<string | null> {
+export async function tokenFromFile(base: string): Promise<string | null> {
   try {
     const url = new URL(base);
     const port = url.port
@@ -123,7 +211,7 @@ export function themePalette(context: {
   return palette;
 }
 
-function baseUrl(value: unknown): string {
+export function baseUrl(value: unknown): string {
   if (typeof value !== "string" || value.length === 0) return DEFAULT_URL;
   try {
     const url = new URL(value);
@@ -178,10 +266,10 @@ function openBrowser(url: string): boolean {
 /**
  * OpenCode 2 TUI part.
  *
- * Registers `/observability`, `/trajectory` and `/statistics`. The commands
- * are read-only: they never inject a prompt or alter the session. They open the
- * local web UI for the session currently shown in the TUI, or explain how to
- * start the UI when it is not running.
+ * Registers `/observability`, `/trajectory`, `/statistics` and
+ * `/statistics:web`. The commands are read-only: they never inject a prompt or
+ * alter the session. They open the local web UI for the session currently shown
+ * in the TUI, or explain how to start the UI when it is not running.
  */
 export default defineTuiPlugin({
   id: "opencode-session-observability.tui",
@@ -240,35 +328,7 @@ export default defineTuiPlugin({
     };
 
     context.keymap.layer(() => ({
-      commands: [
-        {
-          id: "observability.open",
-          title: "Open session observability",
-          description: "Open the local Trajectory/Statistics UI",
-          group: "Observability",
-          palette: true,
-          slash: { name: "observability", aliases: ["obs"] },
-          run: () => openView("trajectory"),
-        },
-        {
-          id: "observability.trajectory",
-          title: "Open session Trajectory",
-          description: "Open the event ledger for the current session",
-          group: "Observability",
-          palette: true,
-          slash: { name: "trajectory" },
-          run: () => openView("trajectory"),
-        },
-        {
-          id: "observability.statistics",
-          title: "Open session Statistics",
-          description: "Open the turn/step metrics table for the current session",
-          group: "Observability",
-          palette: true,
-          slash: { name: "statistics" },
-          run: () => openView("statistics"),
-        },
-      ],
+      commands: tuiCommandDefinitions(openView),
     }));
   },
 });
