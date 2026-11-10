@@ -8,6 +8,7 @@ import {
   TRAJECTORY_PANEL,
   activePanelKeyboard,
   openPanelOrFallback,
+  panelKeymapCommands,
   tuiCommandDefinitions,
   type PanelKeyboardBridge,
   type PanelToastOptions,
@@ -228,6 +229,45 @@ test("the keymap gate rejects keys while the open panel is unfocused (F-m3)", ()
     }),
     null,
   );
+});
+
+test("the panel close key re-checks the gate at dispatch (F1)", () => {
+  const closes: number[] = [];
+  let active: PanelKeyboardBridge | null = null;
+  const commands = panelKeymapCommands(
+    () => active,
+    () => {
+      closes.push(1);
+    },
+  );
+  const close = commands.find((command) => command.id === "panel.close");
+  assert.ok(close);
+
+  // The layer may still be enabled from an earlier evaluation; a closed or
+  // unfocused panel must not be closed by a stale `escape`.
+  close.run();
+  assert.equal(closes.length, 0);
+
+  active = { handlers: null, focused: true };
+  close.run();
+  assert.equal(closes.length, 1);
+
+  // The same guard through the real focus-aware resolver refuses an unfocused
+  // bridge even though it is returned by name.
+  const gated = panelKeymapCommands(
+    () =>
+      activePanelKeyboard("statistics", {
+        statistics: { handlers: null, focused: false },
+        trajectory: { handlers: null, focused: true },
+      }),
+    () => {
+      closes.push(1);
+    },
+  );
+  const gatedClose = gated.find((command) => command.id === "panel.close");
+  assert.ok(gatedClose);
+  gatedClose.run();
+  assert.equal(closes.length, 1);
 });
 
 test("both panels claim session.panel without colliding", async () => {
