@@ -212,7 +212,7 @@ export default defineTuiPlugin({
       append: "session.panel",
       render: (input) =>
         input.name === STATISTICS_PANEL
-          ? statisticsPanelElement(context)
+          ? statisticsPanelElement(context, input)
           : null,
     });
 
