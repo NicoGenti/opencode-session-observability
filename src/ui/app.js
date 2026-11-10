@@ -1224,19 +1224,42 @@ function diagnosticCardHtml(incident) {
   </div>`;
 }
 
+/**
+ * The card body shared by the Trajectory strip and both Statistics renderers
+ * (DR-5): one data source, one card renderer, one empty state.
+ */
+function diagnosticCardsHtml() {
+  const incidents = state.analysis?.diagnostics?.incidents ?? [];
+  if (incidents.length === 0) {
+    return `<p class="muted small">No diagnostic incidents recorded in this session.</p>`;
+  }
+  return incidents.map((incident) => diagnosticCardHtml(incident)).join("");
+}
+
 function recoveryMapHtml() {
   const incidents = state.analysis?.diagnostics?.incidents ?? [];
-  const cards =
-    incidents.length === 0
-      ? `<p class="muted small">No diagnostic incidents recorded in this session.</p>`
-      : incidents.map((incident) => diagnosticCardHtml(incident)).join("");
   return `<section class="recovery-map" aria-label="Recovery map">
     <div class="recovery-map-head">
       <h2 class="recovery-map-title">Recovery map</h2>
       <span class="muted small">${formatNumber(incidents.length)} incident(s) from the deterministic diagnostics engine</span>
     </div>
-    <div class="recovery-cards">${cards}</div>
+    <div class="recovery-cards">${diagnosticCardsHtml()}</div>
   </section>`;
+}
+
+/**
+ * Statistics section wrapper: the same card body and section rhythm as the
+ * existing Compactions section; no Statistics-specific card markup.
+ */
+function diagnosticsSectionHtml() {
+  const incidents = state.analysis?.diagnostics?.incidents ?? [];
+  return `<div class="compactions diagnostics-section">
+    <h2 class="stats-title">Diagnostics</h2>
+    <p class="muted small">${formatNumber(
+      incidents.length,
+    )} incident(s) from the deterministic diagnostics engine</p>
+    <div class="recovery-cards">${diagnosticCardsHtml()}</div>
+  </div>`;
 }
 
 /**
@@ -1749,11 +1772,25 @@ function renderStatisticsBasic() {
         <tbody>${basicTotalsRowHtml()}</tbody>
       </table>
     </div>
+    ${diagnosticsSectionHtml()}
     <div class="compactions">
       <h2 class="stats-title">Compactions</h2>
       ${compactionCardsHtml()}
     </div>`;
   bindBasicStatistics();
+}
+
+function bindDiagnosticCards() {
+  for (const button of dom.view.querySelectorAll("[data-open-incident]")) {
+    button.addEventListener("click", (event) => {
+      // Incident buttons carry both data attributes; take precedence over the
+      // generic single-event binding so jumpToEvent runs exactly once.
+      event.preventDefault();
+      event.stopPropagation();
+      const eventID = button.dataset.eventId;
+      if (eventID) void jumpToEvent(eventID);
+    });
+  }
 }
 
 function bindBasicStatistics() {
@@ -1791,7 +1828,10 @@ function bindBasicStatistics() {
       void jumpToEvent(button.dataset.jumpStep);
     });
   }
-  for (const element of dom.view.querySelectorAll("[data-event-id]")) {
+  bindDiagnosticCards();
+  for (const element of dom.view.querySelectorAll(
+    "[data-event-id]:not([data-open-incident])",
+  )) {
     element.addEventListener("click", () => {
       const eventID = element.dataset.eventId;
       if (eventID) void jumpToEvent(eventID);
@@ -1921,6 +1961,7 @@ function renderStatistics() {
           )}</span></div>`
         : ""
     }
+    ${diagnosticsSectionHtml()}
     <div class="compactions">
       <h2 class="stats-title">Compactions</h2>
       ${compactionCardsHtml()}
@@ -1997,7 +2038,10 @@ function bindStatistics() {
       void jumpToEvent(button.dataset.jumpStep);
     });
   }
-  for (const element of dom.view.querySelectorAll("[data-event-id]")) {
+  bindDiagnosticCards();
+  for (const element of dom.view.querySelectorAll(
+    "[data-event-id]:not([data-open-incident])",
+  )) {
     element.addEventListener("click", (event) => {
       if (event.target.closest("button[data-session-id]")) return;
       const eventID = element.dataset.eventId;
