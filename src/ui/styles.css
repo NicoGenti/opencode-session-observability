@@ -291,11 +291,11 @@ code, pre, .mono { font-family: var(--mono); }
   border-color: color-mix(in srgb, var(--critical) 55%, transparent);
   color: var(--critical); background: color-mix(in srgb, var(--critical) 8%, var(--surface));
 }
-.badge-retry, .badge-compaction, .badge-context, .badge-tool {
+.badge-retry, .badge-compaction, .badge-context, .badge-tool, .badge-accent {
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surface));
 }
-.badge-subagent {
+.badge-subagent, .badge-good {
   border-color: color-mix(in srgb, var(--good) 45%, transparent);
   color: var(--good); background: color-mix(in srgb, var(--good) 8%, var(--surface));
 }
@@ -372,6 +372,29 @@ code, pre, .mono { font-family: var(--mono); }
 }
 .empty h3 { margin: 0; color: var(--text); }
 .skeleton { color: var(--muted); padding: 24px; text-align: center; }
+
+/* ---------------------------------------------------------- recovery map */
+
+.recovery-map { flex: none; margin-bottom: 10px; }
+.recovery-map-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.recovery-map-title { margin: 0; font-size: 13px; font-weight: 650; }
+.recovery-cards { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+.diagnostic-card {
+  flex: 0 0 auto; width: min(420px, 88vw);
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+  padding: 10px 12px;
+}
+.diagnostic-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.diagnostic-head .grow { flex: 1; }
+.diagnostic-trigger {
+  color: var(--text-2); font-size: 11.5px; min-width: 0; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.diagnostic-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin-top: 8px; }
+.diagnostic-stat { background: var(--surface-2); border-radius: var(--radius-sm); padding: 6px 8px; }
+.diagnostic-stat .label { color: var(--muted); font-size: 11px; }
+.diagnostic-stat .value { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.diagnostic-why { margin: 8px 0 4px; }
 
 /* ----------------------------------------------------------- statistics */
 
