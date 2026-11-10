@@ -197,7 +197,7 @@ The TUI commands are intentionally non-mutating: they resolve the current sessio
 
 - `state.ts` binds `context.client.rpc(Observability)` once, then issues one `analysis` request per panel open or session change: the effect reacts only to the panel input because the fetch reads no signal in its synchronous window. It keeps loading/error/empty states and drops stale responses with a request ticket.
 - `columns.ts` owns breakpoints and ordered column sets; `status.ts` owns the symbol/label/palette table; `stepRows.ts` owns accordion rows. All three are pure and SDK-free, so they are unit-tested directly.
-- A keyboard layer gated on the open panel name maps `j`/`Down`, `k`/`Up`, `Enter` and `Esc` to the bridge the mounted panel installs and clears (see the trajectory section for the shared layer). Keys are inert when the panel is closed and also when the host reports the panel as unfocused (`input.focused === false`, F-m3); a host that does not publish `focused` keeps the panel-name gate as the floor. Manual check on a host: open a panel, give focus to another surface and press `j`/`Enter` — rows must not move; return focus and the keys respond. `Esc` closes the panel rather than leaking to the host.
+- A keyboard layer gated on the open panel name maps `j`/`Down`, `k`/`Up`, `Enter` and `Esc` to the bridge the mounted panel installs and clears (see the trajectory section for the shared layer). Keys are inert when the panel is closed and also when the host reports the panel as unfocused (`input.focused === false`, F-m3); a host that does not publish `focused` keeps the panel-name gate as the floor. Manual check on a host: open a panel, give focus to another surface and press `j`/`Enter` — rows must not move — and press `Esc` — the panel must stay open; return focus and the keys respond, with `Esc` closing the panel rather than leaking to the host.
 - The view resolves colours only through `themePalette` keys; a status symbol always accompanies the colour.
 
 ### Native trajectory panel
@@ -219,7 +219,7 @@ The TUI commands are intentionally non-mutating: they resolve the current sessio
 
 ## Toolchain notes
 
-`@opentui/core` and `solid-js` are type-only at build time: `vite.tui.config.ts` keeps them (and `@opencode/plugin|theme`) as host-provided externals, and `tsconfig.json` keeps `skipLibCheck` on. The optional `web-tree-sitter@0.25.10` devDependency is deliberately **not** added (F6 deferral): add it only if `skipLibCheck` is dropped or `@opentui/core` types become consumed by value, and pin it at `0.25.10` if that happens.
+`@opentui/core` is imported for types only in the plugin sources and is erased at build time; `solid-js` is value-imported by the TUI views. `vite.tui.config.ts` keeps both — plus `@opencode/plugin|theme` — as host-provided externals, so the bundle never carries them, and `tsconfig.json` keeps `skipLibCheck` on. The optional `web-tree-sitter@0.25.10` devDependency is deliberately **not** added (F6 deferral): add it only if `skipLibCheck` is dropped or `@opentui/core` types become consumed by value, and pin it at `0.25.10` if that happens.
 
 ## Read-only guarantees
 
