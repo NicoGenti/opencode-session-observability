@@ -576,6 +576,79 @@ kbd {
   background: var(--surface-2); color: var(--text);
 }
 
+/* --------------------------------------------------------------- compare */
+/* The 520 px modal standard is intentionally overridden: a side-by-side
+   attempt table plus two identity columns do not fit that width. */
+
+.compare-card { width: min(960px, 96vw); max-height: 90vh; overflow: auto; }
+.compare-banner {
+  margin: 0 0 14px; padding: 8px 10px; font-size: 12px; color: var(--text-2);
+  background: var(--accent-weak); border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+}
+.compare-pickers {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px; margin-bottom: 12px;
+}
+.compare-picker { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.compare-picker label { font-size: 11px; font-weight: 600; color: var(--text-2); }
+.compare-picker select {
+  width: 100%; min-height: 30px; padding: 4px 7px; font-size: 12.5px;
+  background: var(--surface-2); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+.compare-picker select:disabled { color: var(--muted); }
+.compare-status {
+  margin: 0 0 12px; padding: 8px 10px; font-size: 12.5px; color: var(--text-2);
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.compare-status.error { color: var(--critical); border-color: var(--border-strong); }
+.compare-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.compare-identity {
+  min-width: 0; padding: 10px 12px; background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+.compare-identity h3 { margin: 0 0 6px; font-size: 12px; font-weight: 650; color: var(--text-2); }
+.compare-identity .kv { grid-template-columns: 82px minmax(0, 1fr); }
+.compare-heading { margin: 18px 0 8px; font-size: 13px; font-weight: 650; }
+.compare-body .table-wrap { max-height: 420px; }
+.stats-table.compare-table { min-width: 760px; }
+.compare-table th, .compare-table td { white-space: normal; }
+.compare-table tr.compare-row { cursor: default; }
+.compare-table tbody tr.compare-row[aria-current="true"],
+.compare-table tbody tr.compare-row.selected,
+.compare-table tbody tr.compare-row[aria-current="true"]:hover,
+.compare-table tbody tr.compare-row.selected:hover { background: var(--accent-weak); }
+.compare-table tbody tr.compare-row[aria-current="true"] td:first-child,
+.compare-table tbody tr.compare-row.selected td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.compare-row-flag { display: none; font-size: 10px; font-weight: 600; color: var(--accent); }
+.compare-row[aria-current="true"] .compare-row-flag,
+.compare-row.selected .compare-row-flag { display: block; }
+.compare-attempt-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.compare-input-flag {
+  display: inline-block; margin-top: 4px; padding: 0 6px; font-size: 10.5px;
+  color: var(--text-2); border: 1px dashed var(--border-strong); border-radius: var(--radius-sm);
+}
+.compare-input {
+  margin: 4px 0 0; padding: 6px 8px; max-height: 180px; overflow: auto;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); font-family: var(--mono); font-size: 11px;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.compare-similarity { font-size: 11.5px; color: var(--text-2); }
+.compare-notes { margin: 6px 0 0; padding-left: 18px; font-size: 12px; color: var(--text-2); }
+.compare-notes li { margin: 2px 0; }
+.compare-inline-error { margin: 0 0 12px; font-size: 12.5px; color: var(--critical); }
+.compare-keys { margin: 16px 0 0; padding-top: 10px; border-top: 1px solid var(--border); }
+.tabs .btn + .btn { margin-left: 6px; }
+
+@media (max-width: 760px) {
+  .compare-pickers, .compare-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
 .toast {
   position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 80;
   background: var(--text); color: var(--page); padding: 8px 14px; border-radius: 999px;
