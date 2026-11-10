@@ -834,8 +834,6 @@ test("carries diagnostics through the optional Analysis field", async () => {
 
   const { analysis, events } = await analyze(data);
   const result = evaluateDiagnostics(events, analysis);
-  // Optional field: absent until the service attaches it (P2).
-  assert.equal("diagnostics" in analysis, false);
-  const withDiagnostics = { ...analysis, diagnostics: result };
-  assert.deepEqual(withDiagnostics.diagnostics, result);
+  // Optional field: the service attaches it during dataset load (P2).
+  assert.deepEqual(analysis.diagnostics, result);
 });

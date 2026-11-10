@@ -7,11 +7,85 @@ import { preview, redactString, redactValue } from "../src/core/util.ts";
 // @ts-expect-error - plain browser module without type declarations
 import { renderMarkdown } from "../src/ui/markdown.js";
 import {
+  BASE,
+  assistant,
+  fixture,
+  idle,
   memorySource,
   secretsFixture,
+  session,
   simpleFixture,
+  toolBlock,
+  user,
   writeFixtureDb,
 } from "./fixtures/build.ts";
+import type { Fixture } from "./fixtures/build.ts";
+import type { Analysis } from "../src/core/types.ts";
+
+/**
+ * An incident whose failure and success inputs embed credential-shaped values.
+ * Diagnostics must expose only key names/why text, never these values.
+ */
+function secretIncidentFixture(): Fixture {
+  const input = {
+    command: "curl -H 'Authorization: Bearer abcdefghijklmnop' https://x",
+    api_key: "sk-supersecretvalue12345",
+    env: { PASSWORD: "hunter2" },
+  };
+  return fixture([
+    {
+      meta: session("ses_diag_redact", {
+        time: {
+          created: BASE,
+          updated: BASE + 2_000,
+          busy: BASE,
+          idle: BASE + 1_900,
+        },
+      }),
+      messages: [
+        user("msg_u1", 1, BASE),
+        assistant({
+          id: "msg_a1",
+          seq: 2,
+          created: BASE + 100,
+          streamed: BASE + 1_000,
+          completed: BASE + 1_100,
+          content: [
+            toolBlock({
+              name: "shell",
+              created: BASE + 200,
+              ran: BASE + 300,
+              completed: BASE + 400,
+              status: "error",
+              input,
+              output: "ghp_abcdefghijklmnopqrstuvwxyz0123456789 token=abcdef1234567890",
+            }),
+            toolBlock({
+              name: "shell",
+              created: BASE + 500,
+              ran: BASE + 600,
+              completed: BASE + 700,
+              status: "error",
+              input,
+              output: "",
+            }),
+            toolBlock({
+              name: "shell",
+              created: BASE + 800,
+              ran: BASE + 900,
+              completed: BASE + 1_000,
+              input,
+              output: "ok",
+            }),
+          ],
+          tokens: { input: 100, output: 20, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+          cost: 0.02,
+        }),
+        idle("msg_i1", 3, BASE + 1_500, "succeeded"),
+      ],
+    },
+  ]);
+}
 
 function request(
   port: number,
@@ -211,4 +285,94 @@ test("Markdown renderer rejects unsafe links and handles bracket-heavy text", ()
 
   const brackets = renderMarkdown("[".repeat(20_000), { maxChars: 20_000 });
   assert.equal(brackets.truncated, false);
+});
+
+test("redacted and revealed analyses carry identical diagnostics metadata", async () => {
+  const service = new ObservabilityService(memorySource(secretIncidentFixture()));
+  const revealed = (await service.analyze("ses_diag_redact", { reveal: true }))
+    .analysis;
+  const redacted = (await service.analyze("ses_diag_redact")).analysis;
+
+  const revealedDiagnostics = revealed.diagnostics;
+  const redactedDiagnostics = redacted.diagnostics;
+  assert.ok(revealedDiagnostics, "revealed analysis keeps the incident");
+  assert.ok(redactedDiagnostics, "redacted analysis keeps the incident");
+  assert.deepEqual(redactedDiagnostics, revealedDiagnostics);
+
+  const incident = redactedDiagnostics.incidents[0]!;
+  assert.ok(incident.why.length > 0, "why survives redaction");
+  assert.deepEqual(incident.inputKeyShape, [
+    "api_key",
+    "command",
+    "env",
+    "env.PASSWORD",
+  ]);
+
+  const serialized = JSON.stringify(redactedDiagnostics);
+  for (const secret of [
+    "sk-supersecretvalue12345",
+    "hunter2",
+    "abcdefghijklmnop",
+    "ghp_",
+    "token=abcdef1234567890",
+  ]) {
+    assert.equal(
+      serialized.includes(secret),
+      false,
+      `diagnostics leaked ${secret}`,
+    );
+  }
+});
+
+test("JSON export keeps diagnostics inside the redacted analysis", async () => {
+  const service = new ObservabilityService(memorySource(secretIncidentFixture()));
+  const redacted = (await service.analyze("ses_diag_redact")).analysis;
+  const exported = await service.export("ses_diag_redact", { format: "json" });
+  const payload = JSON.parse(exported.content) as { analysis: Analysis };
+
+  assert.equal(payload.analysis.redacted, true);
+  assert.deepEqual(payload.analysis.diagnostics, redacted.diagnostics);
+  const incident = payload.analysis.diagnostics?.incidents[0];
+  assert.ok(incident, "export carries the diagnostics payload");
+  assert.ok(incident.why.length > 0);
+  assert.deepEqual(incident.inputKeyShape, [
+    "api_key",
+    "command",
+    "env",
+    "env.PASSWORD",
+  ]);
+  assert.doesNotMatch(
+    JSON.stringify(payload.analysis.diagnostics),
+    /sk-supersecretvalue12345|hunter2|abcdefghijklmnop/,
+  );
+});
+
+test("the analysis route delivers diagnostics without a schema change", async () => {
+  const { path } = writeFixtureDb(secretIncidentFixture());
+  const server = await createObservabilityServer({ dbPath: path, port: 0 });
+  try {
+    const response = await request(
+      server.port,
+      "/api/sessions/ses_diag_redact/analysis",
+    );
+    assert.equal(response.status, 200);
+    const body = JSON.parse(response.body) as { analysis: Analysis };
+    const incident = body.analysis.diagnostics?.incidents[0];
+    assert.ok(incident, "diagnostics travel through the existing loose schema");
+    assert.equal(incident.tool, "shell");
+    assert.equal(incident.failureEventIDs.length, 2);
+    assert.ok(incident.why.length > 0);
+    assert.deepEqual(incident.inputKeyShape, [
+      "api_key",
+      "command",
+      "env",
+      "env.PASSWORD",
+    ]);
+    assert.doesNotMatch(
+      JSON.stringify(body.analysis.diagnostics),
+      /sk-supersecretvalue12345|hunter2/,
+    );
+  } finally {
+    await server.close();
+  }
 });

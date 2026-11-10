@@ -1,6 +1,7 @@
 import { eventSearchCorpus, normalizeMessages } from "./normalize.ts";
 import { projectSession } from "./project.ts";
 import { promptTokensMetric } from "./metrics.ts";
+import { evaluateDiagnostics } from "./diagnostics.ts";
 import { redactValue, truncate } from "./util.ts";
 import { exportSession } from "./export.ts";
 import type {
@@ -204,6 +205,15 @@ export class ObservabilityService {
       ...event,
       turnID: turnByEvent.get(event.id) ?? event.turnID,
     }));
+    // Diagnostics are engine-owned and pure: compute them exactly once here,
+    // against the full recorded-order event stream of this dataset, so every
+    // downstream path (analysis, export, UI) reads the same object verbatim.
+    // Sessions without incidents keep the field absent instead of an empty
+    // placeholder, letting the UI render its empty state.
+    const diagnostics = evaluateDiagnostics(assignedEvents, analysis);
+    if (diagnostics.incidents.length > 0) {
+      analysis.diagnostics = diagnostics;
+    }
     const dataset: Dataset = {
       session,
       family,
