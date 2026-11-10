@@ -128,6 +128,8 @@ test("marks two failures followed by an identical same-tool success as recovered
   assert.equal(incident.turn, 1);
   assert.equal(incident.turnID, "ses_diag:t1");
   assert.equal(incident.attempts, 2);
+  assert.deepEqual(incident.failureEventIDs, ["a1:0", "a1:1"]);
+  assert.equal(incident.recoveryEventID, "a1:2");
   assert.equal(incident.recovery, "recovered");
   assert.equal(incident.similarity, "identical");
   assert.equal(incident.inputsCompared, true);
@@ -180,6 +182,9 @@ test("marks a different successful tool later in the turn as possible recovery",
   const incident = result.incidents[0]!;
   assert.equal(incident.recovery, "possible-recovery");
   assert.equal(incident.similarity, "unknown");
+  assert.deepEqual(incident.failureEventIDs, ["a1:0"]);
+  // A recovery signalled by another tool is not a same-tool success id.
+  assert.equal(incident.recoveryEventID, null);
   assert.equal(incident.inputsCompared, false);
   assert.equal(incident.inputsComparable, true);
   assert.match(incident.why, /grep/);
@@ -200,6 +205,8 @@ test("marks a failure with no later success or step as no-recovery-evidence", as
   const incident = result.incidents[0]!;
   assert.equal(incident.recovery, "no-recovery-evidence");
   assert.equal(incident.attempts, 1);
+  assert.deepEqual(incident.failureEventIDs, ["a1:0"]);
+  assert.equal(incident.recoveryEventID, null);
   assert.match(incident.why, /no same-tool success/);
   assert.equal(result.summary.noRecoveryEvidence, 1);
 });
@@ -225,6 +232,8 @@ test("returns insufficient-data when the failure input is truncated", async () =
   assert.equal(incident.inputsCompared, false);
   assert.equal(incident.similarity, "unknown");
   assert.equal(incident.inputKeyShape, null);
+  assert.deepEqual(incident.failureEventIDs, ["a1:0"]);
+  assert.equal(incident.recoveryEventID, null);
   assert.match(incident.why, /truncation marker/);
   assert.equal(result.summary.insufficientData, 1);
 });
@@ -285,11 +294,15 @@ test("tracks independent tool runs in one turn without cross-contamination", asy
 
   // The grep failure between the two read failures must not break read's run.
   assert.equal(read.attempts, 2);
+  assert.deepEqual(read.failureEventIDs, ["a1:0", "a1:2"]);
+  assert.equal(read.recoveryEventID, "a1:3");
   assert.equal(read.recovery, "recovered");
   assert.equal(read.similarity, "identical");
 
   // grep has no success after its last failure, so read's recovery cannot leak.
   assert.equal(grep.attempts, 2);
+  assert.deepEqual(grep.failureEventIDs, ["a1:1", "a1:4"]);
+  assert.equal(grep.recoveryEventID, null);
   assert.equal(grep.recovery, "no-recovery-evidence");
   assert.notEqual(grep.recovery, "recovered");
 
@@ -332,6 +345,9 @@ test("does not claim recovery when the later same-tool call has a different inpu
   assert.equal(incident.similarity, "different");
   assert.equal(incident.recovery, "possible-recovery");
   assert.equal(incident.inputsCompared, true);
+  // A different-shape success is compared but does not recover the run, so it
+  // is not recorded as the recovery event.
+  assert.equal(incident.recoveryEventID, null);
   // The why must describe the same-tool success it actually saw, not deny it.
   assert.match(
     incident.why,
@@ -670,10 +686,14 @@ test("reports two incidents when a success separates two read failures", async (
   const [recovered, failed] = result.incidents;
   // The success closes the first maximal run (one failure) with identical input.
   assert.equal(recovered!.attempts, 1);
+  assert.deepEqual(recovered!.failureEventIDs, ["a1:0"]);
+  assert.equal(recovered!.recoveryEventID, "a1:1");
   assert.equal(recovered!.recovery, "recovered");
   assert.equal(recovered!.similarity, "identical");
   // The later failure opens a fresh run that the turn end closes without evidence.
   assert.equal(failed!.attempts, 1);
+  assert.deepEqual(failed!.failureEventIDs, ["a1:2"]);
+  assert.equal(failed!.recoveryEventID, null);
   assert.equal(failed!.recovery, "no-recovery-evidence");
   assert.equal(result.summary.recovered, 1);
   assert.equal(result.summary.noRecoveryEvidence, 1);

@@ -6,7 +6,14 @@ export * from "./paging.ts";
 export * from "./format.ts";
 export * from "./redact.ts";
 export * from "./diagnostics.ts";
-export { ObservabilityService, SessionNotFoundError, EventNotFoundError } from "./service.ts";
+export * from "./episodes.ts";
+export * from "./episodeCompare.ts";
+export {
+  ObservabilityService,
+  SessionNotFoundError,
+  EventNotFoundError,
+  EpisodeNotFoundError,
+} from "./service.ts";
 export { exportSession } from "./export.ts";
 export { SqliteSource, openSqliteSource, detectSchema } from "./adapters/sqlite.ts";
 export { ApiSource, apiMessagesToRaw } from "./adapters/api.ts";

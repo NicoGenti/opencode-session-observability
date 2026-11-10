@@ -4,6 +4,18 @@ import { promptTokensMetric } from "./metrics.ts";
 import { evaluateDiagnostics } from "./diagnostics.ts";
 import { redactValue, truncate } from "./util.ts";
 import { exportSession } from "./export.ts";
+import { evaluateDiagnostics } from "./diagnostics.ts";
+import { listDiagnosticEpisodes } from "./episodes.ts";
+import { compareEpisodeData } from "./episodeCompare.ts";
+import type { Diagnostics } from "./diagnostics.ts";
+import type { DiagnosticEpisode } from "./episodes.ts";
+import type {
+  AttemptSummary,
+  EpisodeCompareInput,
+  EpisodeComparison,
+  EpisodeTotals,
+  TurnSummary,
+} from "./episodeCompare.ts";
 import type {
   Analysis,
   Coverage,
@@ -17,6 +29,8 @@ import type {
   SessionFamily,
   SessionMeta,
   SessionSummary,
+  Totals,
+  Turn,
 } from "./types.ts";
 
 export class SessionNotFoundError extends Error {
@@ -30,6 +44,13 @@ export class EventNotFoundError extends Error {
   constructor(eventID: string) {
     super(`Event not found: ${eventID}`);
     this.name = "EventNotFoundError";
+  }
+}
+
+export class EpisodeNotFoundError extends Error {
+  constructor(episodeID: string) {
+    super(`Episode not found: ${episodeID}`);
+    this.name = "EpisodeNotFoundError";
   }
 }
 
@@ -268,6 +289,56 @@ export class ObservabilityService {
     return built;
   }
 
+  /** Diagnostics over the stream the caller is allowed to see. */
+  private diagnosticsFor(dataset: Dataset, reveal: boolean): Diagnostics {
+    const events = reveal ? dataset.events : this.redactedFor(dataset);
+    return evaluateDiagnostics(events, dataset.analysis);
+  }
+
+  /**
+   * Resolves one side of a comparison. The episode is re-derived from the same
+   * event stream that supplies its attempts, so an unknown id always fails
+   * instead of matching a stale incident.
+   */
+  private episodeSide(
+    dataset: Dataset,
+    sessionID: string,
+    episodeID: string,
+    reveal: boolean,
+  ): EpisodeCompareInput {
+    const events = reveal ? dataset.events : this.redactedFor(dataset);
+    const diagnostics = this.diagnosticsFor(dataset, reveal);
+    const episode = listDiagnosticEpisodes(diagnostics, sessionID).find(
+      (item) => item.id === episodeID,
+    );
+    if (!episode) throw new EpisodeNotFoundError(episodeID);
+
+    const byID = new Map(events.map((event) => [event.id, event]));
+    const attempts: AttemptSummary[] = [];
+    for (const eventID of episode.failureEventIDs) {
+      const attempt = attemptFor(byID, eventID);
+      if (!attempt) throw new EpisodeNotFoundError(episodeID);
+      attempts.push(attempt);
+    }
+    const recovery =
+      episode.recoveryEventID === null
+        ? null
+        : attemptFor(byID, episode.recoveryEventID);
+
+    const turn = dataset.analysis.turns.find(
+      (item) => item.id === episode.turnID,
+    );
+    if (!turn) throw new EpisodeNotFoundError(episodeID);
+    return {
+      episode,
+      attempts,
+      recovery,
+      totals: totalsSubset(dataset.analysis.totals),
+      turn: turnSubset(turn),
+      redacted: !reveal,
+    };
+  }
+
   async analyze(
     sessionID: string,
     options: AnalyzeOptions = {},
@@ -280,6 +351,73 @@ export class ObservabilityService {
       events: reveal ? dataset.events : this.redactedFor(dataset),
       redacted: !reveal,
     };
+  }
+
+  /**
+   * Diagnostics plus the episodes derived from them.
+   *
+   * Without `reveal: true` the rule runs on the redacted event stream, so an
+   * input that was credential-redacted classifies as `"redacted"` instead of
+   * being silently reported as comparable. Episodes are a pure projection of
+   * the same diagnostics; their ids are identical in both modes because event
+   * ids are not payload data.
+   */
+  async diagnostics(
+    sessionID: string,
+    options: { reveal?: boolean } = {},
+  ): Promise<{
+    diagnostics: Diagnostics;
+    episodes: DiagnosticEpisode[];
+    redacted: boolean;
+  }> {
+    const dataset = await this.loadDataset(sessionID);
+    const reveal = options.reveal === true;
+    const diagnostics = this.diagnosticsFor(dataset, reveal);
+    return {
+      diagnostics,
+      episodes: listDiagnosticEpisodes(diagnostics, sessionID),
+      redacted: !reveal,
+    };
+  }
+
+  /**
+   * Aligns two episodes by recorded ordinal, or throws when either id does not
+   * name an episode of its session. Inputs come from the raw dataset under
+   * reveal and from the redacted event stream otherwise; totals and turn
+   * metrics are the structural numeric subsets of `Analysis`.
+   */
+  async compareEpisodes(input: {
+    leftSessionID: string;
+    leftEpisodeID: string;
+    rightSessionID: string;
+    rightEpisodeID: string;
+    reveal?: boolean;
+  }): Promise<EpisodeComparison> {
+    const reveal = input.reveal === true;
+    const datasets = new Map<string, Dataset>();
+    const load = async (sessionID: string): Promise<Dataset> => {
+      const warm = datasets.get(sessionID);
+      if (warm) return warm;
+      const dataset = await this.loadDataset(sessionID);
+      datasets.set(sessionID, dataset);
+      return dataset;
+    };
+    const leftDataset = await load(input.leftSessionID);
+    const rightDataset = await load(input.rightSessionID);
+    return compareEpisodeData(
+      this.episodeSide(
+        leftDataset,
+        input.leftSessionID,
+        input.leftEpisodeID,
+        reveal,
+      ),
+      this.episodeSide(
+        rightDataset,
+        input.rightSessionID,
+        input.rightEpisodeID,
+        reveal,
+      ),
+    );
   }
 
   async events(query: EventsQuery): Promise<EventPage> {
@@ -419,6 +557,59 @@ function presentAnalysis(analysis: Analysis, redacted: boolean): Analysis {
         };
       }),
     })),
+  };
+}
+
+/**
+ * Reads one attempt off the resolved event stream. Under no reveal the stream
+ * is already redacted, so the input here is the redacted value: the comparison
+ * layer classifies it as `"redacted"` rather than assuming it is comparable.
+ */
+function attemptFor(
+  events: ReadonlyMap<string, NormalizedEvent>,
+  eventID: string,
+): AttemptSummary | null {
+  const tool = events.get(eventID)?.tool;
+  if (!tool) return null;
+  return {
+    eventID,
+    tool: tool.name,
+    status: tool.status,
+    input: tool.input,
+    duration: tool.duration,
+  };
+}
+
+/** The numeric totals subset `compareEpisodeData` accepts. */
+function totalsSubset(totals: Totals): EpisodeTotals {
+  return {
+    tokens: totals.tokens,
+    tokensComplete: totals.tokensComplete,
+    cost: totals.cost,
+    modelTime: totals.modelTime,
+    toolTime: totals.toolTime,
+    // Session scope has no single span: the idle-free aggregate of turn spans
+    // is the same quantity family as a turn's `totalTime`, whereas wall clock
+    // would add inter-turn idle to an episode-scoped comparison.
+    totalTime: totals.activeTurnTime,
+    outputSpeed: totals.outputSpeed,
+    cacheHitRate: totals.cacheHitRate,
+  };
+}
+
+/** The numeric turn subset `compareEpisodeData` accepts. */
+function turnSubset(turn: Turn): TurnSummary {
+  return {
+    tokens: turn.tokens,
+    tokensComplete: turn.tokensComplete,
+    cost: turn.cost,
+    modelTime: turn.modelTime,
+    toolTime: turn.toolTime,
+    totalTime: turn.totalTime,
+    outputSpeed: turn.outputSpeed,
+    cacheHitRate: turn.cacheHitRate,
+    index: turn.index,
+    promptTokensLatest: turn.promptTokensLatest,
   };
 }
 
