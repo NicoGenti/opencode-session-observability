@@ -43,6 +43,7 @@ function assistantMessage(
   seq: number,
   created: number,
   content: unknown[],
+  cost?: number | null,
 ): RawMessage {
   return assistant({
     id,
@@ -51,6 +52,7 @@ function assistantMessage(
     streamed: created + 400,
     completed: created + 500,
     content,
+    cost,
   });
 }
 
@@ -98,9 +100,13 @@ function callWithoutInput(name: string, options: { at: number }): unknown {
   return block;
 }
 
-async function evaluate(data: Fixture, reveal = true): Promise<Diagnostics> {
+async function analyze(data: Fixture, reveal = true) {
   const service = new ObservabilityService(memorySource(data));
-  const { analysis, events } = await service.analyze("ses_diag", { reveal });
+  return service.analyze("ses_diag", { reveal });
+}
+
+async function evaluate(data: Fixture, reveal = true): Promise<Diagnostics> {
+  const { analysis, events } = await analyze(data, reveal);
   return evaluateDiagnostics(events, analysis);
 }
 
@@ -671,4 +677,165 @@ test("reports two incidents when a success separates two read failures", async (
   assert.equal(failed!.recovery, "no-recovery-evidence");
   assert.equal(result.summary.recovered, 1);
   assert.equal(result.summary.noRecoveryEvidence, 1);
+});
+
+test("exposes failure anchors, paired success, trigger and no raw payload text", async () => {
+  const data = diagnosticsSession([
+    user("u1", 1, BASE, "do not leak this prompt"),
+    assistantMessage("a1", 2, BASE + 100, [
+      call("read", { path: "src/a.ts" }, {
+        at: BASE + 200,
+        status: "error",
+        error: { type: "tool-error", message: "raw failure text" },
+      }),
+      call("read", { path: "src/a.ts" }, {
+        at: BASE + 300,
+        status: "error",
+        error: { type: "tool-error", message: "raw failure text" },
+      }),
+      call("read", { path: "src/a.ts" }, { at: BASE + 400 }),
+    ]),
+    idle("i1", 3, BASE + 600, "succeeded"),
+  ]);
+
+  const { analysis, events } = await analyze(data);
+  const toolEvents = events.filter((event) => event.kind === "tool");
+  const result = evaluateDiagnostics(events, analysis);
+  assert.equal(result.incidents.length, 1);
+  const incident = result.incidents[0]!;
+
+  assert.deepEqual(incident.failureEventIDs, [
+    toolEvents[0]!.id,
+    toolEvents[1]!.id,
+  ]);
+  assert.equal(incident.firstFailureEventID, toolEvents[0]!.id);
+  assert.equal(incident.lastFailureEventID, toolEvents[1]!.id);
+  assert.equal(incident.successEventID, toolEvents[2]!.id);
+
+  // `trigger` is the projected Turn trigger, never prompt prose.
+  assert.deepEqual(incident.trigger, analysis.turns[0]!.trigger);
+  assert.equal(incident.trigger.kind, "user");
+  assert.equal(incident.trigger.label, "User message");
+
+  const serialized = JSON.stringify(incident);
+  assert.doesNotMatch(serialized, /do not leak this prompt/);
+  assert.doesNotMatch(serialized, /raw failure text/);
+  // The whole DTO must stay JSON-serializable for the analysis payload.
+  assert.deepEqual(JSON.parse(serialized), incident);
+});
+
+test("anchors a one-event failure run and reports no paired success", async () => {
+  const data = diagnosticsSession([
+    user("u1", 1, BASE),
+    assistantMessage("a1", 2, BASE + 100, [
+      call("read", { path: "src/a.ts" }, { at: BASE + 200, status: "error" }),
+    ]),
+    idle("i1", 3, BASE + 400, "succeeded"),
+  ]);
+
+  const { analysis, events } = await analyze(data);
+  const failure = events.find((event) => event.kind === "tool")!;
+  const result = evaluateDiagnostics(events, analysis);
+  const incident = result.incidents[0]!;
+
+  assert.deepEqual(incident.failureEventIDs, [failure.id]);
+  assert.equal(incident.firstFailureEventID, failure.id);
+  assert.equal(incident.lastFailureEventID, failure.id);
+  assert.equal(incident.successEventID, null);
+});
+
+test("pairs successEventID only with a same-tool success", async () => {
+  const data = diagnosticsSession([
+    user("u1", 1, BASE),
+    assistantMessage("a1", 2, BASE + 100, [
+      call("read", { path: "src/a.ts" }, { at: BASE + 200, status: "error" }),
+    ]),
+    assistantMessage("a2", 3, BASE + 400, [
+      call("grep", { pattern: "a" }, { at: BASE + 500 }),
+    ]),
+    idle("i1", 4, BASE + 700, "succeeded"),
+  ]);
+
+  const { analysis, events } = await analyze(data);
+  const result = evaluateDiagnostics(events, analysis);
+  const incident = result.incidents[0]!;
+
+  // grep succeeded, but it is not the failing tool: no paired success anchor.
+  assert.equal(incident.recovery, "possible-recovery");
+  assert.equal(incident.successEventID, null);
+  assert.equal(incident.failureEventIDs.length, 1);
+});
+
+test("reuses the turn totalTime metric as elapsed", async () => {
+  const data = diagnosticsSession([
+    user("u1", 1, BASE),
+    assistantMessage("a1", 2, BASE + 100, [
+      call("read", { path: "src/a.ts" }, { at: BASE + 200, status: "error" }),
+    ]),
+    idle("i1", 3, BASE + 400, "succeeded"),
+  ]);
+
+  const { analysis, events } = await analyze(data);
+  const turn = analysis.turns[0]!;
+  const result = evaluateDiagnostics(events, analysis);
+  const incident = result.incidents[0]!;
+
+  assert.deepEqual(incident.elapsed, turn.totalTime);
+  assert.equal(incident.elapsed.value, turn.totalTime.value);
+  assert.equal(incident.elapsed.basis, "derived");
+  assert.ok((incident.elapsed.value ?? 0) > 0);
+});
+
+test("sums step costs and flags the missing share", async () => {
+  const data = diagnosticsSession([
+    user("u1", 1, BASE),
+    assistantMessage("a1", 2, BASE + 100, [
+      call("read", { path: "src/a.ts" }, { at: BASE + 200, status: "error" }),
+    ], 0.01),
+    // A second step in the same turn with no recorded cost.
+    assistantMessage("a2", 3, BASE + 400, [textBlock("Trying again.")]),
+    idle("i1", 4, BASE + 600, "succeeded"),
+  ]);
+
+  const { analysis, events } = await analyze(data);
+  const result = evaluateDiagnostics(events, analysis);
+  const incident = result.incidents[0]!;
+
+  assert.equal(incident.stepCostSum.value, 0.01);
+  assert.equal(incident.stepCostSum.basis, "derived");
+  assert.match(incident.stepCostSum.note ?? "", /1 cost value\(s\) missing/);
+});
+
+test("reports an unavailable stepCostSum when the turn recorded no cost", async () => {
+  const data = diagnosticsSession([
+    user("u1", 1, BASE),
+    assistantMessage("a1", 2, BASE + 100, [
+      call("read", { path: "src/a.ts" }, { at: BASE + 200, status: "error" }),
+    ]),
+    idle("i1", 3, BASE + 400, "succeeded"),
+  ]);
+
+  const { analysis, events } = await analyze(data);
+  const result = evaluateDiagnostics(events, analysis);
+  const incident = result.incidents[0]!;
+
+  assert.equal(incident.stepCostSum.value, null);
+  assert.equal(incident.stepCostSum.basis, "unavailable");
+});
+
+test("carries diagnostics through the optional Analysis field", async () => {
+  const data = diagnosticsSession([
+    user("u1", 1, BASE),
+    assistantMessage("a1", 2, BASE + 100, [
+      call("read", { path: "src/a.ts" }, { at: BASE + 200, status: "error" }),
+    ]),
+    idle("i1", 3, BASE + 400, "succeeded"),
+  ]);
+
+  const { analysis, events } = await analyze(data);
+  const result = evaluateDiagnostics(events, analysis);
+  // Optional field: absent until the service attaches it (P2).
+  assert.equal("diagnostics" in analysis, false);
+  const withDiagnostics = { ...analysis, diagnostics: result };
+  assert.deepEqual(withDiagnostics.diagnostics, result);
 });
