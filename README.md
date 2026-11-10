@@ -24,9 +24,9 @@ The implementation is original and targets OpenCode 2.2.x. It was built against 
 | Projection | Turns, steps, tool calls, subagents, compactions, non-step events, unattached events |
 | Metrics | Prompt/context tokens, cache hit rate, model/tool/residual/total time, output speed, cost, context deltas |
 | UI | Local browser app: Trajectory + Statistics, Basic/Advanced modes, OpenCode themes, project-grouped session tree, settings, filters, full-text search, detail drawer, copy, export |
-| Integration | OpenCode 2 server plugin with read-only RPC + TUI commands `/observability`, `/trajectory`, native `/statistics` (alias `/stats`; `--web`/`-w`/`web` opens the browser) and `/statistics:web` (alias `/stats:web`) |
+| Integration | OpenCode 2 server plugin with read-only RPC + TUI commands: native `/statistics` (alias `/stats`) and native `/trajectory`/`/observability` fullscreen panels, with `--web`/`-w`/`web` opening the browser, plus `/statistics:web` (alias `/stats:web`) |
 | Export | Self-contained HTML, Markdown and JSON |
-| Tests | 300 tests: parsing, projection, metrics, paging, scroll preservation, redaction, authentication, adapters, HTTP API, RPC, exports, settings/theme persistence, TUI routing seams, native panels, TUI columns/status helpers, plugin entry shape, read-only guarantees |
+| Tests | 305 tests: parsing, projection, metrics, paging, scroll preservation, redaction, authentication, adapters, HTTP API, RPC, exports, settings/theme persistence, TUI routing seams, native panels, TUI columns/status helpers, plugin entry shape, read-only guarantees |
 
 Screenshots of both views in dark and light mode (1440×900):
 
@@ -106,7 +106,7 @@ Other flags:
 Run the checks:
 
 ```bash
-npm run check       # typecheck + 300 tests (node:test)
+npm run check       # typecheck + 305 tests (node:test)
 npm run audit:prod  # production dependency audit (0 advisories)
 ```
 
@@ -387,7 +387,7 @@ src/
     tui.tsx             typed OpenTUI JSX sidecar (provide-only)
 test/
   fixtures/build.ts     synthetic OpenCode 2 fixtures
-  *.test.ts             300 tests
+  *.test.ts             305 tests
 docs/
   DATA-SOURCES.md
   ARCHITECTURE.md
@@ -401,11 +401,11 @@ docs/
 ## Testing
 
 ```bash
-npm run check       # typecheck + 300 tests
+npm run check       # typecheck + 305 tests
 npm run audit:prod  # production dependency audit
 ```
 
-The suite is at **300 tests** across **34 files** and grows with each new suite.
+The suite is at **305 tests** across **34 files** and grows with each new suite.
 
 The fixtures cover: a simple session, multiple tool calls (including parallel and error), subagents, retry + error, compaction, a long paging session, an incomplete/interrupted run, out-of-order timestamps, secrets, and an empty session. The HTTP tests start the real server on an ephemeral port against a synthetic SQLite database.
 
