@@ -44,6 +44,9 @@ flowchart LR
 | Projection | `core/project.ts` | Group events into turns/steps, attach non-step events, identify unattached events, build compaction transactions and capabilities. |
 | Metrics | `core/metrics.ts` | Pure formulas for prompt tokens, cache hit rate, durations, residual, speed, context delta. |
 | Diagnostics | `core/diagnostics.ts` | Pure, deterministic recovery rules over the recorded event order; incident anchors and contextual footprint metrics. No I/O and no writes. |
+| Episodes | `core/episodes.ts` | Pure enumeration of addressable diagnostic episodes: one per incident, with a stable id plus the turn/tool identity and every diagnostic verdict copied verbatim. Never re-sorts and never compares. |
+| Episode comparison | `core/episodeCompare.ts` | Pure, descriptive alignment of two episodes by recorded ordinal (`left - right`); a missing attempt becomes a one-sided row and no DTO field names a winner, an optimum or a recommendation. |
+| Delegation recovery | `core/delegation.ts` | Pure assessment of a parent session and its direct children: recorded delegation links, child failure evidence, parent reaction classification and labelled recovery patterns. No I/O and no writes. |
 | Service | `core/service.ts` | Load a dataset, cache briefly, compute diagnostics once, redact, filter, keyset-page, detail, export. |
 | Presentation | `server/http.ts`, `server/auth.ts`, `server/token-file.ts`, `ui/*` | Local HTTP API, access token, static UI, view state. |
 | Integration | `plugin/index.ts`, `rpc.ts`, `service.ts`, `tui.ts` | OpenCode 2 server RPC + TUI commands. |
@@ -112,6 +115,7 @@ See [METRICS.md](METRICS.md).
 - normalizes and projects;
 - mirrors turn ids onto the full event stream used by detail/list endpoints;
 - computes diagnostics once over that same event stream and attaches them to the analysis payload;
+- computes the delegation recovery family view on demand (`familyRecovery`): the parent and each direct child are loaded full-range, the direct children are assessed (cap 8) and the result is returned as its own DTO — it is part of neither `Analysis` nor the dataset payload — and served only by `GET /api/sessions/{id}/family-recovery`;
 - redacts (unless reveal is explicitly allowed);
 - applies filters and keyset pagination;
 - trims the analysis payload (tool input/output and unbounded prose stay in the detail endpoint);

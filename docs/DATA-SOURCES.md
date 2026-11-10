@@ -199,6 +199,27 @@ Only a timestamp is recorded; there is no compaction start/end pair. The `tokens
 
 The normalizer extracts `sessionID` from that marker and from tool metadata keys such as `childSessionID`. The UI links to the child session; the link is marked derived because it comes from the tool result text.
 
+The two linkage sources are not interchangeable: `session_v2.parent_id` is recorded metadata on the child row, while the `<subagent sessionID="…">` marker is derived from the parent's tool result text. Delegation recovery anchors a child on the recorded parent `subagent` tool event that names it, together with that event's `delegatedAgent` stamp and input; only when no such event exists does it fall back to the child's earliest recorded timestamp, and that fallback is recorded in `uncertainty` rather than hidden.
+
+`ObservabilityService.familyRecovery` loads the parent and every direct child full-range, never over a window: a windowed child stream cannot support a complete failure picture. At most eight direct children are assessed, ordered by child `timeCreated` and then session id; the rest are not dropped silently — `totalChildren` reports the full count and `childrenCapped`, plus a `notes` entry, says how many were skipped. A child whose dataset cannot be loaded degrades to an empty synthetic child classified `insufficient-data` plus a sanitized note. The result is its own DTO (`schemaVersion: 1`, `depth: 1`, `redacted: !reveal`) served by `GET /api/sessions/{id}/family-recovery`; it is not embedded in `Analysis`.
+
+Recovery patterns are classification labels over recorded events, never measurements:
+
+| Pattern | What is read | Basis |
+|---|---|---|
+| `no-child-failure` | child stream complete and no failure evidence recorded | `derived` |
+| `child-failed-no-parent-reaction` | child failure evidence, and no delegation event after the anchor | `derived` |
+| `parent-retried-same-agent` | first later delegation stamps the same agent as the anchor, and the two inputs are not comparable | `derived` |
+| `parent-retried-identical-delegation-input` | same agent, and the two comparable inputs compare identical | `derived` |
+| `parent-retried-with-changed-delegation-input` | same agent, and the two comparable inputs differ (the input-change proxy) | `derived` |
+| `parent-fallback-to-other-agent` | first later delegation stamps a different agent | `derived` |
+| `parent-reaction-unclear` | later delegation exists but no agent is stamped, or the anchor has none | `derived` |
+| `insufficient-data` | child stream incomplete, no anchor, or parent stream incomplete | `unavailable` |
+
+What stays recorded inside those assessments: the child session id, the anchoring parent event and turn ids, the stamped agents, the later delegation event ids and the child diagnostics summary are copied or measured. Only the pattern and reaction labels are `derived`. Child failure evidence is `measured` only when the child stream is complete; on a windowed stream the child's failure picture is unavailable and the pattern is `insufficient-data`.
+
+Prompt adaptation is out of reach: adapted prompts are not observable in the data. Nothing records a rewritten or re-scoped child prompt, and delegation inputs are compared as recorded values, never interpreted. The only related signal is the delegation-input change proxy — a comparison of two recorded tool inputs — and it is labelled `derived`; it reports that the input changed, not what changed or why.
+
 ## OpenCode 2 plugin API
 
 The installed `@opencode/plugin` 2.2.6 exposes (among others):

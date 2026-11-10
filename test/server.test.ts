@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   EPISODE_COMPARE_PATH,
   SESSION_DIAGNOSTICS_PATTERN,
+  SESSION_FAMILY_RECOVERY_PATTERN,
   createObservabilityServer,
 } from "../src/server/http.ts";
 import {
@@ -13,6 +14,7 @@ import {
   secretsFixture,
   session,
   simpleFixture,
+  subagentFixture,
   toolBlock,
   toolsFixture,
   user,
@@ -135,6 +137,16 @@ function diagnosticsURL(base: string, sessionID: string): string {
     .replaceAll("\\/", "/")
     .replace("([^/]+)", encodeURIComponent(sessionID));
   assert.match(route, SESSION_DIAGNOSTICS_PATTERN);
+  return `${base}${route}`;
+}
+
+/** Builds a family-recovery URL by expanding the exported route pattern. */
+function familyRecoveryURL(base: string, sessionID: string): string {
+  const route = SESSION_FAMILY_RECOVERY_PATTERN.source
+    .slice(1, -1)
+    .replaceAll("\\/", "/")
+    .replace("([^/]+)", encodeURIComponent(sessionID));
+  assert.match(route, SESSION_FAMILY_RECOVERY_PATTERN);
   return `${base}${route}`;
 }
 
@@ -513,6 +525,101 @@ test("HTTP compare honours the reveal gate, HEAD and the method gate", async () 
     },
     false,
   );
+});
+
+test("HTTP family recovery returns the assessed child family", async () => {
+  await withServer(subagentFixture(), async (base) => {
+    const response = await fetch(
+      `${familyRecoveryURL(base, "ses_parent")}?reveal=1`,
+    );
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as any;
+    assert.equal(body.revealAllowed, true);
+    assert.equal(body.recovery.schemaVersion, 1);
+    assert.equal(body.recovery.redacted, false);
+    assert.equal(body.recovery.depth, 1);
+    assert.equal(body.recovery.assessments.length, 1);
+    assert.equal(
+      body.recovery.assessments[0].link.childSessionID,
+      "ses_child",
+    );
+
+    const hidden = (await fetch(
+      familyRecoveryURL(base, "ses_parent"),
+    ).then((res) => res.json())) as any;
+    assert.equal(hidden.recovery.redacted, true);
+    assert.equal(hidden.revealAllowed, true);
+  });
+});
+
+test("HTTP family recovery maps an unknown session to a stable 404", async () => {
+  await withServer(subagentFixture(), async (base) => {
+    const response = await fetch(familyRecoveryURL(base, "ses_missing"));
+    assert.equal(response.status, 404);
+    assert.equal(((await response.json()) as any).error, "session_not_found");
+  });
+});
+
+test("HTTP family recovery honours the reveal gate", async () => {
+  await withServer(
+    subagentFixture(),
+    async (base) => {
+      const forbidden = await fetch(
+        `${familyRecoveryURL(base, "ses_parent")}?reveal=1`,
+      );
+      assert.equal(forbidden.status, 403);
+      assert.equal(
+        ((await forbidden.json()) as any).error,
+        "reveal_disabled",
+      );
+    },
+    false,
+  );
+});
+
+test("HTTP family recovery rejects writes and answers HEAD without a body", async () => {
+  await withServer(subagentFixture(), async (base) => {
+    const post = await fetch(familyRecoveryURL(base, "ses_parent"), methods());
+    assert.equal(post.status, 405);
+    assert.equal(((await post.json()) as any).error, "method_not_allowed");
+
+    const head = await fetch(familyRecoveryURL(base, "ses_parent"), {
+      method: "HEAD",
+    });
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), "");
+  });
+});
+
+test("HTTP family recovery clears the dataset cache when ?refresh is set", async () => {
+  const { path } = writeFixtureDb(subagentFixture());
+  const server = await createObservabilityServer({
+    dbPath: path,
+    port: 0,
+    allowReveal: true,
+  });
+  try {
+    let cleared = 0;
+    const clear = server.service.clearCache.bind(server.service);
+    server.service.clearCache = () => {
+      cleared += 1;
+      clear();
+    };
+
+    const warm = await fetch(familyRecoveryURL(server.url, "ses_parent"));
+    assert.equal(warm.status, 200);
+    assert.equal(cleared, 0);
+    assert.equal(server.service.describe().cacheEntries, 2);
+
+    const refreshed = await fetch(
+      `${familyRecoveryURL(server.url, "ses_parent")}?refresh=1`,
+    );
+    assert.equal(refreshed.status, 200);
+    assert.equal(cleared, 1);
+    assert.equal(server.service.describe().cacheEntries, 2);
+  } finally {
+    await server.close();
+  }
 });
 
 function methods(): RequestInit {

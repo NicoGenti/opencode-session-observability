@@ -6,8 +6,13 @@ import { redactValue, truncate } from "./util.ts";
 import { exportSession } from "./export.ts";
 import { listDiagnosticEpisodes } from "./episodes.ts";
 import { compareEpisodeData } from "./episodeCompare.ts";
+import { evaluateDelegationRecovery } from "./delegation.ts";
 import type { Diagnostics } from "./diagnostics.ts";
 import type { DiagnosticEpisode } from "./episodes.ts";
+import type {
+  DelegationChildInput,
+  FamilyDelegationRecovery,
+} from "./delegation.ts";
 import type {
   AttemptSummary,
   EpisodeCompareInput,
@@ -295,6 +300,52 @@ export class ObservabilityService {
   }
 
   /**
+   * Synthetic full-range child for a dataset that could not be loaded. The
+   * empty stream keeps the child counted (`totalChildren`) and classifies it
+   * `insufficient-data` instead of silently dropping it; only the recorded
+   * session summary is copied, never exception text.
+   */
+  private emptyChildInput(
+    child: SessionSummary,
+    family: SessionFamily,
+  ): DelegationChildInput {
+    const session: SessionMeta = {
+      id: child.id,
+      parentID: child.parentID,
+      title: child.title,
+      directory: child.directory,
+      agent: child.agent,
+      model: child.model,
+      cost: child.cost,
+      tokens: child.tokens,
+      outcome: child.outcome,
+      time: { created: child.timeCreated, updated: child.timeUpdated },
+    };
+    const coverage: Coverage = {
+      fromSeq: 0,
+      toSeq: 0,
+      minSeq: 0,
+      maxSeq: 0,
+      complete: false,
+      messages: 0,
+      windowMessages: 0,
+    };
+    const events: NormalizedEvent[] = [];
+    const analysis = projectSession(events, {
+      session,
+      family,
+      coverage,
+      sourceKind: this.source.kind,
+    });
+    return {
+      sessionID: child.id,
+      events,
+      analysis,
+      diagnostics: evaluateDiagnostics(events, analysis),
+    };
+  }
+
+  /**
    * Resolves one side of a comparison. The episode is re-derived from the same
    * event stream that supplies its attempts, so an unknown id always fails
    * instead of matching a stale incident.
@@ -377,6 +428,60 @@ export class ObservabilityService {
       episodes: listDiagnosticEpisodes(diagnostics, sessionID),
       redacted: !reveal,
     };
+  }
+
+  /**
+   * Delegation recovery across a root session and its direct children.
+   *
+   * Parent and child datasets are always loaded full-range: a windowed stream
+   * could not claim a complete failure picture. Linkage is derived from the
+   * recorded parent delegation tool events, never guessed. As in
+   * `diagnostics`, the no-reveal mode evaluates the redacted event stream, so a
+   * credential-bearing delegation input classifies as `"redacted"` instead of
+   * comparable; the dataset cache stays raw, so flipping `reveal` on a warm
+   * cache is still correct. A child that cannot be loaded is reported as an
+   * empty synthetic child (`insufficient-data`) plus a sanitized note.
+   */
+  async familyRecovery(
+    sessionID: string,
+    options: { reveal?: boolean } = {},
+  ): Promise<FamilyDelegationRecovery> {
+    const reveal = options.reveal === true;
+    const parentDataset = await this.loadDataset(sessionID);
+    const children: DelegationChildInput[] = [];
+    const notes: string[] = [];
+    for (const child of parentDataset.family.children) {
+      try {
+        const dataset = await this.loadDataset(child.id);
+        children.push({
+          sessionID: child.id,
+          events: reveal ? dataset.events : this.redactedFor(dataset),
+          analysis: dataset.analysis,
+          diagnostics: this.diagnosticsFor(dataset, reveal),
+        });
+      } catch (error) {
+        // Only a missing child session degrades into the synthetic child;
+        // storage/schema/data failures must reach `errorBody` as 503/500
+        // instead of being reported as an insufficient-data child.
+        if (!(error instanceof SessionNotFoundError)) throw error;
+        notes.push(`child ${child.id}: child load unavailable`);
+        children.push(this.emptyChildInput(child, parentDataset.family));
+      }
+    }
+    const recovery = evaluateDelegationRecovery({
+      rootSessionID: sessionID,
+      parentSessionID: sessionID,
+      parentEvents: reveal
+        ? parentDataset.events
+        : this.redactedFor(parentDataset),
+      parentAnalysis: parentDataset.analysis,
+      parentDiagnostics: this.diagnosticsFor(parentDataset, reveal),
+      children,
+      reveal,
+      seen: new Set<string>([sessionID]),
+    });
+    if (notes.length === 0) return recovery;
+    return { ...recovery, notes: [...recovery.notes, ...notes] };
   }
 
   /**
