@@ -268,6 +268,35 @@ test("formatRow keeps the selection marker and splits the status cell", () => {
   assert.equal((compact.prefix + compact.status).length, 42);
 });
 
+test("padCell clips over-wide cells to the column width (F-n5)", () => {
+  const turn = makeTurn({ cost: measured(1_000_000) });
+  const row = formatRow(turn, ["cost"], false);
+
+  // "$1000000.00 M" is 13 characters in a width-10 column: it clips to the
+  // ellipsis form instead of pushing the grid one character to the right.
+  assert.equal(row.prefix, "  $1000000.…");
+  assert.equal(row.prefix.length, 12);
+  assert.equal(row.status, "");
+
+  // The whole compact row keeps the pinned width regardless of the cell value.
+  const compact = formatRow(turn, COMPACT_COLUMNS, false);
+  assert.equal((compact.prefix + compact.status).length, 42);
+  assert.equal(compact.prefix.includes("$1000000.00"), false);
+});
+
+test("padCell keeps exact-width and shorter cells padded as before", () => {
+  // "$1234.56 M" is exactly the 10-character cost column.
+  const exact = formatRow(makeTurn({ cost: measured(1234.56) }), ["cost"], false);
+  assert.equal(exact.prefix, "  $1234.56 M");
+
+  // A shorter cell keeps the original right-aligned padding.
+  const short = formatRow(makeTurn({ cost: measured(0.0123) }), ["cost"], false);
+  assert.equal(short.prefix, "   $0.0123 M");
+
+  // Header labels are never over-wide, so they pad exactly as before.
+  assert.equal(formatHeader(["cost"]), "        Cost");
+});
+
 test("formatRow accordion marker reflects steps and expansion", () => {
   const withSteps = makeTurn({ steps: [makeStep()] });
   const collapsed = formatRow(withSteps, COMPACT_COLUMNS, true, false);

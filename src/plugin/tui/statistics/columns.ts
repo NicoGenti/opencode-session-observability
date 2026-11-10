@@ -221,8 +221,16 @@ export function turnCellValues(turn: Turn): Record<ColumnId, string> {
 }
 
 function padCell(id: ColumnId, value: string): string {
-  if (id === "status") return value.padEnd(columnWidth(id));
-  return value.padStart(columnWidth(id));
+  // Clip before padding, like the step accordion: an over-wide cell (e.g. a
+  // cost at $1,000,000 is 11 characters in a width-10 column) must not push
+  // the grid off by one. Shorter values keep their unchanged padding.
+  const width = columnWidth(id);
+  const clipped =
+    value.length > width
+      ? `${value.slice(0, Math.max(0, width - 1))}…`
+      : value;
+  if (id === "status") return clipped.padEnd(width);
+  return clipped.padStart(width);
 }
 
 /** Header line for the resolved column set, aligned with `formatRow`. */
