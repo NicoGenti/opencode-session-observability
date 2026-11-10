@@ -10,7 +10,7 @@ const SDK_REQUIRE = /require\(\s*["']@opencode\/plugin(?:\/[^"']*)?["']\s*\)/;
 test("plugin sources keep the OpenCode SDK type-only", async () => {
   const directory = new URL("../src/plugin/", import.meta.url);
   for (const entry of await readdir(directory)) {
-    if (!entry.endsWith(".ts")) continue;
+    if (!entry.endsWith(".ts") && !entry.endsWith(".tsx")) continue;
     const source = await readFile(new URL(entry, directory), "utf8");
     for (const match of source.matchAll(SDK_IMPORT)) {
       assert.fail(`${entry} imports ${match[1]} at runtime`);
