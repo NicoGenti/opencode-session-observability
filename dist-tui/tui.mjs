@@ -1,5 +1,5 @@
 import { createComponent, createElement, setProp, insert, effect, insertNode, createTextNode, memo } from '@opentui/solid';
-import { createSignal, createMemo, createEffect, Show, For } from 'solid-js';
+import { createSignal, createMemo, onMount, onCleanup, createEffect, Show, For } from 'solid-js';
 import { PluginContextProvider, usePlugin } from '@opencode/plugin/tui';
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
@@ -174,9 +174,10 @@ const tui = defineTuiPlugin({
     const base = baseUrl(context.options.url);
     const { statisticsPanelElement } = await Promise.resolve().then(() => StatisticsView$1);
     const openStatisticsPanel = () => context.ui.panel.open(STATISTICS_PANEL, { presentation: "fullscreen" });
+    const statisticsKeyboard = { handlers: null };
     context.ui.slot({
       append: "session.panel",
-      render: (input) => input.name === STATISTICS_PANEL ? statisticsPanelElement(context, input) : null
+      render: (input) => input.name === STATISTICS_PANEL ? statisticsPanelElement(context, input, statisticsKeyboard) : null
     });
     const openView = async (view) => {
       const configured = pluginToken(context.options.token);
@@ -262,6 +263,48 @@ const tui = defineTuiPlugin({
           palette: true,
           slash: { name: "statistics-web", aliases: ["stats:web"] },
           run: () => openView("statistics")
+        }
+      ]
+    }));
+    context.keymap.layer(() => ({
+      enabled: () => context.ui.panel.current()?.name === STATISTICS_PANEL,
+      priority: 10,
+      commands: [
+        {
+          id: "statistics.moveDown",
+          title: "Statistics: select next turn",
+          group: "Statistics",
+          bind: "j,down",
+          run: () => {
+            statisticsKeyboard.handlers?.moveSelection(1);
+          }
+        },
+        {
+          id: "statistics.moveUp",
+          title: "Statistics: select previous turn",
+          group: "Statistics",
+          bind: "k,up",
+          run: () => {
+            statisticsKeyboard.handlers?.moveSelection(-1);
+          }
+        },
+        {
+          id: "statistics.toggleExpand",
+          title: "Statistics: expand or collapse the selected turn",
+          group: "Statistics",
+          bind: "return",
+          run: () => {
+            statisticsKeyboard.handlers?.toggleExpand();
+          }
+        },
+        {
+          id: "statistics.close",
+          title: "Statistics: close the panel",
+          group: "Statistics",
+          bind: "escape",
+          run: () => {
+            context.ui.panel.close();
+          }
         }
       ]
     }));
@@ -430,14 +473,14 @@ function metricOf(metric) {
 function numberText(value) {
   return formatCompact(value);
 }
-function marked(metric, formatter) {
+function marked$1(metric, formatter) {
   const current = metricOf(metric);
   if (current.value === null || !Number.isFinite(current.value)) return "—";
   const basis = current.basis ?? "unavailable";
   return `${formatter(current.value)} ${basisMark(basis)}`;
 }
 function markedCompact(metric) {
-  return marked(metric, (value) => formatCompact(value));
+  return marked$1(metric, (value) => formatCompact(value));
 }
 function contextPair(turn) {
   return `${markedCompact(turn.promptTokensLatest)}/${markedCompact(
@@ -455,29 +498,30 @@ function turnCellValues(turn) {
     reasoning: numberText(tokens?.reasoning),
     cacheRead: numberText(tokens?.cacheRead),
     cacheWrite: numberText(tokens?.cacheWrite),
-    cacheHit: marked(turn.cacheHitRate, (value) => formatPercent(value)),
-    modelMs: marked(turn.modelTime, (value) => formatDuration(value)),
-    toolMs: marked(turn.toolTime, (value) => formatDuration(value)),
-    residual: marked(turn.residualTime, (value) => formatDuration(value)),
-    cost: marked(turn.cost, (value) => formatCost(value)),
+    cacheHit: marked$1(turn.cacheHitRate, (value) => formatPercent(value)),
+    modelMs: marked$1(turn.modelTime, (value) => formatDuration(value)),
+    toolMs: marked$1(turn.toolTime, (value) => formatDuration(value)),
+    residual: marked$1(turn.residualTime, (value) => formatDuration(value)),
+    cost: marked$1(turn.cost, (value) => formatCost(value)),
     status: statusSymbol(status),
     tokens: contextPair(turn)
   };
 }
-function padCell(id, value) {
+function padCell$1(id, value) {
   if (id === "status") return value.padEnd(columnWidth(id));
   return value.padStart(columnWidth(id));
 }
 function formatHeader(columns) {
-  return `  ${columns.map((id) => padCell(id, columnLabel(id))).join(" ")}`;
+  return `  ${columns.map((id) => padCell$1(id, columnLabel(id))).join(" ")}`;
 }
-function formatRow(turn, columns, selected) {
+function formatRow(turn, columns, selected, expanded) {
   const values = turnCellValues(turn);
-  const marker = selected ? "> " : "  ";
+  const selection = selected ? ">" : " ";
+  const marker = expanded === void 0 ? `${selection} ` : `${selection}${(turn.steps?.length ?? 0) === 0 ? " " : expanded ? "-" : "+"}`;
   const cells = [];
   let status = "";
   for (const id of columns) {
-    const cell = padCell(id, values[id]);
+    const cell = padCell$1(id, values[id]);
     if (id === "status") {
       status = ` ${cell}`;
       continue;
@@ -485,6 +529,98 @@ function formatRow(turn, columns, selected) {
     cells.push(cell);
   }
   return { prefix: `${marker}${cells.join(" ")}`, status };
+}
+
+const EM_DASH = "—";
+const STEP_WIDTHS = {
+  index: 3,
+  trigger: 18,
+  model: 22,
+  tools: 20,
+  tokens: 17,
+  cost: 10,
+  time: 10,
+  status: 5
+};
+const LEFT_ALIGNED = /* @__PURE__ */ new Set(["trigger", "model", "tools"]);
+const ALL_FIELDS = [
+  "index",
+  "trigger",
+  "model",
+  "tools",
+  "tokens",
+  "cost",
+  "time",
+  "status"
+];
+function stepFields(width) {
+  const safe = Number.isFinite(width) ? Math.trunc(width) : 0;
+  if (safe >= 120) return ALL_FIELDS;
+  if (safe >= 90) {
+    return ["index", "trigger", "model", "tokens", "cost", "time", "status"];
+  }
+  if (safe >= 81) return ["index", "trigger", "tokens", "cost", "status"];
+  return ["index", "tokens", "cost", "status"];
+}
+function text(value) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : EM_DASH;
+}
+function marked(metric, formatter) {
+  if (!metric || metric.value === null || !Number.isFinite(metric.value)) {
+    return EM_DASH;
+  }
+  return `${formatter(metric.value)} ${basisMark(metric.basis)}`;
+}
+function modelLabel(step) {
+  const id = step.model?.id;
+  if (typeof id === "string" && id.trim().length > 0) return id.trim();
+  return text(step.provider);
+}
+function toolSummary(step) {
+  const names = Array.isArray(step.toolNames) ? step.toolNames.filter(
+    (name) => typeof name === "string" && name.trim().length > 0
+  ) : [];
+  if (names.length > 0) return names.join(",");
+  const calls = Array.isArray(step.toolCalls) ? step.toolCalls.length : 0;
+  if (calls > 0) return calls === 1 ? "1 call" : `${calls} calls`;
+  return EM_DASH;
+}
+function tokensLabel(step) {
+  const tokens = step.tokens;
+  if (!tokens) return EM_DASH;
+  return `${formatCompact(tokens.input)}→${formatCompact(tokens.output)}`;
+}
+function stepCellValues(step) {
+  const trigger = typeof step.trigger === "string" && step.trigger.trim().length > 0 ? step.trigger.trim() : text(step.agent);
+  return {
+    index: Number.isFinite(step.index) ? String(Math.trunc(step.index)) : "0",
+    trigger,
+    model: modelLabel(step),
+    tools: toolSummary(step),
+    tokens: tokensLabel(step),
+    cost: formatCost(step.cost),
+    time: marked(step.modelTime, formatDuration),
+    status: statusMark(step.status).symbol
+  };
+}
+function padCell(field, value) {
+  const width = STEP_WIDTHS[field];
+  const clipped = value.length > width ? `${value.slice(0, Math.max(0, width - 1))}…` : value;
+  return LEFT_ALIGNED.has(field) ? clipped.padEnd(width) : clipped.padStart(width);
+}
+function formatStepRow(step, width, fields = stepFields(width)) {
+  const values = stepCellValues(step);
+  const cells = [];
+  let status = "";
+  for (const field of fields) {
+    const cell = padCell(field, values[field]);
+    if (field === "status") {
+      status = ` ${cell}`;
+      continue;
+    }
+    cells.push(cell);
+  }
+  return { prefix: `    ${cells.join(" ")}`, status };
 }
 
 function defineRpc(definition) {
@@ -690,6 +826,17 @@ const Observability = defineRpc({
   events: {}
 });
 
+function clampIndex(index, count) {
+  const total = Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0;
+  if (total === 0) return 0;
+  const value = Number.isFinite(index) ? Math.trunc(index) : 0;
+  return Math.min(Math.max(value, 0), total - 1);
+}
+function moveSelection(current, delta, count) {
+  const step = Number.isFinite(delta) ? Math.trunc(delta) : 0;
+  const base = Number.isFinite(current) ? Math.trunc(current) : 0;
+  return clampIndex(base + step, count);
+}
 const UNAVAILABLE = { value: null, basis: "unavailable" };
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -733,6 +880,9 @@ function createStatisticsState(client) {
   const [error, setError] = createSignal(null);
   const [sessionID, setSessionID] = createSignal("");
   const [selectedIndex, setSelectedIndexSignal] = createSignal(0);
+  const [expandedTurns, setExpandedTurns] = createSignal(
+    /* @__PURE__ */ new Set()
+  );
   let request = 0;
   const totals = createMemo(() => {
     const value = analysis();
@@ -747,14 +897,44 @@ function createStatisticsState(client) {
   });
   const turns = createMemo(() => analysis()?.turns ?? []);
   function setSelectedIndex(index) {
+    setSelectedIndexSignal(clampIndex(index, turns().length));
+  }
+  function moveSelectionBy(delta) {
     setSelectedIndexSignal(
-      Number.isFinite(index) ? Math.max(0, Math.trunc(index)) : 0
+      (current) => moveSelection(current, delta, turns().length)
     );
+  }
+  function toggleTurnExpand(turnID) {
+    const id = typeof turnID === "string" ? turnID.trim() : "";
+    if (id.length === 0) return;
+    setExpandedTurns((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  function isSelected(turn) {
+    const list = turns();
+    const index = selectedIndex();
+    return index >= 0 && index < list.length && list[index] === turn;
+  }
+  function reconcile(analysisValue) {
+    const list = analysisValue.turns ?? [];
+    setSelectedIndexSignal((current) => clampIndex(current, list.length));
+    const alive = new Set(list.map((turn) => turn.id));
+    setExpandedTurns((current) => {
+      const next = new Set([...current].filter((id) => alive.has(id)));
+      return next.size === current.size ? current : next;
+    });
   }
   async function fetchAnalysis(nextSessionID) {
     const target = typeof nextSessionID === "string" ? nextSessionID.trim() : "";
     const ticket = ++request;
-    if (target !== sessionID()) setSelectedIndex(0);
+    if (target !== sessionID()) {
+      setSelectedIndex(0);
+      setExpandedTurns(/* @__PURE__ */ new Set());
+    }
     setSessionID(target);
     setAnalysis(null);
     setError(null);
@@ -777,6 +957,7 @@ function createStatisticsState(client) {
         setError(parsed.message);
         return;
       }
+      reconcile(parsed.analysis);
       setAnalysis(parsed.analysis);
     } catch {
       if (ticket !== request) return;
@@ -792,9 +973,13 @@ function createStatisticsState(client) {
     error,
     sessionID,
     selectedIndex,
+    expandedTurns,
     totals,
     turns,
     setSelectedIndex,
+    moveSelection: moveSelectionBy,
+    toggleTurnExpand,
+    isSelected,
     fetchAnalysis
   };
 }
@@ -962,9 +1147,11 @@ function Table(props) {
           get each() {
             return props.turns;
           },
-          children: (turn, index) => {
-            const row = () => formatRow(turn, props.layout.columns, index() === props.selected);
-            return (() => {
+          children: (turn) => {
+            const selected = () => props.isSelected(turn);
+            const expanded = () => props.expanded.has(turn.id);
+            const row = () => formatRow(turn, props.layout.columns, selected(), expanded());
+            return [(() => {
               var _el$24 = createElement("box"), _el$25 = createElement("text"), _el$26 = createElement("text");
               insertNode(_el$24, _el$25);
               insertNode(_el$24, _el$26);
@@ -974,7 +1161,7 @@ function Table(props) {
               setProp(_el$26, "wrapMode", "none");
               insert(_el$26, () => row().status);
               effect((_p$) => {
-                var _v$8 = colorOf(props.palette, index() === props.selected ? "accent" : "text"), _v$9 = colorOf(props.palette, statusMark(turn.status).paletteKey);
+                var _v$8 = colorOf(props.palette, selected() ? "accent" : "text"), _v$9 = colorOf(props.palette, statusMark(turn.status).paletteKey);
                 _v$8 !== _p$.e && (_p$.e = setProp(_el$25, "fg", _v$8, _p$.e));
                 _v$9 !== _p$.t && (_p$.t = setProp(_el$26, "fg", _v$9, _p$.t));
                 return _p$;
@@ -983,7 +1170,41 @@ function Table(props) {
                 t: void 0
               });
               return _el$24;
-            })();
+            })(), createComponent(Show, {
+              get when() {
+                return memo(() => !!expanded())() && (turn.steps?.length ?? 0) > 0;
+              },
+              get children() {
+                return createComponent(For, {
+                  get each() {
+                    return turn.steps ?? [];
+                  },
+                  children: (step) => {
+                    const stepRow = () => formatStepRow(step, props.layout.width);
+                    return (() => {
+                      var _el$27 = createElement("box"), _el$28 = createElement("text"), _el$29 = createElement("text");
+                      insertNode(_el$27, _el$28);
+                      insertNode(_el$27, _el$29);
+                      setProp(_el$27, "flexDirection", "row");
+                      setProp(_el$28, "wrapMode", "none");
+                      insert(_el$28, () => stepRow().prefix);
+                      setProp(_el$29, "wrapMode", "none");
+                      insert(_el$29, () => stepRow().status);
+                      effect((_p$) => {
+                        var _v$0 = colorOf(props.palette, "text2"), _v$1 = colorOf(props.palette, statusMark(step.status).paletteKey);
+                        _v$0 !== _p$.e && (_p$.e = setProp(_el$28, "fg", _v$0, _p$.e));
+                        _v$1 !== _p$.t && (_p$.t = setProp(_el$29, "fg", _v$1, _p$.t));
+                        return _p$;
+                      }, {
+                        e: void 0,
+                        t: void 0
+                      });
+                      return _el$27;
+                    })();
+                  }
+                });
+              }
+            })];
           }
         }));
         effect((_$p) => setProp(_el$21, "backgroundColor", backgroundOf(props.palette), _$p));
@@ -997,16 +1218,31 @@ function StatisticsPanel(props) {
   const state = createStatisticsState(context.client);
   const palette = createMemo(() => themePalette(context) ?? {});
   const currentLayout = createMemo(() => resolveLayout(props.width));
+  const keyboardHandlers = {
+    moveSelection: (delta) => state.moveSelection(delta),
+    toggleExpand: () => {
+      const turn = state.turns()[state.selectedIndex()];
+      if (turn) state.toggleTurnExpand(turn.id);
+    }
+  };
+  onMount(() => {
+    props.keyboard.handlers = keyboardHandlers;
+  });
+  onCleanup(() => {
+    if (props.keyboard.handlers === keyboardHandlers) {
+      props.keyboard.handlers = null;
+    }
+  });
   createEffect(() => {
     const sessionID = props.sessionID;
     void state.fetchAnalysis(sessionID);
   });
   return (() => {
-    var _el$27 = createElement("box");
-    setProp(_el$27, "flexDirection", "column");
-    setProp(_el$27, "flexGrow", 1);
-    setProp(_el$27, "padding", 1);
-    insert(_el$27, createComponent(Show, {
+    var _el$30 = createElement("box");
+    setProp(_el$30, "flexDirection", "column");
+    setProp(_el$30, "flexGrow", 1);
+    setProp(_el$30, "padding", 1);
+    insert(_el$30, createComponent(Show, {
       get when() {
         return state.analysis();
       },
@@ -1033,10 +1269,10 @@ function StatisticsPanel(props) {
           return state.error();
         },
         get children() {
-          var _el$28 = createElement("text");
-          insert(_el$28, () => state.error());
-          effect((_$p) => setProp(_el$28, "fg", colorOf(palette(), "critical"), _$p));
-          return _el$28;
+          var _el$31 = createElement("text");
+          insert(_el$31, () => state.error());
+          effect((_$p) => setProp(_el$31, "fg", colorOf(palette(), "critical"), _$p));
+          return _el$31;
         }
       }), createComponent(Show, {
         get when() {
@@ -1050,8 +1286,11 @@ function StatisticsPanel(props) {
             get turns() {
               return state.turns();
             },
-            get selected() {
-              return state.selectedIndex();
+            get isSelected() {
+              return state.isSelected;
+            },
+            get expanded() {
+              return state.expandedTurns();
             },
             get palette() {
               return palette();
@@ -1059,15 +1298,15 @@ function StatisticsPanel(props) {
           });
         },
         get children() {
-          var _el$29 = createElement("text");
-          insertNode(_el$29, createTextNode(`Loading…`));
-          effect((_$p) => setProp(_el$29, "fg", colorOf(palette(), "muted"), _$p));
-          return _el$29;
+          var _el$32 = createElement("text");
+          insertNode(_el$32, createTextNode(`Loading…`));
+          effect((_$p) => setProp(_el$32, "fg", colorOf(palette(), "muted"), _$p));
+          return _el$32;
         }
       })]
     }));
-    effect((_$p) => setProp(_el$27, "backgroundColor", backgroundOf(palette()), _$p));
-    return _el$27;
+    effect((_$p) => setProp(_el$30, "backgroundColor", backgroundOf(palette()), _$p));
+    return _el$30;
   })();
 }
 function StatisticsView(props) {
@@ -1082,12 +1321,15 @@ function StatisticsView(props) {
         },
         get width() {
           return props.width;
+        },
+        get keyboard() {
+          return props.keyboard;
         }
       });
     }
   });
 }
-function statisticsPanelElement(context, input) {
+function statisticsPanelElement(context, input, keyboard) {
   return createComponent(StatisticsView, {
     context,
     get sessionID() {
@@ -1095,7 +1337,8 @@ function statisticsPanelElement(context, input) {
     },
     get width() {
       return input.width;
-    }
+    },
+    keyboard
   });
 }
 

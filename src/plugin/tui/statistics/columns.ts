@@ -240,14 +240,25 @@ export interface FormattedRow {
 /**
  * Formats one turn row. Status is split out because the view colors it by
  * palette key while keeping the terminal-safe symbol in the same cell.
+ *
+ * When `expanded` is provided the two-character selection marker becomes the
+ * selection glyph plus the accordion marker (`+` collapsed, `-` expanded, or a
+ * blank for turns without steps). Omitting it keeps the phase-2 output.
  */
 export function formatRow(
   turn: Turn,
   columns: readonly ColumnId[],
   selected: boolean,
+  expanded?: boolean,
 ): FormattedRow {
   const values = turnCellValues(turn);
-  const marker = selected ? "> " : "  ";
+  const selection = selected ? ">" : " ";
+  const marker =
+    expanded === undefined
+      ? `${selection} `
+      : `${selection}${
+          (turn.steps?.length ?? 0) === 0 ? " " : expanded ? "-" : "+"
+        }`;
   const cells: string[] = [];
   let status = "";
   for (const id of columns) {

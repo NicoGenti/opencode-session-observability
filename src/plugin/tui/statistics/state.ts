@@ -26,10 +26,54 @@ export interface StatisticsState {
   readonly error: Accessor<string | null>;
   readonly sessionID: Accessor<string>;
   readonly selectedIndex: Accessor<number>;
+  readonly expandedTurns: Accessor<ReadonlySet<string>>;
   readonly totals: Accessor<StatisticsTotals | null>;
   readonly turns: Accessor<readonly Turn[]>;
   setSelectedIndex(index: number): void;
+  moveSelection(delta: number): void;
+  toggleTurnExpand(turnID: string): void;
+  isSelected(turn: Turn): boolean;
   fetchAnalysis(sessionID: string): Promise<void>;
+}
+
+/**
+ * Panel-scoped keyboard actions. `src/plugin/tui.ts` owns the keymap layer and
+ * forwards dispatch here, so the layer never imports Solid at runtime.
+ */
+export interface StatisticsKeyboardHandlers {
+  readonly moveSelection: (delta: number) => void;
+  readonly toggleExpand: () => void;
+}
+
+/**
+ * Mutable hand-off between the keymap layer and the mounted panel. The panel
+ * installs its handlers on mount and clears them on cleanup, so commands are
+ * no-ops whenever the panel is not rendered.
+ */
+export interface StatisticsKeyboardBridge {
+  handlers: StatisticsKeyboardHandlers | null;
+}
+
+/** Clamps an index into `[0, count - 1]`; an empty list always yields 0. */
+export function clampIndex(index: number, count: number): number {
+  const total = Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0;
+  if (total === 0) return 0;
+  const value = Number.isFinite(index) ? Math.trunc(index) : 0;
+  return Math.min(Math.max(value, 0), total - 1);
+}
+
+/**
+ * Pure selection step. Exported for phase-4 unit tests: given the current
+ * index, a delta and the turn count, it returns the clamped next index.
+ */
+export function moveSelection(
+  current: number,
+  delta: number,
+  count: number,
+): number {
+  const step = Number.isFinite(delta) ? Math.trunc(delta) : 0;
+  const base = Number.isFinite(current) ? Math.trunc(current) : 0;
+  return clampIndex(base + step, count);
 }
 
 type RpcCapable = Pick<OpenCodeClient, "rpc">;
@@ -96,6 +140,9 @@ export function createStatisticsState(client: RpcCapable): StatisticsState {
   const [error, setError] = createSignal<string | null>(null);
   const [sessionID, setSessionID] = createSignal("");
   const [selectedIndex, setSelectedIndexSignal] = createSignal(0);
+  const [expandedTurns, setExpandedTurns] = createSignal<ReadonlySet<string>>(
+    new Set(),
+  );
   let request = 0;
 
   const totals = createMemo<StatisticsTotals | null>(() => {
@@ -116,9 +163,45 @@ export function createStatisticsState(client: RpcCapable): StatisticsState {
   const turns = createMemo<readonly Turn[]>(() => analysis()?.turns ?? []);
 
   function setSelectedIndex(index: number): void {
-    setSelectedIndexSignal(
-      Number.isFinite(index) ? Math.max(0, Math.trunc(index)) : 0,
+    setSelectedIndexSignal(clampIndex(index, turns().length));
+  }
+
+  function moveSelectionBy(delta: number): void {
+    setSelectedIndexSignal((current) =>
+      moveSelection(current, delta, turns().length),
     );
+  }
+
+  /**
+   * Toggles one turn's accordion row. Turns carry no per-turn transient view
+   * state today, so there is nothing else to reset when a turn expands.
+   */
+  function toggleTurnExpand(turnID: string): void {
+    const id = typeof turnID === "string" ? turnID.trim() : "";
+    if (id.length === 0) return;
+    setExpandedTurns((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function isSelected(turn: Turn): boolean {
+    const list = turns();
+    const index = selectedIndex();
+    return index >= 0 && index < list.length && list[index] === turn;
+  }
+
+  /** Drops expanded ids that no longer exist and clamps the selection. */
+  function reconcile(analysisValue: Analysis): void {
+    const list = analysisValue.turns ?? [];
+    setSelectedIndexSignal((current) => clampIndex(current, list.length));
+    const alive = new Set(list.map((turn) => turn.id));
+    setExpandedTurns((current) => {
+      const next = new Set([...current].filter((id) => alive.has(id)));
+      return next.size === current.size ? current : next;
+    });
   }
 
   async function fetchAnalysis(nextSessionID: string): Promise<void> {
@@ -126,7 +209,10 @@ export function createStatisticsState(client: RpcCapable): StatisticsState {
       typeof nextSessionID === "string" ? nextSessionID.trim() : "";
     const ticket = ++request;
 
-    if (target !== sessionID()) setSelectedIndex(0);
+    if (target !== sessionID()) {
+      setSelectedIndex(0);
+      setExpandedTurns(new Set<string>());
+    }
     setSessionID(target);
     setAnalysis(null);
     setError(null);
@@ -151,6 +237,7 @@ export function createStatisticsState(client: RpcCapable): StatisticsState {
         setError(parsed.message);
         return;
       }
+      reconcile(parsed.analysis);
       setAnalysis(parsed.analysis);
     } catch {
       if (ticket !== request) return;
@@ -167,9 +254,13 @@ export function createStatisticsState(client: RpcCapable): StatisticsState {
     error,
     sessionID,
     selectedIndex,
+    expandedTurns,
     totals,
     turns,
     setSelectedIndex,
+    moveSelection: moveSelectionBy,
+    toggleTurnExpand,
+    isSelected,
     fetchAnalysis,
   };
 }

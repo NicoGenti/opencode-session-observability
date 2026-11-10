@@ -1,4 +1,12 @@
-import { createEffect, createMemo, For, Show, type Accessor } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  For,
+  onCleanup,
+  onMount,
+  Show,
+  type Accessor,
+} from "solid-js";
 import {
   PluginContextProvider,
   usePlugin,
@@ -20,8 +28,11 @@ import {
   type StatisticsLayout,
 } from "./columns.ts";
 import { statusMark } from "./status.ts";
+import { formatStepRow } from "./stepRows.ts";
 import {
   createStatisticsState,
+  type StatisticsKeyboardBridge,
+  type StatisticsKeyboardHandlers,
   type StatisticsState,
   type StatisticsTotals,
 } from "./state.ts";
@@ -147,7 +158,8 @@ function StateMessage(props: { state: StatisticsState; palette: Palette }) {
 function Table(props: {
   layout: StatisticsLayout;
   turns: readonly Turn[];
-  selected: number;
+  isSelected: (turn: Turn) => boolean;
+  expanded: ReadonlySet<string>;
   palette: Palette;
 }) {
   return (
@@ -168,31 +180,66 @@ function Table(props: {
         backgroundColor={backgroundOf(props.palette)}
       >
         <For each={props.turns}>
-          {(turn, index) => {
+          {(turn) => {
+            const selected = () => props.isSelected(turn);
+            const expanded = () => props.expanded.has(turn.id);
             const row = () =>
               formatRow(
                 turn,
                 props.layout.columns,
-                index() === props.selected,
+                selected(),
+                expanded(),
               );
             return (
-              <box flexDirection="row">
-                <text
-                  fg={colorOf(
-                    props.palette,
-                    index() === props.selected ? "accent" : "text",
-                  )}
-                  wrapMode="none"
-                >
-                  {row().prefix}
-                </text>
-                <text
-                  fg={colorOf(props.palette, statusMark(turn.status).paletteKey)}
-                  wrapMode="none"
-                >
-                  {row().status}
-                </text>
-              </box>
+              <>
+                <box flexDirection="row">
+                  <text
+                    fg={colorOf(
+                      props.palette,
+                      selected() ? "accent" : "text",
+                    )}
+                    wrapMode="none"
+                  >
+                    {row().prefix}
+                  </text>
+                  <text
+                    fg={colorOf(
+                      props.palette,
+                      statusMark(turn.status).paletteKey,
+                    )}
+                    wrapMode="none"
+                  >
+                    {row().status}
+                  </text>
+                </box>
+                <Show when={expanded() && (turn.steps?.length ?? 0) > 0}>
+                  <For each={turn.steps ?? []}>
+                    {(step) => {
+                      const stepRow = () =>
+                        formatStepRow(step, props.layout.width);
+                      return (
+                        <box flexDirection="row">
+                          <text
+                            fg={colorOf(props.palette, "text2")}
+                            wrapMode="none"
+                          >
+                            {stepRow().prefix}
+                          </text>
+                          <text
+                            fg={colorOf(
+                              props.palette,
+                              statusMark(step.status).paletteKey,
+                            )}
+                            wrapMode="none"
+                          >
+                            {stepRow().status}
+                          </text>
+                        </box>
+                      );
+                    }}
+                  </For>
+                </Show>
+              </>
             );
           }}
         </For>
@@ -204,11 +251,30 @@ function Table(props: {
 function StatisticsPanel(props: {
   sessionID: string;
   width: number;
+  keyboard: StatisticsKeyboardBridge;
 }) {
   const context = usePlugin();
   const state = createStatisticsState(context.client);
   const palette = createMemo<Palette>(() => themePalette(context) ?? {});
   const currentLayout = createMemo(() => resolveLayout(props.width));
+
+  const keyboardHandlers: StatisticsKeyboardHandlers = {
+    moveSelection: (delta) => state.moveSelection(delta),
+    toggleExpand: () => {
+      const turn = state.turns()[state.selectedIndex()];
+      if (turn) state.toggleTurnExpand(turn.id);
+    },
+  };
+
+  onMount(() => {
+    props.keyboard.handlers = keyboardHandlers;
+  });
+
+  onCleanup(() => {
+    if (props.keyboard.handlers === keyboardHandlers) {
+      props.keyboard.handlers = null;
+    }
+  });
 
   createEffect(() => {
     const sessionID = props.sessionID;
@@ -242,7 +308,8 @@ function StatisticsPanel(props: {
                 <Table
                   layout={currentLayout()}
                   turns={state.turns()}
-                  selected={state.selectedIndex()}
+                  isSelected={state.isSelected}
+                  expanded={state.expandedTurns()}
                   palette={palette()}
                 />
               }
@@ -260,10 +327,15 @@ export function StatisticsView(props: {
   readonly context: Context;
   readonly sessionID: string;
   readonly width: number;
+  readonly keyboard: StatisticsKeyboardBridge;
 }) {
   return (
     <PluginContextProvider value={props.context}>
-      <StatisticsPanel sessionID={props.sessionID} width={props.width} />
+      <StatisticsPanel
+        sessionID={props.sessionID}
+        width={props.width}
+        keyboard={props.keyboard}
+      />
     </PluginContextProvider>
   );
 }
@@ -275,12 +347,14 @@ export function StatisticsView(props: {
 export function statisticsPanelElement(
   context: Context,
   input: StatisticsPanelInput,
+  keyboard: StatisticsKeyboardBridge,
 ) {
   return (
     <StatisticsView
       context={context}
       sessionID={input.sessionID}
       width={input.width}
+      keyboard={keyboard}
     />
   );
 }

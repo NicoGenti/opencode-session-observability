@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import type { Plugin } from "@opencode/plugin/tui";
 import { readTokenFile } from "../server/token-file.ts";
 import { defineTuiPlugin } from "./define.ts";
+import type { StatisticsKeyboardBridge } from "./tui/statistics/state.ts";
 
 const DEFAULT_URL = "http://127.0.0.1:4517";
 
@@ -208,11 +209,18 @@ export default defineTuiPlugin({
     const openStatisticsPanel = (): boolean =>
       context.ui.panel.open(STATISTICS_PANEL, { presentation: "fullscreen" });
 
+    /**
+     * The mounted panel installs its handlers here; the keymap layer below only
+     * forwards. When the panel is closed or not mounted, every command is a
+     * no-op even before the `enabled` gate is considered.
+     */
+    const statisticsKeyboard: StatisticsKeyboardBridge = { handlers: null };
+
     context.ui.slot({
       append: "session.panel",
       render: (input) =>
         input.name === STATISTICS_PANEL
-          ? statisticsPanelElement(context, input)
+          ? statisticsPanelElement(context, input, statisticsKeyboard)
           : null,
     });
 
@@ -306,6 +314,55 @@ export default defineTuiPlugin({
           palette: true,
           slash: { name: "statistics-web", aliases: ["stats:web"] },
           run: () => openView("statistics"),
+        },
+      ],
+    }));
+
+    /**
+     * Panel-scoped navigation. The layer is permanently registered but gated on
+     * `ui.panel.current()`, so it only claims keys while this plugin's
+     * statistics panel is the open panel; `priority` makes it win over host
+     * bindings such as `escape`.
+     */
+    context.keymap.layer(() => ({
+      enabled: () => context.ui.panel.current()?.name === STATISTICS_PANEL,
+      priority: 10,
+      commands: [
+        {
+          id: "statistics.moveDown",
+          title: "Statistics: select next turn",
+          group: "Statistics",
+          bind: "j,down",
+          run: () => {
+            statisticsKeyboard.handlers?.moveSelection(1);
+          },
+        },
+        {
+          id: "statistics.moveUp",
+          title: "Statistics: select previous turn",
+          group: "Statistics",
+          bind: "k,up",
+          run: () => {
+            statisticsKeyboard.handlers?.moveSelection(-1);
+          },
+        },
+        {
+          id: "statistics.toggleExpand",
+          title: "Statistics: expand or collapse the selected turn",
+          group: "Statistics",
+          bind: "return",
+          run: () => {
+            statisticsKeyboard.handlers?.toggleExpand();
+          },
+        },
+        {
+          id: "statistics.close",
+          title: "Statistics: close the panel",
+          group: "Statistics",
+          bind: "escape",
+          run: () => {
+            context.ui.panel.close();
+          },
         },
       ],
     }));
