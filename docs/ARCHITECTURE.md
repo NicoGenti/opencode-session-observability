@@ -1,6 +1,6 @@
 # Architecture
 
-The implementation separates storage, normalization, projection, metrics, presentation and export. The UI never reads OpenCode's raw schema.
+The implementation separates storage, normalization, projection, metrics, diagnostics, presentation and export. The UI never reads OpenCode's raw schema.
 
 ## Data flow
 
@@ -19,10 +19,12 @@ flowchart LR
   PROJ --> MET[Metrics<br/>tokens / cache / durations / speed / context]
   PROJ --> IDX[Event index]
   MET --> TOT[Totals + capabilities + coverage]
+  PROJ --> DIAG[Diagnostics<br/>evaluateDiagnostics → incidents]
 
   PROJ --> SVC[ObservabilityService]
   IDX --> SVC
   TOT --> SVC
+  DIAG --> SVC
   SVC -->|redact / filter / page| HTTP[Local HTTP API]
   SVC -->|redact / filter / page| RPC[Plugin RPC]
   SVC -->|redact unless reveal| EXP[Export JSON / MD / HTML]
@@ -41,7 +43,8 @@ flowchart LR
 | Normalization | `core/normalize.ts` | One ordered `NormalizedEvent` per message/content block. No turn assignment. |
 | Projection | `core/project.ts` | Group events into turns/steps, attach non-step events, identify unattached events, build compaction transactions and capabilities. |
 | Metrics | `core/metrics.ts` | Pure formulas for prompt tokens, cache hit rate, durations, residual, speed, context delta. |
-| Service | `core/service.ts` | Load a dataset, cache briefly, redact, filter, keyset-page, detail, export. |
+| Diagnostics | `core/diagnostics.ts` | Pure, deterministic recovery rules over the recorded event order; incident anchors and contextual footprint metrics. No I/O and no writes. |
+| Service | `core/service.ts` | Load a dataset, cache briefly, compute diagnostics once, redact, filter, keyset-page, detail, export. |
 | Presentation | `server/http.ts`, `server/auth.ts`, `server/token-file.ts`, `ui/*` | Local HTTP API, access token, static UI, view state. |
 | Integration | `plugin/index.ts`, `rpc.ts`, `service.ts`, `tui.ts` | OpenCode 2 server RPC + TUI commands. |
 | Export | `core/export.ts` | Self-contained reports. |
@@ -108,6 +111,7 @@ See [METRICS.md](METRICS.md).
 - loads a session dataset (session + family + messages + bounds);
 - normalizes and projects;
 - mirrors turn ids onto the full event stream used by detail/list endpoints;
+- computes diagnostics once over that same event stream and attaches them to the analysis payload;
 - redacts (unless reveal is explicitly allowed);
 - applies filters and keyset pagination;
 - trims the analysis payload (tool input/output and unbounded prose stay in the detail endpoint);
@@ -133,6 +137,16 @@ It caches a dataset for ~4 seconds, keyed by `session.time.updated`, message cou
 - Reveal is a separate request parameter and is gated by the server/plugin option.
 - API data routes require a per-run access token by default. The token is compared in constant time, checked before the reveal policy, and never reflected in errors or logs.
 - The token travels in the URL fragment, is stored in `sessionStorage`, and is sent as an `Authorization` header. A per-port token file lets the TUI reuse it; `--no-auth` is loopback-only.
+
+### Diagnostics
+
+`core/diagnostics.ts` is the diagnostics layer: pure, deterministic and local, with no I/O and no writes. `evaluateDiagnostics(events, analysis)` runs the repeated-tool-failure rule over the recorded event order and returns `Diagnostics` (`incidents`, `summary`); the UI never computes incidents itself.
+
+`ObservabilityService.loadDataset` computes diagnostics exactly once per cached dataset, after the turn ids are mirrored onto the full event stream, and attaches them to `analysis.diagnostics`. `Analysis.diagnostics` is optional and stays absent when no incident exists, so analysis payloads produced before diagnostics existed remain valid and the UI can render its empty state.
+
+Each `DiagnosticIncident` carries only projected metadata: the tool name, 1-based turn index and turn id, attempt count, recovery state, `why`, the first failure's key names (`inputKeyShape`, no values), event anchors (`firstFailureEventID`, `lastFailureEventID`, `failureEventIDs`, `successEventID`), the projected turn trigger, and two contextual footprint metrics (`elapsed` from `Turn.totalTime`, `stepCostSum` over `Step.cost`). The footprint values are context, not a recovery signal.
+
+Redaction parity: diagnostics are plain DTO fields, so `redactValue(analysis).diagnostics` deep-equals the unredacted diagnostics; `why` and `inputKeyShape` survive, and no raw tool input/output, error text or turn prose is embedded. `/api/sessions/:id/analysis` and the plugin RPC `analysis` handler need no schema or route change because the diagnostics travel inside the existing `analysis` payload.
 
 ## UI layer
 
