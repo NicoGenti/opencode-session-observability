@@ -56,6 +56,21 @@ Rows are chronological by recorded session sequence. Turn headers and step heade
 
 Filters are applied on the server, so search spans the whole session, not only the loaded page. Changing a filter resets to the newest matching page.
 
+### Recovery map
+
+A **Recovery map** strip sits between the filter bar/legend and the ledger. It reads `analysis.diagnostics.incidents` from the deterministic engine verbatim; the UI never computes an incident. With no incidents it shows “No diagnostic incidents recorded in this session.”
+
+Each card shows the tool, a recovery badge, `Turn N`, the projected trigger, **Open in Trajectory**, three stat cells (Attempts, Elapsed (context), Step cost sum (context)), the rule's `why`, and the note that footprint values are contextual to the incident and are not a recovery signal. A value the engine could not record renders `—` with an unavailable title. Cards carry no tool input/output or error text; the `why` is the engine's own rule explanation.
+
+| Recovery state | Badge label | Badge treatment |
+|---|---|---|
+| `recovered` | Recovery observed | good |
+| `possible-recovery` | Possible recovery | accent |
+| `no-recovery-evidence` | No recovery evidence | dashed neutral |
+| `insufficient-data` | Insufficient data | dashed neutral |
+
+**Open in Trajectory** (or a deep link) loads the event page centered on the incident's first failing event, highlights every event in its `failureEventIDs` set with the accent rule and `accent-weak` background, and opens the drawer. The highlight is rebuilt only from the stored incident whose `firstFailureEventID` matches the opened event; opening any unrelated detail event or switching sessions clears it. Closing the drawer leaves it in place.
+
 ### Ledger interactions
 
 - Click a row to open the detail drawer.
@@ -104,6 +119,10 @@ The session total row always shows both final context and cumulative prompt, so 
 ### Show event rows
 
 Adds non-step rows for expanded turns and an **Unattached events** section. These rows are visually muted and explicitly marked “not included in turn/step totals”. They include system/context notices, agent/model/location switches, retries, errors, compactions, synthetic/skill/shell events.
+
+### Diagnostics
+
+Both statistics renderers place a **Diagnostics** section above **Compactions**, using the same card body as the Trajectory strip. Basic and Advanced render byte-identical cards because they share one renderer and one `analysis.diagnostics` source.
 
 ### Compactions
 
@@ -162,6 +181,8 @@ Exports use the current reveal state. Redacted exports include a warning.
 ```
 
 The session ID and event ID are URL-encoded. Opening a link loads the event page centered on the target (`around`), scrolls the ledger to it and opens its drawer, even when the event is outside the newest page. The same “jump” path is used by Statistics → “Open step in Trajectory”.
+
+A Recovery Map card deep-links with `?event=<firstFailureEventID>` and reuses that same centered jump. On load the matching stored incident supplies the full `failureEventIDs` set for the range highlight; an event that is not an incident's first failure clears the highlight, as does a session switch.
 
 ## Keyboard shortcuts
 
