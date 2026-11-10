@@ -478,8 +478,17 @@ test("keeps every verdict-like field next to a valid basis and ranks nothing", a
   ]);
 
   const recovery = await recover(data);
+  const root = recovery as unknown as Record<string, unknown>;
 
   walkObjects(recovery, (node) => {
+    if (node === root) {
+      // The family-level verdict carries its own epistemic cover.
+      assert.equal(
+        typeof node.basis,
+        "string",
+        "root recovery object without basis",
+      );
+    }
     const verdictLike =
       "kind" in node || "hasFailureEvidence" in node || "inputChanged" in node;
     if (verdictLike) {
