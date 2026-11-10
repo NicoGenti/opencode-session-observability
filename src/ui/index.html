@@ -68,6 +68,7 @@
         <button id="tab-statistics" class="tab" type="button" role="tab" data-view="statistics" aria-controls="view">Statistics</button>
         <span class="tab-spacer"></span>
         <span id="load-state" class="muted small"></span>
+        <button id="compare-btn" class="btn ghost" type="button" disabled title="Compare two diagnostic episodes side by side">Compare episodes</button>
         <button id="shortcuts-btn" class="btn ghost" type="button" title="Keyboard shortcuts (?)">Shortcuts</button>
       </nav>
 
@@ -116,6 +117,31 @@
         <button type="button" class="btn ghost" data-confirm="cancel">Cancel</button>
         <button type="button" class="btn danger" id="confirm-accept" data-confirm="accept">Continue</button>
       </div>
+    </div>
+  </div>
+
+  <div id="compare" class="modal" role="dialog" aria-modal="true" aria-labelledby="compare-title" hidden>
+    <div class="modal-card compare-card">
+      <button class="modal-close icon-btn" type="button" aria-label="Close" data-close-compare>×</button>
+      <h2 id="compare-title">Compare episodes</h2>
+      <p class="compare-banner">Differences are reported descriptively. No attempt is designated as better.</p>
+      <div class="compare-pickers">
+        <div class="compare-picker">
+          <label for="compare-left-session">Left session</label>
+          <select id="compare-left-session" data-compare-session="left"></select>
+          <label for="compare-left-episode">Left episode</label>
+          <select id="compare-left-episode" data-compare-episode="left"></select>
+        </div>
+        <div class="compare-picker">
+          <label for="compare-right-session">Right session</label>
+          <select id="compare-right-session" data-compare-session="right"></select>
+          <label for="compare-right-episode">Right episode</label>
+          <select id="compare-right-episode" data-compare-episode="right"></select>
+        </div>
+      </div>
+      <div id="compare-status" class="compare-status" role="status" tabindex="0" hidden></div>
+      <div id="compare-body" class="compare-body"></div>
+      <p class="compare-keys muted small">Esc closes · Tab moves · ↑/↓ select an alignment row · ←/→ move between left and right inputs</p>
     </div>
   </div>
 

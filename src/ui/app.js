@@ -115,6 +115,12 @@ const state = {
   drawerOpener: null,
   shortcutsOpener: null,
   confirmOpener: null,
+  compareOpener: null,
+  compareSelection: 0,
+  compareComparison: null,
+  compareSeq: 0,
+  compareLeft: { sessionID: null, episodes: [], episodeID: null, error: null, loading: false },
+  compareRight: { sessionID: null, episodes: [], episodeID: null, error: null, loading: false },
   loading: false,
 };
 
@@ -326,6 +332,7 @@ async function selectSession(sessionID, view = state.view, eventID = null) {
   }
   updateHash();
   renderTabs();
+  renderCompareButton();
   await loadSessionData({ resetScroll: true, openEventID: eventID });
   renderSessionList();
   renderFamily();
@@ -870,6 +877,7 @@ function renderFamily() {
 }
 
 function renderHeader() {
+  renderCompareButton();
   if (!dom.sessionHeader) return;
   const analysis = state.analysis;
   const session = state.session;
@@ -2540,6 +2548,546 @@ function trapFocus(event, container) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Compare modal
+// ---------------------------------------------------------------------------
+
+const COMPARE_NO_EPISODES = "No diagnostic episodes were recorded in this session.";
+
+/**
+ * Metric rows shared by the session-totals and turn tables. `totalTime` is
+ * labelled per table: session totals carry the session's active turn time,
+ * while the turn table carries that turn's own span.
+ */
+function compareMetricRows(totalTimeLabel) {
+  return [
+    ["Cost", "cost", formatCost],
+    ["Model time", "modelTime", formatDuration],
+    ["Tool time", "toolTime", formatDuration],
+    [totalTimeLabel, "totalTime", formatDuration],
+    ["Output speed", "outputSpeed", (value) => `${value.toFixed(1)} tok/s`],
+    ["Cache hit rate", "cacheHitRate", formatPercent],
+  ];
+}
+
+const COMPARE_SESSION_TOTAL_ROWS = compareMetricRows("Active turn time");
+
+const COMPARE_TURN_ROWS = [
+  ...compareMetricRows("Total time"),
+  ["Prompt tokens (latest)", "promptTokensLatest", formatNumber],
+];
+
+const COMPARE_TOKEN_ROWS = [
+  ["Input", "input"],
+  ["Output", "output"],
+  ["Reasoning", "reasoning"],
+  ["Cache read", "cacheRead"],
+  ["Cache write", "cacheWrite"],
+];
+
+/** Kebab verdict tokens become sentence-case display labels. */
+function tokenLabel(value) {
+  const text = String(value ?? "unknown").replaceAll("-", " ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function compareSideState(side) {
+  return side === "left" ? state.compareLeft : state.compareRight;
+}
+
+function renderCompareButton() {
+  if (!dom.compareBtn) return;
+  dom.compareBtn.disabled = !state.sessionID;
+}
+
+function compareSessionOptions() {
+  const options = [];
+  const seen = new Set();
+  const add = (session) => {
+    if (!session?.id || seen.has(session.id)) return;
+    seen.add(session.id);
+    const title = session.title || session.slug || session.id;
+    options.push({
+      id: session.id,
+      label: session.id === state.sessionID ? `${title} (current)` : title,
+    });
+  };
+  add(state.session);
+  add(state.family?.parent ?? null);
+  for (const child of state.family?.children ?? []) add(child);
+  if (options.length === 0 && state.sessionID) {
+    options.push({ id: state.sessionID, label: `${state.sessionID} (current)` });
+  }
+  return options;
+}
+
+function episodeLabel(episode) {
+  const attempts = `${formatNumber(episode.attemptCount)} ${
+    episode.attemptCount === 1 ? "attempt" : "attempts"
+  }`;
+  return `turn #${formatNumber(episode.turnIndex)} · ${episode.tool} · ${attempts} · ${tokenLabel(
+    episode.recovery,
+  )}`;
+}
+
+function renderCompareSessionOptions(options) {
+  const html = options
+    .map(
+      (option) =>
+        `<option value="${escapeAttr(option.id)}">${escapeHtml(option.label)}</option>`,
+    )
+    .join("");
+  for (const select of [dom.compareLeftSession, dom.compareRightSession]) {
+    if (select) select.innerHTML = html;
+  }
+  if (dom.compareLeftSession && state.compareLeft.sessionID) {
+    dom.compareLeftSession.value = state.compareLeft.sessionID;
+  }
+  if (dom.compareRightSession && state.compareRight.sessionID) {
+    dom.compareRightSession.value = state.compareRight.sessionID;
+  }
+}
+
+function renderCompareEpisodeOptions(side) {
+  const data = compareSideState(side);
+  const select = side === "left" ? dom.compareLeftEpisode : dom.compareRightEpisode;
+  if (!select) return;
+  if (!data.sessionID) {
+    select.innerHTML = `<option value="">Select a session first</option>`;
+    select.disabled = true;
+    return;
+  }
+  if (data.loading) {
+    select.innerHTML = `<option value="">Loading episodes…</option>`;
+    select.disabled = true;
+    return;
+  }
+  if (data.error) {
+    select.innerHTML = `<option value="">Episodes unavailable</option>`;
+    select.disabled = true;
+    return;
+  }
+  if (data.episodes.length === 0) {
+    select.innerHTML = `<option value="">No episodes recorded</option>`;
+    select.disabled = true;
+    return;
+  }
+  select.disabled = false;
+  select.innerHTML = [
+    `<option value="">Select an episode…</option>`,
+    ...data.episodes.map(
+      (episode) =>
+        `<option value="${escapeAttr(episode.id)}">${escapeHtml(
+          episodeLabel(episode),
+        )}</option>`,
+    ),
+  ].join("");
+  select.value = data.episodeID ?? "";
+}
+
+function renderCompareStatus() {
+  if (!dom.compareStatus) return;
+  const messages = [];
+  let error = false;
+  for (const side of ["left", "right"]) {
+    const data = compareSideState(side);
+    if (!data.sessionID) continue;
+    if (data.error) {
+      messages.push(`${tokenLabel(side)} session: ${data.error}`);
+      error = true;
+    } else if (!data.loading && data.episodes.length === 0) {
+      messages.push(`${tokenLabel(side)} session: ${COMPARE_NO_EPISODES}`);
+    }
+  }
+  dom.compareStatus.textContent = messages.join(" ");
+  dom.compareStatus.hidden = messages.length === 0;
+  dom.compareStatus.classList.toggle("error", error);
+}
+
+async function loadCompareSide(side, sessionID, options = {}) {
+  const data = compareSideState(side);
+  data.sessionID = sessionID || null;
+  data.episodes = [];
+  data.episodeID = null;
+  data.error = null;
+  data.loading = Boolean(data.sessionID);
+  const sessionSelect =
+    side === "left" ? dom.compareLeftSession : dom.compareRightSession;
+  if (sessionSelect) sessionSelect.value = data.sessionID ?? "";
+  renderCompareEpisodeOptions(side);
+  renderCompareStatus();
+  if (!data.sessionID) return;
+  try {
+    const payload = await api(
+      `/api/sessions/${encodeURIComponent(data.sessionID)}/diagnostics`,
+    );
+    if (data.sessionID !== sessionID) return;
+    data.episodes = Array.isArray(payload.episodes) ? payload.episodes : [];
+    data.loading = false;
+    if (options.autoSelect && data.episodes.length > 0) {
+      // Same-session comparisons default the right side to a different
+      // episode, so the modal does not open on an episode compared to itself.
+      const taken =
+        side === "right" && state.compareLeft.sessionID === data.sessionID
+          ? state.compareLeft.episodeID
+          : null;
+      const preferred =
+        data.episodes.find((episode) => episode.id !== taken) ?? data.episodes[0];
+      data.episodeID = preferred.id;
+    }
+    renderCompareEpisodeOptions(side);
+    renderCompareStatus();
+  } catch (error) {
+    if (data.sessionID !== sessionID) return;
+    data.loading = false;
+    data.error = error instanceof Error ? error.message : String(error);
+    renderCompareEpisodeOptions(side);
+    renderCompareStatus();
+  }
+}
+
+function resetCompareState() {
+  state.compareSeq += 1;
+  state.compareComparison = null;
+  state.compareSelection = 0;
+  state.compareLeft = {
+    sessionID: null,
+    episodes: [],
+    episodeID: null,
+    error: null,
+    loading: false,
+  };
+  state.compareRight = {
+    sessionID: null,
+    episodes: [],
+    episodeID: null,
+    error: null,
+    loading: false,
+  };
+  if (dom.compareBody) dom.compareBody.innerHTML = "";
+  if (dom.compareStatus) {
+    dom.compareStatus.textContent = "";
+    dom.compareStatus.hidden = true;
+    dom.compareStatus.classList.remove("error");
+  }
+  for (const select of [dom.compareLeftEpisode, dom.compareRightEpisode]) {
+    if (!select) continue;
+    select.innerHTML = "";
+    select.disabled = true;
+  }
+}
+
+async function openCompare() {
+  if (!dom.compare) return;
+  const options = compareSessionOptions();
+  if (options.length === 0) return;
+  state.compareOpener =
+    document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  resetCompareState();
+  renderCompareSessionOptions(options);
+  dom.compare.hidden = false;
+  dom.compare.querySelector(".modal-close")?.focus();
+  const currentID = state.session?.id ?? state.sessionID ?? options[0].id;
+  const sibling = options.find((option) => option.id !== currentID);
+  const rightID = sibling?.id ?? currentID;
+  await loadCompareSide("left", currentID, { autoSelect: true });
+  if (dom.compare.hidden) return;
+  await loadCompareSide("right", rightID, { autoSelect: true });
+  if (dom.compare.hidden) return;
+  await requestCompare();
+}
+
+function closeCompare() {
+  if (!dom.compare || dom.compare.hidden) return;
+  dom.compare.hidden = true;
+  const opener = state.compareOpener;
+  state.compareOpener = null;
+  resetCompareState();
+  const target = opener?.isConnected ? opener : dom.compareBtn;
+  if (target instanceof HTMLElement) target.focus();
+}
+
+async function onCompareSessionChange(side, sessionID) {
+  await loadCompareSide(side, sessionID, { autoSelect: false });
+  if (dom.compare?.hidden) return;
+  state.compareSeq += 1;
+  state.compareComparison = null;
+  state.compareSelection = 0;
+  if (dom.compareBody) dom.compareBody.innerHTML = "";
+  await requestCompare();
+}
+
+function onCompareEpisodeChange(side, episodeID) {
+  const data = compareSideState(side);
+  data.episodeID = episodeID || null;
+  if (!state.compareLeft.episodeID || !state.compareRight.episodeID) {
+    state.compareSeq += 1;
+    state.compareComparison = null;
+    state.compareSelection = 0;
+    if (dom.compareBody) dom.compareBody.innerHTML = "";
+    return;
+  }
+  void requestCompare();
+}
+
+async function requestCompare() {
+  const left = state.compareLeft;
+  const right = state.compareRight;
+  if (!left.sessionID || !left.episodeID) return;
+  if (!right.sessionID || !right.episodeID) return;
+  const seq = ++state.compareSeq;
+  if (dom.compareBody) {
+    dom.compareBody.innerHTML = `<p class="muted small">Loading comparison…</p>`;
+  }
+  try {
+    const payload = await api("/api/episodes/compare", {
+      leftSession: encodeURIComponent(left.sessionID),
+      leftEpisode: encodeURIComponent(left.episodeID),
+      rightSession: encodeURIComponent(right.sessionID),
+      rightEpisode: encodeURIComponent(right.episodeID),
+    });
+    if (seq !== state.compareSeq) return;
+    state.compareComparison = payload.comparison ?? null;
+    state.compareSelection = 0;
+    renderCompareComparison();
+  } catch (error) {
+    if (seq !== state.compareSeq) return;
+    state.compareComparison = null;
+    if (dom.compareBody) {
+      const message = error instanceof Error ? error.message : String(error);
+      dom.compareBody.innerHTML = `<p class="compare-inline-error" role="alert" tabindex="0">${escapeHtml(
+        message,
+      )}</p>`;
+    }
+  }
+}
+
+function compareInputText(input) {
+  if (input === undefined || input === null || input === "") return null;
+  if (typeof input === "string") return input;
+  try {
+    return JSON.stringify(input, null, 2);
+  } catch {
+    return String(input);
+  }
+}
+
+function compareAttemptCellHtml(attempt, comparability, sideLabel) {
+  if (!attempt) return `<span class="muted">—</span>`;
+  const labels = {
+    absent: "absent input",
+    truncated: "truncated input",
+    redacted: "redacted input",
+  };
+  const flag =
+    comparability && comparability !== "comparable"
+      ? `<span class="compare-input-flag">${escapeHtml(
+          labels[comparability] ?? `${comparability} input`,
+        )}</span>`
+      : "";
+  const inputText = compareInputText(attempt.input);
+  const pre =
+    inputText === null
+      ? ""
+      : `<pre class="compare-input" tabindex="0" aria-label="${escapeAttr(
+          `Input as recorded on the ${sideLabel.toLowerCase()} side`,
+        )}">${escapeHtml(inputText)}</pre>`;
+  return `<div class="compare-attempt">
+      <div class="compare-attempt-meta">
+        <span class="status ${statusClass(attempt.status)}">${escapeHtml(
+          attempt.status,
+        )}</span>
+        ${metricHtml(attempt.duration, formatDuration)}
+      </div>
+      ${flag}${pre}
+    </div>`;
+}
+
+function compareSimilarityHtml(row) {
+  const verdict = tokenLabel(row.inputSimilarity);
+  if (typeof row.inputOverlap !== "number") return escapeHtml(verdict);
+  return `${escapeHtml(verdict)}<span class="muted"> · overlap ${escapeHtml(
+    formatPercent(row.inputOverlap),
+  )}</span>`;
+}
+
+function compareAlignmentRowHtml(row, position) {
+  const selected = position === state.compareSelection;
+  return `<tr class="compare-row${selected ? " selected" : ""}"${
+    selected ? ' aria-current="true"' : ""
+  } data-compare-index="${position}">
+      <td class="compare-index"><span class="compare-row-flag">Selected</span>${formatNumber(
+        row.index,
+      )}</td>
+      <td>${escapeHtml(tokenLabel(row.kind))}</td>
+      <td>${escapeHtml(tokenLabel(row.presence))}</td>
+      <td>${compareAttemptCellHtml(row.left, row.inputComparability?.left, "Left")}</td>
+      <td>${compareAttemptCellHtml(row.right, row.inputComparability?.right, "Right")}</td>
+      <td class="num">${metricHtml(row.latencyDelta, formatDuration)}</td>
+      <td class="compare-similarity">${compareSimilarityHtml(row)}</td>
+    </tr>`;
+}
+
+function compareIdentityHtml(side, descriptor) {
+  if (!descriptor) return "";
+  return `<div class="compare-identity">
+      <h3>${escapeHtml(side)}</h3>
+      <dl class="kv">
+        <dt>Session</dt><dd><code>${escapeHtml(descriptor.sessionID)}</code></dd>
+        <dt>Turn</dt><dd>#${formatNumber(descriptor.turnIndex)}</dd>
+        <dt>Tool</dt><dd><code>${escapeHtml(descriptor.tool)}</code></dd>
+        <dt>Attempts</dt><dd>${formatNumber(descriptor.attemptCount)}</dd>
+        <dt>Recovery</dt><dd>${escapeHtml(tokenLabel(descriptor.recovery))}</dd>
+        <dt>Similarity</dt><dd>${escapeHtml(tokenLabel(descriptor.similarity))}</dd>
+      </dl>
+    </div>`;
+}
+
+function compareMetricRowsHtml(left, right, delta, rows) {
+  const l = left ?? {};
+  const r = right ?? {};
+  const d = delta ?? {};
+  return rows
+    .map(
+      ([label, key, formatter]) => `<tr>
+        <th scope="row">${escapeHtml(label)}</th>
+        <td class="num">${metricHtml(l[key], formatter)}</td>
+        <td class="num">${metricHtml(r[key], formatter)}</td>
+        <td class="num">${metricHtml(d[key], formatter)}</td>
+      </tr>`,
+    )
+    .join("");
+}
+
+function compareTokenRowsHtml(section) {
+  const left = section?.left ?? {};
+  const right = section?.right ?? {};
+  const delta = section?.delta ?? {};
+  return COMPARE_TOKEN_ROWS.map(
+    ([label, key]) => `<tr>
+        <th scope="row">${escapeHtml(label)}</th>
+        <td class="num">${formatNumber(left.tokens?.[key])}</td>
+        <td class="num">${formatNumber(right.tokens?.[key])}</td>
+        <td class="num">${metricHtml(delta.tokens?.[key], formatNumber)}</td>
+      </tr>`,
+  ).join("");
+}
+
+function tokenIncompleteNote(section) {
+  if (section?.left?.tokensComplete !== false && section?.right?.tokensComplete !== false) {
+    return "";
+  }
+  return "Token counts are incomplete on at least one side; token differences are unavailable.";
+}
+
+function compareTableHtml(caption, body, note = "") {
+  return `<h3 class="compare-heading">${escapeHtml(caption)}</h3>
+    ${note ? `<p class="muted small">${escapeHtml(note)}</p>` : ""}
+    <div class="table-wrap">
+      <table class="stats-table compare-table compare-metrics">
+        <thead><tr>
+          <th>Metric</th><th class="num">Left</th><th class="num">Right</th>
+          <th class="num">Δ (left − right)</th>
+        </tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>`;
+}
+
+function renderCompareComparison() {
+  const comparison = state.compareComparison;
+  if (!comparison || !dom.compareBody) return;
+  const alignment = Array.isArray(comparison.alignment) ? comparison.alignment : [];
+  const totals = comparison.totals ?? {};
+  const turn = comparison.turn ?? {};
+  const notes = Array.isArray(comparison.notes) ? comparison.notes : [];
+  const turnIndex = turn.left?.index ?? comparison.left?.turnIndex ?? null;
+  const turnCaption =
+    turnIndex === null ? "Turn metrics" : `Turn #${formatNumber(turnIndex)} metrics`;
+  dom.compareBody.innerHTML = `
+    <div class="compare-grid">
+      ${compareIdentityHtml("Left", comparison.left)}
+      ${compareIdentityHtml("Right", comparison.right)}
+    </div>
+    <h3 class="compare-heading">Attempt alignment</h3>
+    ${
+      alignment.length === 0
+        ? `<p class="muted small">No attempts were aligned for this pair.</p>`
+        : `<div class="table-wrap">
+            <table class="stats-table compare-table">
+              <thead><tr>
+                <th>#</th><th>Kind</th><th>Presence</th>
+                <th>Left</th><th>Right</th>
+                <th class="num">Duration Δ</th><th>Input similarity</th>
+              </tr></thead>
+              <tbody>${alignment
+                .map((row, position) => compareAlignmentRowHtml(row, position))
+                .join("")}</tbody>
+            </table>
+          </div>`
+    }
+    ${compareTableHtml(
+      "Session totals",
+      compareMetricRowsHtml(totals.left, totals.right, totals.delta, COMPARE_SESSION_TOTAL_ROWS),
+    )}
+    ${compareTableHtml(
+      turnCaption,
+      compareMetricRowsHtml(turn.left, turn.right, turn.delta, COMPARE_TURN_ROWS),
+    )}
+    ${compareTableHtml(
+      "Session tokens",
+      compareTokenRowsHtml(totals),
+      tokenIncompleteNote(totals),
+    )}
+    ${compareTableHtml(
+      "Turn tokens",
+      compareTokenRowsHtml(turn),
+      tokenIncompleteNote(turn),
+    )}
+    ${
+      notes.length
+        ? `<h3 class="compare-heading">Notes</h3>
+          <ul class="compare-notes">${notes
+            .map((note) => `<li>${escapeHtml(note)}</li>`)
+            .join("")}</ul>`
+        : ""
+    }`;
+}
+
+function applyCompareSelection(scroll) {
+  if (!dom.compareBody) return;
+  const rows = [...dom.compareBody.querySelectorAll(".compare-row")];
+  if (rows.length === 0) {
+    state.compareSelection = 0;
+    return;
+  }
+  const index = ((state.compareSelection % rows.length) + rows.length) % rows.length;
+  state.compareSelection = index;
+  rows.forEach((row, position) => {
+    const selected = position === index;
+    row.classList.toggle("selected", selected);
+    if (selected) row.setAttribute("aria-current", "true");
+    else row.removeAttribute("aria-current");
+  });
+  if (scroll) rows[index].scrollIntoView({ block: "nearest" });
+}
+
+function moveCompareSelection(delta) {
+  if (!dom.compareBody) return;
+  if (dom.compareBody.querySelectorAll(".compare-row").length === 0) return;
+  state.compareSelection += delta;
+  applyCompareSelection(true);
+}
+
+function focusCompareInput(direction) {
+  const row = dom.compareBody?.querySelector('.compare-row[aria-current="true"]');
+  if (!row) return false;
+  const inputs = row.querySelectorAll(".compare-input");
+  if (inputs.length < 2) return false;
+  inputs[direction === "left" ? 0 : 1].focus();
+  return true;
+}
+
 function toggleLive() {
   if (state.liveTimer) {
     clearInterval(state.liveTimer);
@@ -2671,6 +3219,31 @@ function bindStaticEvents() {
       toggleShortcuts(false);
     }
   });
+  $("#compare-btn")?.addEventListener("click", () => void openCompare());
+  dom.compare?.addEventListener("click", (event) => {
+    if (event.target === dom.compare || event.target.closest("[data-close-compare]")) {
+      closeCompare();
+    }
+  });
+  dom.compare?.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const sessionSelect = target.closest("[data-compare-session]");
+    if (sessionSelect) {
+      void onCompareSessionChange(
+        sessionSelect.dataset.compareSession,
+        sessionSelect.value,
+      );
+      return;
+    }
+    const episodeSelect = target.closest("[data-compare-episode]");
+    if (episodeSelect) {
+      onCompareEpisodeChange(
+        episodeSelect.dataset.compareEpisode,
+        episodeSelect.value,
+      );
+    }
+  });
   dom.confirm?.addEventListener("click", (event) => {
     if (event.target === dom.confirm) {
       settleConfirm(false);
@@ -2731,6 +3304,38 @@ function onKeyDown(event) {
       toggleShortcuts(false);
     } else if (event.key === "Tab") {
       trapFocus(event, dom.shortcuts);
+    }
+    return;
+  }
+  if (!dom.compare?.hidden) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeCompare();
+      return;
+    }
+    if (event.key === "Tab") {
+      trapFocus(event, dom.compare);
+      return;
+    }
+    const target = event.target;
+    const typing =
+      target instanceof HTMLElement &&
+      (target.tagName === "INPUT" ||
+        target.tagName === "SELECT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable);
+    // Native select/input behaviour keeps its arrow keys.
+    if (typing) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      moveCompareSelection(event.key === "ArrowDown" ? 1 : -1);
+      return;
+    }
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      if (focusCompareInput(event.key === "ArrowLeft" ? "left" : "right")) {
+        event.preventDefault();
+      }
+      return;
     }
     return;
   }
@@ -2846,6 +3451,14 @@ function collectDom() {
   dom.shortcuts = $("#shortcuts");
   dom.settings = $("#settings");
   dom.confirm = $("#confirm");
+  dom.compareBtn = $("#compare-btn");
+  dom.compare = $("#compare");
+  dom.compareBody = $("#compare-body");
+  dom.compareStatus = $("#compare-status");
+  dom.compareLeftSession = $("#compare-left-session");
+  dom.compareLeftEpisode = $("#compare-left-episode");
+  dom.compareRightSession = $("#compare-right-session");
+  dom.compareRightEpisode = $("#compare-right-episode");
   dom.settingsBody = $("#settings-body");
   dom.revealToggle = $("#reveal-toggle");
   dom.revealWarning = $("#reveal-warning");
