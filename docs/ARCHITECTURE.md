@@ -217,6 +217,10 @@ The TUI commands are intentionally non-mutating: they resolve the current sessio
 - Without a selected session the panel opener returns `false`: the command shows one toast and falls back to the browser, and `--web` (also on `/observability`) always takes the browser path.
 - The keyboard layer is gated on `ui.panel.current()?.name` being either native panel and dispatches to that panel's bridge; it also closes when the host reports the open panel as unfocused, with the name gate as the floor on hosts that do not expose `focused` (F-m3).
 
+## Toolchain notes
+
+`@opentui/core` and `solid-js` are type-only at build time: `vite.tui.config.ts` keeps them (and `@opencode/plugin|theme`) as host-provided externals, and `tsconfig.json` keeps `skipLibCheck` on. The optional `web-tree-sitter@0.25.10` devDependency is deliberately **not** added (F6 deferral): add it only if `skipLibCheck` is dropped or `@opentui/core` types become consumed by value, and pin it at `0.25.10` if that happens.
+
 ## Read-only guarantees
 
 - SQLite opened with `readOnly: true`.
