@@ -32,9 +32,9 @@ function fakeClient(respond: Responder): {
  * The parser validates shape, not the full `Turn` contract, so the fixture only
  * carries what the state reads: ids, order and the empty step list.
  */
-function analysisBody(ids: readonly string[]): unknown {
+function analysisBody(ids: readonly string[], session = SESSION): unknown {
   return {
-    session: { id: SESSION },
+    session: { id: session },
     totals: {},
     turns: ids.map((id, index) => ({ id, index, steps: [] })),
   };
@@ -200,4 +200,64 @@ test("a session change resets selection and the accordion", async () => {
   assert.equal(state.sessionID(), "ses_other");
   assert.equal(state.selectedIndex(), 0);
   assert.equal(state.expandedTurns().size, 0);
+});
+
+test("a stale response cannot overwrite a newer session (request ticket, F2)", async () => {
+  const gates: Array<{
+    readonly sessionID: string;
+    readonly resolve: (value: unknown) => void;
+  }> = [];
+  const client = {
+    rpc: () => ({
+      analysis: ({ sessionID }: { sessionID: string }) =>
+        new Promise<unknown>((resolve) => {
+          gates.push({ sessionID, resolve });
+        }),
+    }),
+  } as unknown as TrajectoryRpcClient;
+  const state = createTrajectoryState(client);
+
+  const stale = state.fetchAnalysis("ses_a");
+  const current = state.fetchAnalysis("ses_b");
+  assert.deepEqual(
+    gates.map((gate) => gate.sessionID),
+    ["ses_a", "ses_b"],
+  );
+
+  // The newer request resolves first and owns the state.
+  gates[1]!.resolve(analysisBody(["b1"], "ses_b"));
+  await current;
+
+  const settled = {
+    sessionID: state.sessionID(),
+    analysisSession: state.analysis()?.session?.id ?? null,
+    turns: state.turns().map((turn) => turn.id),
+    error: state.error(),
+    loading: state.loading(),
+    selectedIndex: state.selectedIndex(),
+  };
+  assert.deepEqual(settled, {
+    sessionID: "ses_b",
+    analysisSession: "ses_b",
+    turns: ["b1"],
+    error: null,
+    loading: false,
+    selectedIndex: 0,
+  });
+
+  // The stale request resolves afterwards: every field stays put.
+  gates[0]!.resolve(analysisBody(["a1"], "ses_a"));
+  await stale;
+
+  assert.deepEqual(
+    {
+      sessionID: state.sessionID(),
+      analysisSession: state.analysis()?.session?.id ?? null,
+      turns: state.turns().map((turn) => turn.id),
+      error: state.error(),
+      loading: state.loading(),
+      selectedIndex: state.selectedIndex(),
+    },
+    settled,
+  );
 });
