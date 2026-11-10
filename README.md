@@ -32,12 +32,12 @@ Screenshots of both views in dark and light mode (1440×900):
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/trajectory-dark.png">
-  <img src="docs/screenshots/trajectory-light.png" alt="Trajectory view in light mode">
+  <img src="docs/screenshots/trajectory-light.png" alt="Trajectory view">
 </picture>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/statistics-dark.png">
-  <img src="docs/screenshots/statistics-light.png" alt="Statistics view in light mode">
+  <img src="docs/screenshots/statistics-light.png" alt="Statistics view">
 </picture>
 
 ---
@@ -184,7 +184,7 @@ The TUI reads the per-port token file written by `npm start`. The optional `toke
 
 Two example configs ship with the repo:
 
-- `opencode.jsonc.example` — the full plugin entry with the `url`, `allowReveal`, `theme` and `token` options, as shown above. Use it for a local checkout or to change the port or allow reveal.
+- `opencode.jsonc.example` — the full plugin entry with the `url`, `allowReveal`, `theme` and `token` options, as shipped in `opencode.jsonc.example`. Use it for a local checkout or to change the port or allow reveal.
 - `cli.json.example` — the minimal registration-only list for the bare CLI config, when the defaults are enough (loopback `http://127.0.0.1:4517`, reveal off, theme forwarded by the TUI, token read from the per-port file):
 
 ```json
