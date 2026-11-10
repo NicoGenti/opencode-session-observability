@@ -259,6 +259,18 @@ test("familyRecovery caps at 8 assessments ordered by timeCreated then id", asyn
   );
 });
 
+test("familyRecovery reports a childless family as unavailable", async () => {
+  const service = new ObservabilityService(memorySource(familyFixture([])));
+
+  const recovery = await service.familyRecovery("ses_parent");
+
+  assert.equal(recovery.totalChildren, 0);
+  assert.deepEqual(recovery.assessments, []);
+  assert.equal(recovery.childrenCapped, false);
+  assert.equal(recovery.basis, "unavailable");
+  assert.deepEqual(recovery.notes, []);
+});
+
 test("familyRecovery records a cycle note and never assesses the root twice", async () => {
   const data = fixture([
     {

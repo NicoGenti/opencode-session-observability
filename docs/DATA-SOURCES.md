@@ -209,7 +209,7 @@ Recovery patterns are classification labels over recorded events, never measurem
 |---|---|---|
 | `no-child-failure` | child stream complete and no failure evidence recorded | `derived` |
 | `child-failed-no-parent-reaction` | child failure evidence, and no delegation event after the anchor | `derived` |
-| `parent-retried-same-agent` | first later delegation stamps the same agent as the anchor | `derived` |
+| `parent-retried-same-agent` | first later delegation stamps the same agent as the anchor, and the two inputs are not comparable | `derived` |
 | `parent-retried-identical-delegation-input` | same agent, and the two comparable inputs compare identical | `derived` |
 | `parent-retried-with-changed-delegation-input` | same agent, and the two comparable inputs differ (the input-change proxy) | `derived` |
 | `parent-fallback-to-other-agent` | first later delegation stamps a different agent | `derived` |

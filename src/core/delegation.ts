@@ -369,6 +369,11 @@ function buildReaction(
   }
 
   const uncertainty = [...anchor.uncertainty];
+  if (later.length > 1) {
+    uncertainty.push(
+      `${later.length} later delegation events recorded; reaction reflects the first`,
+    );
+  }
   const originalAgent = anchor.link.delegatedAgent;
   const originalTool = anchor.anchorEvent?.tool ?? null;
 
@@ -600,7 +605,12 @@ export function evaluateDelegationRecovery(
   const sorted = [...children].sort((left, right) => {
     const delta = childTimeCreated(left) - childTimeCreated(right);
     if (delta !== 0) return delta;
-    return left.sessionID.localeCompare(right.sessionID);
+    // Code-unit order keeps the tiebreak stable across locales and ICU builds.
+    return left.sessionID < right.sessionID
+      ? -1
+      : left.sessionID > right.sessionID
+        ? 1
+        : 0;
   });
 
   const candidates: DelegationChildInput[] = [];
@@ -613,9 +623,9 @@ export function evaluateDelegationRecovery(
   }
 
   const assessed = candidates.slice(0, MAX_ASSESSED_CHILDREN);
-  if (candidates.length > MAX_ASSESSED_CHILDREN) {
+  if (assessed.length < candidates.length) {
     notes.push(
-      `${candidates.length - MAX_ASSESSED_CHILDREN} children not assessed (cap ${MAX_ASSESSED_CHILDREN})`,
+      `${candidates.length - assessed.length} children not assessed (cap ${MAX_ASSESSED_CHILDREN})`,
     );
   }
 
@@ -649,7 +659,9 @@ export function evaluateDelegationRecovery(
     depth: 1,
     redacted: input.reveal !== true,
     totalChildren: children.length,
-    childrenCapped: children.length > MAX_ASSESSED_CHILDREN,
+    // Cycle-filtered candidates are what the cap applies to: a family whose
+    // extra rows are cycles is not reported as capped.
+    childrenCapped: candidates.length > MAX_ASSESSED_CHILDREN,
     assessments,
     patternCounts,
     basis: classified ? "derived" : "unavailable",

@@ -459,7 +459,11 @@ export class ObservabilityService {
           analysis: dataset.analysis,
           diagnostics: this.diagnosticsFor(dataset, reveal),
         });
-      } catch {
+      } catch (error) {
+        // Only a missing child session degrades into the synthetic child;
+        // storage/schema/data failures must reach `errorBody` as 503/500
+        // instead of being reported as an insufficient-data child.
+        if (!(error instanceof SessionNotFoundError)) throw error;
         notes.push(`child ${child.id}: child load unavailable`);
         children.push(this.emptyChildInput(child, parentDataset.family));
       }
