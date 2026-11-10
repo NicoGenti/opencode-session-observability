@@ -240,7 +240,9 @@ Arrow keys keep their native behaviour while a select or input has focus. The mo
 
 ## TUI integration
 
-Start the UI once:
+The Statistics view renders natively in the terminal; the other commands open the browser.
+
+Start the local UI once for the browser commands:
 
 ```bash
 npm start
@@ -249,12 +251,22 @@ npm start
 In OpenCode 2:
 
 ```text
-/observability
-/trajectory
-/statistics
+/observability      open the Trajectory view in the browser
+/trajectory         same, explicit Trajectory
+/statistics         open the native fullscreen Statistics panel
+/stats              alias for /statistics
+/statistics-web     open the browser Statistics view (palette alias: stats:web)
 ```
 
-The commands use the session currently shown in the TUI, check `GET /api/health`, and open the corresponding deep link in the browser. The TUI reads the per-port token file written by the server; the plugin option `token` or `OPENCODE_OBSERVABILITY_TOKEN` overrides it (required for an explicit `--token=<value>`). If the UI is not running, a toast shows the start command. If no token is available, the TUI explains how to provide one and does not open an unauthenticated page. The token is never shown in a toast. The commands never mutate the session.
+The native panel:
+
+- **Banner** — session ID, status badge, turn count, total context, cumulative cache-hit rate and total cost, each metric with its provenance mark.
+- **Dense turn table** — one row per turn. The column set follows the panel width: the full 13 columns at ≥ 120, a progressive mid-ground from 119 down to 81 (dropping `Reason`, then `CacheW`, then the cache/timing columns), and `Turn, Tokens, Cost, Status` at ≤ 80, where the tokens cell pairs latest and cumulative context.
+- **Accordion** — `Enter` expands the selected turn into its step rows (index, trigger, model, tools, tokens, cost, time, status at the full width; fewer fields on narrow terminals), and long lists scroll inside a `scrollbox`.
+- **Keys** — `j`/`Down` next turn, `k`/`Up` previous turn, `Enter` expand or collapse, `Esc` close. The layer only claims keys while the panel is open.
+- **Colours** — status symbols (`OK`, `ERR`, `INT`, `RUN`, `INC`, `?`) always accompany the palette colour; every colour resolves through `themePalette` keys, with neutral black/white fallbacks when the host supplies no palette.
+
+The browser commands use the session currently shown in the TUI, check `GET /api/health`, and open the corresponding deep link. The TUI reads the per-port token file written by the server; the plugin option `token` or `OPENCODE_OBSERVABILITY_TOKEN` overrides it (required for an explicit `--token=<value>`). If the UI is not running, a toast shows the start command. If no token is available, the TUI explains how to provide one and does not open an unauthenticated page. The token is never shown in a toast. The commands never mutate the session.
 
 ## Troubleshooting
 

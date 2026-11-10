@@ -24,9 +24,9 @@ The implementation is original and targets OpenCode 2.2.x. It was built against 
 | Projection | Turns, steps, tool calls, subagents, compactions, non-step events, unattached events |
 | Metrics | Prompt/context tokens, cache hit rate, model/tool/residual/total time, output speed, cost, context deltas |
 | UI | Local browser app: Trajectory + Statistics, Basic/Advanced modes, OpenCode themes, project-grouped session tree, settings, filters, full-text search, detail drawer, copy, export |
-| Integration | OpenCode 2 server plugin with read-only RPC + TUI commands `/observability`, `/trajectory`, `/statistics` |
+| Integration | OpenCode 2 server plugin with read-only RPC + TUI commands `/observability`, `/trajectory`, native `/statistics` (and `/statistics-web`) |
 | Export | Self-contained HTML, Markdown and JSON |
-| Tests | 204 tests: parsing, projection, metrics, paging, scroll preservation, redaction, authentication, adapters, HTTP API, RPC, exports, settings/theme persistence, read-only guarantees |
+| Tests | 236 tests: parsing, projection, metrics, paging, scroll preservation, redaction, authentication, adapters, HTTP API, RPC, exports, settings/theme persistence, TUI columns/status helpers, plugin entry shape, read-only guarantees |
 
 Screenshots of both views in dark and light mode (1440×900):
 
@@ -106,7 +106,7 @@ Other flags:
 Run the checks:
 
 ```bash
-npm run check       # typecheck + 204 tests (node:test)
+npm run check       # typecheck + 236 tests (node:test)
 npm run audit:prod  # production dependency audit (0 advisories)
 ```
 
@@ -138,16 +138,16 @@ The package is both a standalone app and an OpenCode 2 plugin with a **server pa
 
 ```text
 exports: "."            -> server plugin (RPC)
-         "./tui"        -> typed .tsx sidecar (slash commands + non-mounting NativeObservabilityView scaffold)
+         "./tui"        -> prebuilt native panel (dist-tui/tui.mjs, typed by src/plugin/tui.ts)
          "./rpc"        -> typed RPC contract
 ```
 
-The `./tui` entry is a typed `.tsx` sidecar: it re-exports the slash-command helpers and exposes `NativeObservabilityView` as a non-mounting OpenTUI scaffold. The browser UI stays the primary surface.
+The `./tui` entry resolves to the prebuilt `dist-tui/tui.mjs` bundle and is typed by the `src/plugin/tui.ts` sidecar, which also re-exports the slash-command helpers. `src/plugin/tui.tsx` is a typechecked-only OpenTUI scaffold that exposes `NativeObservabilityView` without mounting it; it is not bundled. The browser UI stays the primary surface.
 
 Why this shape? OpenCode 2.2.x plugins can add tools, hooks, RPC methods, commands, agents, TUI routes/slots and experimental GUI panels. They do **not** expose arbitrary HTTP routes for a third-party web page. The supported integration path is therefore:
 
 1. the **server part** registers a read-only RPC namespace over the OpenCode client;
-2. the **TUI part** registers `/observability`, `/trajectory` and `/statistics`, which open the local web UI for the session currently shown in the TUI;
+2. the **TUI part** registers `/observability` and `/trajectory` (browser deep links) plus `/statistics` (native fullscreen panel) and `/statistics-web` (the browser Statistics deep link);
 3. the **web UI** runs as a separate local read-only server, so it works from the TUI, a browser, or any local client.
 
 ### Configure
@@ -178,7 +178,7 @@ For a published package:
 }
 ```
 
-The TUI loads the TUI parts of plugins its server loads. The TUI commands only open the browser; they never inject a prompt into the session.
+The TUI loads the TUI parts of plugins its server loads. `/statistics` renders in a native fullscreen panel; the other commands open the browser. None of them inject a prompt into the session.
 
 The TUI reads the per-port token file written by `npm start`. The optional `token` plugin option, or the `OPENCODE_OBSERVABILITY_TOKEN` environment variable, overrides it. An explicit `--token=<value>` is never written to disk, so it must be provided through one of those two settings. The TUI never prints the token in a toast.
 
@@ -207,12 +207,16 @@ npm start
 Then in the OpenCode 2 TUI:
 
 ```text
-/observability   open the Trajectory view for the current session
-/trajectory      same, explicit Trajectory
-/statistics      open the Statistics view for the current session
+/observability    open the Trajectory view in the browser
+/trajectory       same, explicit Trajectory
+/statistics       open the native fullscreen Statistics panel
+/stats            alias for /statistics
+/statistics-web   open the browser Statistics view (palette alias: stats:web)
 ```
 
-If the UI is not running, the command shows a toast with the command to start it. If the UI requires a token and the plugin has none, it shows how to provide one instead of opening an unauthenticated page. The URL is configurable with the plugin option `url`; it must point at a loopback address (`127.0.0.1`, `localhost` or `::1`).
+`/statistics` renders the banner, dense turn table and turn accordion inside the terminal; the other commands use the browser. If the UI is not running, a browser command shows a toast with the command to start it. If the UI requires a token and the plugin has none, it shows how to provide one instead of opening an unauthenticated page. The URL is configurable with the plugin option `url`; it must point at a loopback address (`127.0.0.1`, `localhost` or `::1`).
+
+The native panel ships precompiled: `npm run build:tui` produces the committed `dist-tui/tui.mjs`, which is the `import` target of `exports["./tui"]`. Node hosts load that ESM artifact, so the raw `.tsx` sources are never required at runtime (Bun-only raw-TypeScript loading is not relied on). Rebuild the artifact after any change under `src/plugin/tui/`; CI verifies it is fresh. `@opentui/*`, `solid-js` and `vite` are dev dependencies only — the package keeps zero runtime dependencies, as shown by the `exports` map in `package.json`.
 
 ### RPC namespace
 
@@ -382,7 +386,7 @@ src/
     tui.tsx             typed OpenTUI JSX sidecar (provide-only)
 test/
   fixtures/build.ts     synthetic OpenCode 2 fixtures
-  *.test.ts             204 tests
+  *.test.ts             236 tests
 docs/
   DATA-SOURCES.md
   ARCHITECTURE.md
@@ -396,11 +400,11 @@ docs/
 ## Testing
 
 ```bash
-npm run check       # typecheck + 204 tests
+npm run check       # typecheck + 236 tests
 npm run audit:prod  # production dependency audit
 ```
 
-The suite is at **204 tests** for the current package and grows with each new suite.
+The suite is at **236 tests** for the current package and grows with each new suite.
 
 The fixtures cover: a simple session, multiple tool calls (including parallel and error), subagents, retry + error, compaction, a long paging session, an incomplete/interrupted run, out-of-order timestamps, secrets, and an empty session. The HTTP tests start the real server on an ephemeral port against a synthetic SQLite database.
 

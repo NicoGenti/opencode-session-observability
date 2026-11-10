@@ -2,8 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
+type ExportTarget = string | { import?: string; types?: string };
+
 type PackageJson = {
-  exports?: Record<string, string>;
+  exports?: Record<string, ExportTarget>;
   peerDependenciesMeta?: Record<string, { optional?: boolean }>;
 };
 
@@ -16,9 +18,12 @@ async function readJson<T>(name: string): Promise<T> {
   return JSON.parse(await readFile(new URL(name, import.meta.url), "utf8")) as T;
 }
 
-test("the ./tui export points at the typed tsx sidecar", async () => {
+test("the ./tui export points at the prebuilt bundle typed by the ts sidecar", async () => {
   const pkg = await readJson<PackageJson>("../package.json");
-  assert.equal(pkg.exports?.["./tui"], "./src/plugin/tui.tsx");
+  assert.deepEqual(pkg.exports?.["./tui"], {
+    import: "./dist-tui/tui.mjs",
+    types: "./src/plugin/tui.ts",
+  });
 });
 
 test("OpenTUI and solid-js peers are declared optional", async () => {
