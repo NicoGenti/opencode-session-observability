@@ -96,6 +96,10 @@ const state = {
   expandedTurns: new Set(),
   expandedSteps: new Set(),
   selectedEventID: null,
+  // Event IDs in the currently opened incident's failing-event sequence.
+  // Renderer state only: rebuilt from the stored diagnostics DTO, never
+  // recomputed (DR-1) and read at row-render time (DR-10).
+  highlightedDiagnosticEventIDs: new Set(),
   scrollTop: 0,
   ledger: null,
   detailEvent: null,
@@ -322,6 +326,7 @@ async function selectSession(sessionID, view = state.view, eventID = null) {
     state.scrollTop = 0;
     state.detailEvent = null;
     state.drawerOpener = null;
+    setDiagnosticHighlight([]);
     closeDrawer();
   }
   updateHash();
@@ -350,6 +355,11 @@ async function loadSessionData(options = {}) {
     state.analysis = analysisData.analysis;
     state.facets = buildFacets(state.analysis);
     state.revealAllowed = sessionData.revealAllowed !== false && analysisData.revealAllowed !== false;
+    // D1: rebuild the highlight from the deep-linked/open event so it survives
+    // a refresh. A session switch already cleared it, and an event that is not
+    // an incident's first failure clears it again.
+    const highlightAnchor = options.openEventID ?? state.detailEvent?.id ?? null;
+    if (highlightAnchor) applyIncidentHighlight(highlightAnchor);
     renderHeader();
     renderFamily();
     await loadEvents({ reset: true, preserveScroll: options.preserveScroll });
@@ -1071,6 +1081,8 @@ function eventRowHtml(event) {
   const metrics = eventMetrics(event);
   return `<button type="button" class="ledger-row${
     event.id === state.selectedEventID ? " selected" : ""
+  }${
+    state.highlightedDiagnosticEventIDs.has(event.id) ? " diagnostic-highlight" : ""
   }" data-event-id="${escapeAttr(event.id)}" aria-label="${escapeAttr(
     `${event.kind} ${event.title}`,
   )}">
@@ -1227,6 +1239,69 @@ function recoveryMapHtml() {
   </section>`;
 }
 
+/**
+ * The stored incident anchored at `eventID` (its first failing event), if any.
+ * Matching reads only DTO fields; no incident is derived here (DR-1).
+ */
+function incidentForFirstEvent(eventID) {
+  if (!eventID) return null;
+  const incidents = state.analysis?.diagnostics?.incidents ?? [];
+  return (
+    incidents.find((incident) => incident.firstFailureEventID === eventID) ?? null
+  );
+}
+
+/**
+ * Single write path for the diagnostic highlight set. IDs are validated
+ * against the session's event index when it is available, so a stale or
+ * unknown ID can never mark a row.
+ */
+function setDiagnosticHighlight(eventIDs = []) {
+  const known = new Set((state.analysis?.events ?? []).map((event) => event.id));
+  const next = new Set();
+  for (const id of eventIDs) {
+    if (typeof id !== "string" || id.length === 0) continue;
+    if (known.size > 0 && !known.has(id)) continue;
+    next.add(id);
+  }
+  state.highlightedDiagnosticEventIDs = next;
+}
+
+/**
+ * Rebuild the highlight from the incident that starts at `eventID`.
+ * Detail events that match no incident's first failing event clear it.
+ */
+function applyIncidentHighlight(eventID) {
+  const incident = incidentForFirstEvent(eventID);
+  setDiagnosticHighlight(incident?.failureEventIDs ?? []);
+  return incident;
+}
+
+/**
+ * Reflect the current set on rows already in the DOM. Rows outside the
+ * virtual window re-read the set when they render, so no scroll work is
+ * needed beyond this one-shot sync (DR-10).
+ */
+function syncDiagnosticHighlightDom() {
+  if (!dom.view) return;
+  for (const row of dom.view.querySelectorAll(".ledger-row[data-event-id]")) {
+    row.classList.toggle(
+      "diagnostic-highlight",
+      state.highlightedDiagnosticEventIDs.has(row.dataset.eventId),
+    );
+  }
+}
+
+function bindRecoveryMap() {
+  const map = dom.view?.querySelector(".recovery-map");
+  map?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-open-incident]");
+    if (!button) return;
+    const eventID = button.dataset.eventId;
+    if (eventID) void jumpToEvent(eventID);
+  });
+}
+
 function renderTrajectory(options = {}) {
   if (!dom.view) return;
   const previousScrollTop =
@@ -1265,6 +1340,7 @@ function renderTrajectory(options = {}) {
       </div>
     </div>`;
   bindFilters();
+  bindRecoveryMap();
   const scroller = $("#ledger-scroll");
   const rows = buildLedgerRows();
   if (rows.length === 0) {
@@ -1951,6 +2027,9 @@ async function ensureEventLoaded(eventID) {
 
 async function jumpToEvent(eventID) {
   if (!eventID) return;
+  // Match before the render so the failing-event sequence is highlighted on
+  // the first paint of the around-centred page (DR-4).
+  applyIncidentHighlight(eventID);
   state.view = "trajectory";
   renderTabs();
   updateHash();
@@ -1976,12 +2055,16 @@ async function openDetail(eventID) {
     );
     state.detailEvent = data.event;
     state.selectedEventID = eventID;
+    // An unrelated detail open must clear a stale incident range; an incident
+    // first-event open rebuilds it from the DTO (DR-1/DR-4).
+    applyIncidentHighlight(eventID);
     renderDrawer(data.event);
     dom.drawer.hidden = false;
     dom.drawerBackdrop.hidden = false;
     updateHash();
     dom.drawer.querySelector(".drawer-close")?.focus();
     if (state.view === "trajectory") {
+      syncDiagnosticHighlightDom();
       for (const row of document.querySelectorAll(".ledger-row.selected")) {
         row.classList.remove("selected");
       }
@@ -2663,6 +2746,7 @@ async function onHashChange() {
     await selectSession(route.sessionID, route.view, route.eventID);
   } else {
     state.view = route.view;
+    if (route.eventID) applyIncidentHighlight(route.eventID);
     renderTabs();
     renderView();
     if (route.eventID) {
