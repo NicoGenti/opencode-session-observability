@@ -344,6 +344,17 @@ code, pre, .mono { font-family: var(--mono); }
 }
 .ledger-row:hover { background: var(--surface-2); }
 .ledger-row.selected { background: var(--accent-weak); box-shadow: inset 3px 0 0 var(--accent); }
+/* Incident range highlight (DR-4/DR-6): same accent-weak/inset cue as a
+   selected row, with a thinner bar so the selected event stays distinct.
+   Kept on hover so the non-colour cue never disappears. */
+.ledger-row.diagnostic-highlight {
+  background: var(--accent-weak);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.ledger-row.diagnostic-highlight:hover { background: var(--accent-weak); }
+.ledger-row.diagnostic-highlight.selected {
+  box-shadow: inset 4px 0 0 var(--accent);
+}
 .row-gutter { width: 64px; flex: none; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; padding-top: 2px; }
 .row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .row-titleline { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
