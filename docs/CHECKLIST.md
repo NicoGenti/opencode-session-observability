@@ -141,6 +141,11 @@ This checklist separates what is implemented, what is available from OpenCode 2,
 | UI fragment token, sessionStorage and headers | `test/ui-auth.test.ts` |
 | TUI deep-link token placement | `test/plugin-tui.test.ts` |
 | Plugin sources keep the SDK type-only | `test/plugin-deps.test.ts` |
+| Delegation recovery rules (links, child failure evidence, parent reactions, pattern labels, basis invariant) | `test/diagnostics-multiagent.test.ts` |
+| Family recovery service (full-range children, cap of 8, cycle note, redaction parity, unloadable child) | `test/delegation-service.test.ts` |
+| Family recovery endpoint (`/family-recovery`, reveal gate, 404, GET/HEAD, `?refresh`) | `test/server.test.ts` |
+
+The `/family-recovery` endpoint itself is covered in `test/server.test.ts`; a plugin RPC method and a UI surface are deferred in v1 (see Known gaps).
 
 ## Known gaps / next steps
 
@@ -151,3 +156,4 @@ This checklist separates what is implemented, what is available from OpenCode 2,
 5. **Very large single sessions.** The analysis endpoint trims step prose and tool bodies; the event detail endpoint remains the source for full payloads. If sessions grow to hundreds of thousands of messages, server-side SQL aggregation and a streaming projection would be the next optimization.
 6. **Stale token files.** A hard kill can leave a per-port token file behind. The next run on that port overwrites or clears it; the file is user-scoped and contains a token that is no longer valid after the server exits.
 7. **Redaction coverage.** Redaction is heuristic: known prefixes, credential-shaped keys and assignments are covered, but unknown formats and very short values are not. Reveal remains opt-in and disabled by default.
+8. **Delegation recovery surfaces.** `familyRecovery` is reachable only over HTTP (`GET /api/sessions/{id}/family-recovery`). A plugin RPC method and a UI view are deferred; the DTO already carries `basis`, `redacted`, `patternCounts` and uncertainty notes, so an RPC view and a UI panel can render it without new analysis.

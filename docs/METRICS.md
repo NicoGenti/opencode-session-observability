@@ -247,4 +247,8 @@ A real session with parallel subagent tools shows the expected negative residual
 - No missing timestamp is replaced by a neighboring event's timestamp to make a duration look complete.
 - No approval row is invented from a tool name.
 - No per-step context is guessed from message text length.
+- No recovery pattern is measured: every `no-child-failure`, `parent-retried-*`, `parent-fallback-*` and `parent-reaction-unclear` label is a `derived` aggregate over recorded delegation events, and `insufficient-data` is `unavailable`, not a negative finding.
+- No parent reaction is measured: retry, fallback and unclear are classifications of later recorded delegation events; they say nothing about what the parent model intended.
+- No prompt semantics are inferred from the input-change proxy: `parent-retried-with-changed-delegation-input` reports that two recorded delegation inputs compared non-identical, never that a prompt was rewritten, re-scoped or improved.
+- No child failure is claimed from a windowed child stream: an incomplete child stream yields `insufficient-data` instead of a failure or recovery verdict.
 - No session total is presented as complete when a contributor is missing; it is labelled partial or unavailable.
