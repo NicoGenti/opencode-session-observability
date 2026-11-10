@@ -32,7 +32,7 @@
   "scripts": {
     "start": "node src/server/index.ts",
     "serve": "node src/server/index.ts",
-    "test": "node --test --test-reporter=spec test/adapter.test.ts test/auth.test.ts test/delegation-service.test.ts test/diagnostics.test.ts test/diagnostics-multiagent.test.ts test/episodeCompare.test.ts test/episodes-service.test.ts test/episodes.test.ts test/export.test.ts test/metrics.test.ts test/normalize.test.ts test/opencode-theme.test.ts test/paging.test.ts test/plugin-deps.test.ts test/plugin-tui-entry.test.ts test/plugin-tui.test.ts test/plugin.test.ts test/project.test.ts test/security.test.ts test/server.test.ts test/service.test.ts test/settings.test.ts test/token-file.test.ts test/tui-statistics-columns.test.ts test/tui-statistics-status.test.ts test/ui-auth.test.ts",
+    "test": "node --test --test-reporter=spec test/adapter.test.ts test/auth.test.ts test/delegation-service.test.ts test/diagnostics.test.ts test/diagnostics-multiagent.test.ts test/episodeCompare.test.ts test/episodes-service.test.ts test/episodes.test.ts test/export.test.ts test/metrics.test.ts test/normalize.test.ts test/opencode-theme.test.ts test/paging.test.ts test/plugin-deps.test.ts test/plugin-tui-commands.test.ts test/plugin-tui-entry.test.ts test/plugin-tui-native.test.ts test/plugin-tui-status.test.ts test/plugin-tui.test.ts test/plugin.test.ts test/project.test.ts test/security.test.ts test/server.test.ts test/service.test.ts test/settings.test.ts test/token-file.test.ts test/tui-statistics-columns.test.ts test/tui-statistics-status.test.ts test/ui-auth.test.ts",
     "typecheck": "tsc --noEmit",
     "typecheck:tui": "tsc --noEmit -p tsconfig.tui.json",
     "check": "npm run typecheck && npm run typecheck:tui && npm test",

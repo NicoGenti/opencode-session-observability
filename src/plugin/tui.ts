@@ -1,20 +1,138 @@
 import { spawn } from "node:child_process";
-import type { Plugin } from "@opencode/plugin/tui";
-import { readTokenFile } from "../server/token-file.ts";
 import { defineTuiPlugin } from "./define.ts";
+import { baseUrl, pluginToken, reachable, tokenFromFile } from "./tui-net.ts";
 import type { StatisticsKeyboardBridge } from "./tui/statistics/state.ts";
+import {
+  TUI_PLUGIN_ID,
+  openNativeStatistics,
+  type BrowserFallback,
+} from "./tui-native.ts";
 
-const DEFAULT_URL = "http://127.0.0.1:4517";
+// The native routing seam lives in one module so sibling issues (#6/#8) import
+// the reserved page names and the registry from a single place.
+export {
+  STATISTICS_ROUTE,
+  TRAJECTORY_ROUTE,
+  registerNativeView,
+  hasNativeView,
+  openNativeStatistics,
+  currentSessionID,
+} from "./tui-native.ts";
 
-type Context = Plugin.Context;
+// The status badge seam lives in one module so the slot wiring (#6) imports the
+// formatter and the cached fetcher from the same place as the commands.
+export { formatStatusBadge, fetchSessionStatus } from "./tui-status.ts";
+
+// The local-UI transport helpers live in a leaf module so the status seam can
+// share them without importing this entry point. Re-exported here unchanged:
+// this entry point stays the single import site for the TUI surface.
+export {
+  baseUrl,
+  pluginToken,
+  tokenFromFile,
+  reachable,
+  type Reachability,
+} from "./tui-net.ts";
 
 /** Panel id shared by `ui.panel.open` and the `session.panel` slot claim. */
 const STATISTICS_PANEL = "statistics";
 
-const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
-
-type Reachability = "ok" | "auth" | "down";
 type RouteLike = { type: string; sessionID?: string };
+type ViewOpener = (view: "trajectory" | "statistics") => void | false | Promise<void>;
+
+/** Opens the native Statistics route, handing the seam its browser fallback. */
+export type NativeStatisticsOpener = (
+  browserFallback: BrowserFallback,
+) => void | false | Promise<void>;
+
+/** Where `/statistics` should render: the TUI route, or the local web UI. */
+export type StatsTarget = "native" | "web";
+
+const WEB_FLAGS = new Set(["--web", "-w", "web"]);
+
+/**
+ * Classifies the raw `/statistics` argument. Only the documented browser
+ * tokens select the web UI; everything else (empty, whitespace, non-string)
+ * keeps the native route.
+ */
+export function parseStatsArg(input: unknown): StatsTarget {
+  if (typeof input !== "string") return "native";
+  return WEB_FLAGS.has(input.trim().toLowerCase()) ? "web" : "native";
+}
+
+/** One TUI command definition, structurally compatible with the SDK keymap. */
+export type TuiCommandDefinition = {
+  readonly id: string;
+  readonly title: string;
+  readonly description: string;
+  readonly group: string;
+  readonly palette: true;
+  readonly slash: {
+    readonly name: string;
+    readonly aliases?: string[];
+    readonly arguments?: true;
+  };
+  readonly run: (input?: string) => void | false | Promise<void>;
+};
+
+/**
+ * Builds the read-only Observability command surface. Pure: the caller
+ * supplies the view opener and the native Statistics opener, so tests can scan
+ * the surface — and the `/statistics` routing — without the SDK.
+ */
+export function tuiCommandDefinitions(
+  openView: ViewOpener,
+  openNative: NativeStatisticsOpener = (browserFallback) => browserFallback(),
+): readonly TuiCommandDefinition[] {
+  const openStatistics = (input?: string): void | false | Promise<void> => {
+    if (parseStatsArg(input) === "web") {
+      return openView("statistics");
+    }
+    // Native route first; the seam falls back to the browser and explains the
+    // gap when no native view is registered yet.
+    return openNative(() => openView("statistics"));
+  };
+
+  return [
+    {
+      id: "observability.open",
+      title: "Open session observability",
+      description: "Open the local Trajectory/Statistics UI",
+      group: "Observability",
+      palette: true,
+      slash: { name: "observability", aliases: ["obs"] },
+      run: () => openView("trajectory"),
+    },
+    {
+      id: "observability.trajectory",
+      title: "Open session Trajectory",
+      description: "Open the event ledger for the current session",
+      group: "Observability",
+      palette: true,
+      slash: { name: "trajectory" },
+      run: () => openView("trajectory"),
+    },
+    {
+      id: "observability.statistics",
+      title: "Open session Statistics",
+      description:
+        "Open the native Statistics view; add --web for the local web UI",
+      group: "Observability",
+      palette: true,
+      slash: { name: "statistics", aliases: ["stats"], arguments: true },
+      run: openStatistics,
+    },
+    {
+      id: "observability.statistics.web",
+      title: "Open session Statistics in the browser",
+      description: "Open the local Statistics web UI for the current session",
+      group: "Observability",
+      palette: true,
+      slash: { name: "statistics:web", aliases: ["stats:web"] },
+      run: () => openView("statistics"),
+    },
+  ];
+}
 
 export function buildTuiUrl(
   base: string,
@@ -38,27 +156,6 @@ export function buildTuiUrl(
 
 function withoutToken(url: string): string {
   return url.replace(/([?&])token=[^&]*/g, "$1").replace(/[?&]$/, "");
-}
-
-function pluginToken(value: unknown): string | null {
-  if (typeof value === "string" && value.trim().length > 0) return value.trim();
-  const env = process.env.OPENCODE_OBSERVABILITY_TOKEN;
-  return typeof env === "string" && env.trim().length > 0 ? env.trim() : null;
-}
-
-async function tokenFromFile(base: string): Promise<string | null> {
-  try {
-    const url = new URL(base);
-    const port = url.port
-      ? Number(url.port)
-      : url.protocol === "https:"
-        ? 443
-        : 80;
-    if (!Number.isInteger(port) || port <= 0 || port > 65_535) return null;
-    return (await readTokenFile(port))?.token ?? null;
-  } catch {
-    return null;
-  }
 }
 
 function configuredTheme(context: {
@@ -130,40 +227,6 @@ export function themePalette(context: {
   return palette;
 }
 
-function baseUrl(value: unknown): string {
-  if (typeof value !== "string" || value.length === 0) return DEFAULT_URL;
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return DEFAULT_URL;
-    // The TUI only opens the local UI; restrict the target to loopback so the
-    // configurable URL cannot be turned into a launcher for arbitrary hosts.
-    if (!LOOPBACK.has(url.hostname.toLowerCase())) return DEFAULT_URL;
-    return url.toString().replace(/\/$/, "");
-  } catch {
-    return DEFAULT_URL;
-  }
-}
-
-async function reachable(url: string): Promise<Reachability> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 1_500);
-  try {
-    const response = await fetch(`${url}/api/health`, {
-      signal: controller.signal,
-      headers: { Accept: "application/json" },
-    });
-    if (!response.ok) return "down";
-    const body = (await response.json().catch(() => null)) as {
-      authRequired?: unknown;
-    } | null;
-    return body?.authRequired === true ? "auth" : "ok";
-  } catch {
-    return "down";
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 function openBrowser(url: string): boolean {
   try {
     if (process.platform === "win32") {
@@ -185,14 +248,15 @@ function openBrowser(url: string): boolean {
 /**
  * OpenCode 2 TUI part.
  *
- * Registers `/observability`, `/trajectory`, `/statistics` and
- * `/statistics-web`. The commands are read-only: they never inject a prompt or
- * alter the session. `/statistics` opens the native panel; the other commands
- * open the local web UI for the session currently shown in the TUI, or explain
- * how to start the UI when it is not running.
+ * Registers `/observability`, `/trajectory`, `/statistics` (alias `/stats`) and
+ * `/statistics:web` (alias `/stats:web`). The commands are read-only: they never
+ * inject a prompt or alter the session. `/statistics` opens the native
+ * fullscreen panel; passing `--web`, `-w` or `web` opens the local web UI
+ * instead, and `/statistics:web` always opens it for the session currently
+ * shown in the TUI, or explains how to start the UI when it is not running.
  */
 export default defineTuiPlugin({
-  id: "opencode-session-observability.tui",
+  id: TUI_PLUGIN_ID,
   async setup(context) {
     const base = baseUrl(context.options.url);
 
@@ -276,53 +340,16 @@ export default defineTuiPlugin({
     };
 
     context.keymap.layer(() => ({
-      commands: [
-        {
-          id: "observability.open",
-          title: "Open session observability",
-          description: "Open the local Trajectory/Statistics UI",
-          group: "Observability",
-          palette: true,
-          slash: { name: "observability", aliases: ["obs"] },
-          run: () => openView("trajectory"),
-        },
-        {
-          id: "observability.trajectory",
-          title: "Open session Trajectory",
-          description: "Open the event ledger for the current session",
-          group: "Observability",
-          palette: true,
-          slash: { name: "trajectory" },
-          run: () => openView("trajectory"),
-        },
-        {
-          id: "observability.statistics",
-          title: "Open session Statistics",
-          description: "Open the native turn/step metrics panel",
-          group: "Observability",
-          palette: true,
-          slash: { name: "statistics", aliases: ["stats"] },
-          run: () => {
-            if (!openStatisticsPanel()) {
-              context.ui.toast.show({
-                title: "Session observability",
-                message: "No session is selected, so there is no statistics to show.",
-                variant: "warning",
-                duration: 6_000,
-              });
-            }
-          },
-        },
-        {
-          id: "observability.statistics-web",
-          title: "Open session Statistics in the browser",
-          description: "Open the local web UI metrics table for the current session",
-          group: "Observability",
-          palette: true,
-          slash: { name: "statistics-web", aliases: ["stats:web"] },
-          run: () => openView("statistics"),
-        },
-      ],
+      commands: tuiCommandDefinitions(openView, (browserFallback) => {
+        if (openStatisticsPanel()) return;
+        context.ui.toast.show({
+          title: "Session observability",
+          message: "No session is selected, so there is no statistics to show.",
+          variant: "warning",
+          duration: 6_000,
+        });
+        return browserFallback();
+      }),
     }));
 
     /**

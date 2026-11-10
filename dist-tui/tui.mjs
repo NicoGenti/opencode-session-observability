@@ -6,6 +6,10 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+function defineTuiPlugin(plugin) {
+  return plugin;
+}
+
 function tokenDirectory() {
   const override = process.env.OPENCODE_OBSERVABILITY_TOKEN_DIR;
   if (override) return override;
@@ -33,25 +37,8 @@ async function readTokenFile(port) {
   }
 }
 
-function defineTuiPlugin(plugin) {
-  return plugin;
-}
-
 const DEFAULT_URL = "http://127.0.0.1:4517";
-const STATISTICS_PANEL = "statistics";
 const LOOPBACK = /* @__PURE__ */ new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
-function buildTuiUrl(base, route, view, token, theme = null, palette = null) {
-  const path = route.type === "session" && route.sessionID ? `#/s/${encodeURIComponent(route.sessionID)}/${view}` : "#/";
-  const params = [];
-  if (token) params.push(`token=${encodeURIComponent(token)}`);
-  if (theme) params.push(`theme=${encodeURIComponent(theme)}`);
-  if (palette) params.push(`palette=${encodeURIComponent(JSON.stringify(palette))}`);
-  const url = `${base}/${path}`;
-  return params.length > 0 ? `${url}?${params.join("&")}` : url;
-}
-function withoutToken(url) {
-  return url.replace(/([?&])token=[^&]*/g, "$1").replace(/[?&]$/, "");
-}
 function pluginToken(value) {
   if (typeof value === "string" && value.trim().length > 0) return value.trim();
   const env = process.env.OPENCODE_OBSERVABILITY_TOKEN;
@@ -66,6 +53,263 @@ async function tokenFromFile(base) {
   } catch {
     return null;
   }
+}
+function baseUrl(value) {
+  if (typeof value !== "string" || value.length === 0) return DEFAULT_URL;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return DEFAULT_URL;
+    if (!LOOPBACK.has(url.hostname.toLowerCase())) return DEFAULT_URL;
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return DEFAULT_URL;
+  }
+}
+async function reachable(url, fetchImpl = fetch) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1500);
+  try {
+    const response = await fetchImpl(`${url}/api/health`, {
+      signal: controller.signal,
+      headers: { Accept: "application/json" }
+    });
+    if (!response.ok) return "down";
+    const body = await response.json().catch(() => null);
+    return body?.authRequired === true ? "auth" : "ok";
+  } catch {
+    return "down";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const STATISTICS_ROUTE = "statistics";
+const TRAJECTORY_ROUTE = "trajectory";
+const TUI_PLUGIN_ID = "opencode-session-observability.tui";
+const TOAST_TITLE = "Session observability";
+const NATIVE_VIEW_MISSING = "Native view not installed yet.";
+const nativeViews = /* @__PURE__ */ new Map();
+function isValidName(name) {
+  return typeof name === "string" && name.trim().length > 0;
+}
+function registerNativeView(name) {
+  if (!isValidName(name)) {
+    throw new TypeError("registerNativeView requires a non-empty page name");
+  }
+  nativeViews.set(name, (nativeViews.get(name) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const remaining = (nativeViews.get(name) ?? 0) - 1;
+    if (remaining > 0) nativeViews.set(name, remaining);
+    else nativeViews.delete(name);
+  };
+}
+function hasNativeView(name) {
+  return isValidName(name) && (nativeViews.get(name) ?? 0) > 0;
+}
+function currentSessionID(route) {
+  if (!route || route.type !== "session") return null;
+  const sessionID = route.sessionID;
+  return typeof sessionID === "string" && sessionID.length > 0 ? sessionID : null;
+}
+function openNativeStatistics(context, browserFallback) {
+  if (!hasNativeView(STATISTICS_ROUTE)) {
+    context.ui.toast.show({
+      title: TOAST_TITLE,
+      message: NATIVE_VIEW_MISSING,
+      variant: "info",
+      duration: 8e3
+    });
+    if (browserFallback) void browserFallback();
+    return false;
+  }
+  context.ui.router.navigate({
+    type: "plugin",
+    id: TUI_PLUGIN_ID,
+    name: STATISTICS_ROUTE,
+    data: { sessionID: currentSessionID(context.ui.router.current()) }
+  });
+  return true;
+}
+
+const NOT_AVAILABLE = "n/a";
+const SEPARATOR = " · ";
+const MIN_TTL_MS = 15e3;
+const cache = /* @__PURE__ */ new Map();
+const inflight = /* @__PURE__ */ new Map();
+function isFiniteNumber(value) {
+  return typeof value === "number" && Number.isFinite(value);
+}
+function formatCost$1(cost) {
+  return isFiniteNumber(cost) ? `$${cost.toFixed(2)}` : NOT_AVAILABLE;
+}
+function formatCacheHitRate(rate) {
+  if (!isFiniteNumber(rate) || rate < 0 || rate > 1) return NOT_AVAILABLE;
+  return `${Math.round(rate * 100)}%`;
+}
+function formatStatusBadge(input) {
+  return `${formatCost$1(input.cost)}${SEPARATOR}cache ${formatCacheHitRate(
+    input.cacheHitRate
+  )}`;
+}
+function sessionCost(context, sessionID) {
+  try {
+    const session = context.data.session;
+    if (!session || typeof session.cost !== "function") return null;
+    const cost = session.cost(sessionID);
+    return isFiniteNumber(cost) ? cost : null;
+  } catch {
+    return null;
+  }
+}
+function parseCacheHitRate(body) {
+  if (!body || typeof body !== "object") return null;
+  const analysis = body.analysis;
+  if (!analysis || typeof analysis !== "object") return null;
+  const totals = analysis.totals;
+  if (!totals || typeof totals !== "object") return null;
+  const metric = totals.cacheHitRate;
+  if (!metric || typeof metric !== "object") return null;
+  const value = metric.value;
+  if (!isFiniteNumber(value) || value < 0 || value > 1) return null;
+  return value;
+}
+function resolveTtl(ttlMs) {
+  return isFiniteNumber(ttlMs) ? Math.max(MIN_TTL_MS, ttlMs) : MIN_TTL_MS;
+}
+async function loadCacheHitRate(context, sessionID, options) {
+  const fetchImpl = options.fetch ?? fetch;
+  const base = baseUrl(context.options.url);
+  const probe = options.health ?? ((url) => reachable(url, fetchImpl));
+  let status;
+  try {
+    status = await probe(base);
+  } catch {
+    return null;
+  }
+  if (status === "down") return null;
+  let token = null;
+  if (status === "auth") {
+    try {
+      token = pluginToken(context.options.token) ?? await tokenFromFile(base);
+    } catch {
+      return null;
+    }
+    if (!token) return null;
+  }
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 1500);
+    try {
+      const headers = { Accept: "application/json" };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const response = await fetchImpl(
+        `${base}/api/sessions/${encodeURIComponent(sessionID)}/analysis`,
+        { headers, signal: controller.signal }
+      );
+      if (!response.ok) return null;
+      const body = await response.json().catch(() => null);
+      return parseCacheHitRate(body);
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return null;
+  }
+}
+async function fetchSessionStatus(context, sessionID, options = {}) {
+  if (typeof sessionID !== "string" || sessionID.trim().length === 0) {
+    return { cost: null, cacheHitRate: null };
+  }
+  const cost = sessionCost(context, sessionID);
+  const now = options.now ?? Date.now;
+  const ttl = resolveTtl(options.ttlMs);
+  const cached = cache.get(sessionID);
+  if (cached) {
+    if (cached.expiresAt > now()) {
+      return { cost, cacheHitRate: cached.cacheHitRate };
+    }
+    cache.delete(sessionID);
+  }
+  let pending = inflight.get(sessionID);
+  if (!pending) {
+    pending = loadCacheHitRate(context, sessionID, options).then((cacheHitRate2) => {
+      cache.set(sessionID, { cacheHitRate: cacheHitRate2, expiresAt: now() + ttl });
+      return cacheHitRate2;
+    }).finally(() => {
+      inflight.delete(sessionID);
+    });
+    inflight.set(sessionID, pending);
+  }
+  const cacheHitRate = await pending;
+  return { cost, cacheHitRate };
+}
+
+const STATISTICS_PANEL = "statistics";
+const WEB_FLAGS = /* @__PURE__ */ new Set(["--web", "-w", "web"]);
+function parseStatsArg(input) {
+  if (typeof input !== "string") return "native";
+  return WEB_FLAGS.has(input.trim().toLowerCase()) ? "web" : "native";
+}
+function tuiCommandDefinitions(openView, openNative = (browserFallback) => browserFallback()) {
+  const openStatistics = (input) => {
+    if (parseStatsArg(input) === "web") {
+      return openView("statistics");
+    }
+    return openNative(() => openView("statistics"));
+  };
+  return [
+    {
+      id: "observability.open",
+      title: "Open session observability",
+      description: "Open the local Trajectory/Statistics UI",
+      group: "Observability",
+      palette: true,
+      slash: { name: "observability", aliases: ["obs"] },
+      run: () => openView("trajectory")
+    },
+    {
+      id: "observability.trajectory",
+      title: "Open session Trajectory",
+      description: "Open the event ledger for the current session",
+      group: "Observability",
+      palette: true,
+      slash: { name: "trajectory" },
+      run: () => openView("trajectory")
+    },
+    {
+      id: "observability.statistics",
+      title: "Open session Statistics",
+      description: "Open the native Statistics view; add --web for the local web UI",
+      group: "Observability",
+      palette: true,
+      slash: { name: "statistics", aliases: ["stats"], arguments: true },
+      run: openStatistics
+    },
+    {
+      id: "observability.statistics.web",
+      title: "Open session Statistics in the browser",
+      description: "Open the local Statistics web UI for the current session",
+      group: "Observability",
+      palette: true,
+      slash: { name: "statistics:web", aliases: ["stats:web"] },
+      run: () => openView("statistics")
+    }
+  ];
+}
+function buildTuiUrl(base, route, view, token, theme = null, palette = null) {
+  const path = route.type === "session" && route.sessionID ? `#/s/${encodeURIComponent(route.sessionID)}/${view}` : "#/";
+  const params = [];
+  if (token) params.push(`token=${encodeURIComponent(token)}`);
+  if (theme) params.push(`theme=${encodeURIComponent(theme)}`);
+  if (palette) params.push(`palette=${encodeURIComponent(JSON.stringify(palette))}`);
+  const url = `${base}/${path}`;
+  return params.length > 0 ? `${url}?${params.join("&")}` : url;
+}
+function withoutToken(url) {
+  return url.replace(/([?&])token=[^&]*/g, "$1").replace(/[?&]$/, "");
 }
 function configuredTheme(context) {
   const configured = context.options.theme;
@@ -123,34 +367,6 @@ function themePalette(context) {
   }
   return palette;
 }
-function baseUrl(value) {
-  if (typeof value !== "string" || value.length === 0) return DEFAULT_URL;
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return DEFAULT_URL;
-    if (!LOOPBACK.has(url.hostname.toLowerCase())) return DEFAULT_URL;
-    return url.toString().replace(/\/$/, "");
-  } catch {
-    return DEFAULT_URL;
-  }
-}
-async function reachable(url) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 1500);
-  try {
-    const response = await fetch(`${url}/api/health`, {
-      signal: controller.signal,
-      headers: { Accept: "application/json" }
-    });
-    if (!response.ok) return "down";
-    const body = await response.json().catch(() => null);
-    return body?.authRequired === true ? "auth" : "ok";
-  } catch {
-    return "down";
-  } finally {
-    clearTimeout(timer);
-  }
-}
 function openBrowser(url) {
   try {
     if (process.platform === "win32") {
@@ -169,7 +385,7 @@ function openBrowser(url) {
   }
 }
 const tui = defineTuiPlugin({
-  id: "opencode-session-observability.tui",
+  id: TUI_PLUGIN_ID,
   async setup(context) {
     const base = baseUrl(context.options.url);
     const { statisticsPanelElement } = await Promise.resolve().then(() => StatisticsView$1);
@@ -225,53 +441,16 @@ const tui = defineTuiPlugin({
       });
     };
     context.keymap.layer(() => ({
-      commands: [
-        {
-          id: "observability.open",
-          title: "Open session observability",
-          description: "Open the local Trajectory/Statistics UI",
-          group: "Observability",
-          palette: true,
-          slash: { name: "observability", aliases: ["obs"] },
-          run: () => openView("trajectory")
-        },
-        {
-          id: "observability.trajectory",
-          title: "Open session Trajectory",
-          description: "Open the event ledger for the current session",
-          group: "Observability",
-          palette: true,
-          slash: { name: "trajectory" },
-          run: () => openView("trajectory")
-        },
-        {
-          id: "observability.statistics",
-          title: "Open session Statistics",
-          description: "Open the native turn/step metrics panel",
-          group: "Observability",
-          palette: true,
-          slash: { name: "statistics", aliases: ["stats"] },
-          run: () => {
-            if (!openStatisticsPanel()) {
-              context.ui.toast.show({
-                title: "Session observability",
-                message: "No session is selected, so there is no statistics to show.",
-                variant: "warning",
-                duration: 6e3
-              });
-            }
-          }
-        },
-        {
-          id: "observability.statistics-web",
-          title: "Open session Statistics in the browser",
-          description: "Open the local web UI metrics table for the current session",
-          group: "Observability",
-          palette: true,
-          slash: { name: "statistics-web", aliases: ["stats:web"] },
-          run: () => openView("statistics")
-        }
-      ]
+      commands: tuiCommandDefinitions(openView, (browserFallback) => {
+        if (openStatisticsPanel()) return;
+        context.ui.toast.show({
+          title: "Session observability",
+          message: "No session is selected, so there is no statistics to show.",
+          variant: "warning",
+          duration: 6e3
+        });
+        return browserFallback();
+      })
     }));
     context.keymap.layer(() => ({
       enabled: () => context.ui.panel.current()?.name === STATISTICS_PANEL,
@@ -1343,4 +1522,4 @@ const StatisticsView$1 = /*#__PURE__*/Object.freeze(/*#__PURE__*/Object.definePr
   statisticsPanelElement
 }, Symbol.toStringTag, { value: 'Module' }));
 
-export { buildTuiUrl, tui as default, themePalette };
+export { STATISTICS_ROUTE, TRAJECTORY_ROUTE, baseUrl, buildTuiUrl, currentSessionID, tui as default, fetchSessionStatus, formatStatusBadge, hasNativeView, openNativeStatistics, parseStatsArg, pluginToken, reachable, registerNativeView, themePalette, tokenFromFile, tuiCommandDefinitions };

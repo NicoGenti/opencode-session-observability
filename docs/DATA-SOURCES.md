@@ -239,6 +239,14 @@ It does **not** call `session.prompt`, `compact`, `interrupt`, `switchModel`, `s
 
 `session.hook("http.response")` is a live hook. It is useful for optional live capture, but it cannot reconstruct historical request headers or approvals. This app does not rely on it.
 
+### TUI routing and status badge
+
+The TUI part exposes a dual-mode slash surface. `/statistics` (alias `/stats`) takes an optional argument: with no argument, or anything other than the browser tokens `--web`, `-w`, `web`, it attempts the native route; the browser tokens — and the dedicated `/statistics:web` / `/stats:web` commands — open the local web UI through the unchanged `openView("statistics")` path.
+
+Native `/statistics` is live: it opens the built-in fullscreen Statistics panel with `context.ui.panel.open("statistics", { presentation: "fullscreen" })` and renders it through the plugin's appended `session.panel` slot, so no registration step is involved. When the host has no session selected the panel cannot open, so the command shows the `"No session is selected, so there is no statistics to show."` toast and falls back to the browser. The reserved route names `statistics` and `trajectory` plus the ref-counted `registerNativeView(name)` registry (`STATISTICS_ROUTE` / `TRAJECTORY_ROUTE` in `tui-native.ts`) remain the contract for future router-page views: `openNativeStatistics` keeps its browser-fallback behaviour for that seam, and a view owner that registers a page must still call `ui.router.register(page)` themselves before the router route can be navigated.
+
+The status badge seam is `formatStatusBadge({ cost, cacheHitRate })` plus `fetchSessionStatus(context, sessionID, options?)`. The fetcher reads the session cost from the SDK (`context.data.session.cost`) and the cache hit rate from `GET /api/sessions/{id}/analysis` (`analysis.totals.cacheHitRate.value`), adding `Authorization: Bearer <token>` only when `/api/health` reports `authRequired`. Results are cached per session for at least 15 s with one in-flight request per session, including negative results. Every failure (offline, 401, unparsable body, out-of-domain value) resolves to `cacheHitRate: null`; the module never throws and never toasts. The `prompt.footer.status` slot (#6) is the wiring target: the badge shows `"$X.XX · cache NN%"` and `n/a` for missing data.
+
 ## Deliberately unavailable data
 
 | Wanted | Status | Why |

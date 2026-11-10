@@ -70,7 +70,7 @@ This checklist separates what is implemented, what is available from OpenCode 2,
 - [x] Local HTTP API + static UI; GET/HEAD only; strict CSP; loopback bind.
 - [x] Default-on access token with constant-time comparison and a per-port token file for the TUI.
 - [x] `--no-auth` loopback opt-out; non-loopback binds always require authentication.
-- [x] 236 automated tests (current package).
+- [x] 261 automated tests across 29 files (current package).
 - [x] Read-only file hash test and write-rejection test.
 - [x] OpenCode SDK kept as a type-only devDependency; production and full audits clean (overrides pin patched `glob` and `minimatch`). Optional `@opentui/core`, `@opentui/solid` and `solid-js` are peer + dev only (no production deps), so `npm run audit:prod` stays at zero.
 - [x] Fixtures: simple, tools, subagents, retry/error, compaction, long paging, incomplete, out-of-order, secrets, empty.

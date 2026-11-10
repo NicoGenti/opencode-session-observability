@@ -253,9 +253,9 @@ In OpenCode 2:
 ```text
 /observability      open the Trajectory view in the browser
 /trajectory         same, explicit Trajectory
-/statistics         open the native fullscreen Statistics panel
-/stats              alias for /statistics
-/statistics-web     open the browser Statistics view (palette alias: stats:web)
+/statistics         open the native fullscreen Statistics panel (alias /stats)
+/statistics --web   open the browser Statistics view instead (also -w, web)
+/statistics:web     open the browser Statistics view (alias /stats:web)
 ```
 
 The native panel:

@@ -19,14 +19,16 @@ Use `npm ci` rather than `npm install`: `package-lock.json` is committed and the
 ## Commands
 
 ```bash
-npm run check       # typecheck + full test suite — the standard gate
-npm run typecheck   # tsc --noEmit only
-npm test            # node:test, 26 files, 236 tests
-npm run audit:prod  # production dependency audit
-npm run serve       # start the local UI (alias of npm start)
+npm run check        # typecheck + typecheck:tui + full test suite — the standard gate
+npm run typecheck    # tsc --noEmit only
+npm run typecheck:tui # tsc --noEmit -p tsconfig.tui.json (Solid JSX sidecar)
+npm test             # node:test, 29 files, 261 tests
+npm run build:tui    # rebuild dist-tui/tui.mjs; CI verifies the artifact is fresh
+npm run audit:prod   # production dependency audit
+npm run serve        # start the local UI (alias of npm start)
 ```
 
-`npm run check` must be green before you open a pull request. The suite is at 236 tests and grows with each new suite.
+`npm run check` must be green before you open a pull request. The suite is at 261 tests across 29 files and grows with each new suite.
 
 ## Architecture pointers
 
