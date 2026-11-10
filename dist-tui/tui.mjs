@@ -246,6 +246,12 @@ async function fetchSessionStatus(context, sessionID, options = {}) {
   const cacheHitRate = await pending;
   return { cost, cacheHitRate };
 }
+async function statusBadgeText(context, sessionID, options = {}) {
+  if (typeof sessionID !== "string" || sessionID.trim().length === 0) {
+    return null;
+  }
+  return formatStatusBadge(await fetchSessionStatus(context, sessionID, options));
+}
 
 const STATISTICS_PANEL = "statistics";
 const WEB_FLAGS = /* @__PURE__ */ new Set(["--web", "-w", "web"]);
@@ -389,11 +395,16 @@ const tui = defineTuiPlugin({
   async setup(context) {
     const base = baseUrl(context.options.url);
     const { statisticsPanelElement } = await Promise.resolve().then(() => StatisticsView$1);
+    const { statusBadgeElement } = await Promise.resolve().then(() => statusBadge);
     const openStatisticsPanel = () => context.ui.panel.open(STATISTICS_PANEL, { presentation: "fullscreen" });
     const statisticsKeyboard = { handlers: null };
     context.ui.slot({
       append: "session.panel",
       render: (input) => input.name === STATISTICS_PANEL ? statisticsPanelElement(context, input, statisticsKeyboard) : null
+    });
+    context.ui.slot({
+      append: "prompt.footer.status",
+      render: (input) => statusBadgeElement(context, input)
     });
     const openView = async (view) => {
       const configured = pluginToken(context.options.token);
@@ -1522,4 +1533,40 @@ const StatisticsView$1 = /*#__PURE__*/Object.freeze(/*#__PURE__*/Object.definePr
   statisticsPanelElement
 }, Symbol.toStringTag, { value: 'Module' }));
 
-export { STATISTICS_ROUTE, TRAJECTORY_ROUTE, baseUrl, buildTuiUrl, currentSessionID, tui as default, fetchSessionStatus, formatStatusBadge, hasNativeView, openNativeStatistics, parseStatsArg, pluginToken, reachable, registerNativeView, themePalette, tokenFromFile, tuiCommandDefinitions };
+function StatusBadge(props) {
+  const [line, setLine] = createSignal(null);
+  createEffect(() => {
+    const sessionID = props.input.sessionID;
+    let active = true;
+    onCleanup(() => {
+      active = false;
+    });
+    setLine(null);
+    void statusBadgeText(props.context, sessionID).then((text) => {
+      if (active) setLine(text);
+    });
+  });
+  return createComponent(Show, {
+    get when() {
+      return line();
+    },
+    get children() {
+      var _el$ = createElement("text");
+      insert(_el$, line);
+      return _el$;
+    }
+  });
+}
+function statusBadgeElement(context, input) {
+  return createComponent(StatusBadge, {
+    context,
+    input
+  });
+}
+
+const statusBadge = /*#__PURE__*/Object.freeze(/*#__PURE__*/Object.defineProperty({
+  __proto__: null,
+  statusBadgeElement
+}, Symbol.toStringTag, { value: 'Module' }));
+
+export { STATISTICS_ROUTE, TRAJECTORY_ROUTE, baseUrl, buildTuiUrl, currentSessionID, tui as default, fetchSessionStatus, formatStatusBadge, hasNativeView, openNativeStatistics, parseStatsArg, pluginToken, reachable, registerNativeView, statusBadgeText, themePalette, tokenFromFile, tuiCommandDefinitions };

@@ -20,8 +20,13 @@ export {
 } from "./tui-native.ts";
 
 // The status badge seam lives in one module so the slot wiring (#6) imports the
-// formatter and the cached fetcher from the same place as the commands.
-export { formatStatusBadge, fetchSessionStatus } from "./tui-status.ts";
+// formatter, the cached fetcher and the badge text from the same place as the
+// commands.
+export {
+  formatStatusBadge,
+  fetchSessionStatus,
+  statusBadgeText,
+} from "./tui-status.ts";
 
 // The local-UI transport helpers live in a leaf module so the status seam can
 // share them without importing this entry point. Re-exported here unchanged:
@@ -260,11 +265,12 @@ export default defineTuiPlugin({
   async setup(context) {
     const base = baseUrl(context.options.url);
 
-    // Loaded lazily: the raw source is a `.tsx` module for JSX-capable hosts,
+    // Loaded lazily: the raw sources are `.tsx` modules for JSX-capable hosts,
     // while Node-hosted tests import this module without a JSX loader.
     const { statisticsPanelElement } = await import(
       "./tui/statistics/StatisticsView.tsx"
     );
+    const { statusBadgeElement } = await import("./tui/statusBadge.tsx");
 
     /**
      * Opens the native Statistics panel for the current session. Returns false
@@ -286,6 +292,19 @@ export default defineTuiPlugin({
         input.name === STATISTICS_PANEL
           ? statisticsPanelElement(context, input, statisticsKeyboard)
           : null,
+    });
+
+    /**
+     * Status badge (issue #6, decision D3). `prompt.footer.status` carries the
+     * session id, the input mode and `showDetails`; the badge renders one line
+     * and degrades every missing value to `n/a`. When an older host does not
+     * publish this path, the SDK appends the claim to the nearest surviving
+     * ancestor (`prompt.footer`), so no second claim is needed and nothing
+     * throws or toasts.
+     */
+    context.ui.slot({
+      append: "prompt.footer.status",
+      render: (input) => statusBadgeElement(context, input),
     });
 
     const openView = async (view: "trajectory" | "statistics"): Promise<void> => {
