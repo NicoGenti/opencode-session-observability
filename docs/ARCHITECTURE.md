@@ -181,11 +181,11 @@ Other clients     ── HTTP/RPC ──► service
 
 The `./tui` entry resolves to the prebuilt `dist-tui/tui.mjs` bundle, built by `vite build --config vite.tui.config.ts` from the `src/plugin/tui.ts` entry, so the host loads plain ESM. Loading the raw `.tsx` sources is a Bun-only alternative that this package does not rely on. `src/plugin/tui.tsx` is a typechecked-only scaffold: it exposes `NativeObservabilityView` without mounting or registering it, and it is not part of the bundle. The browser UI remains the primary surface.
 
-The TUI commands are intentionally non-mutating: they resolve the current session from `context.ui.router.current()` and either open the browser URL or, for `/statistics`, the native panel. They never enqueue a prompt.
+The TUI commands are intentionally non-mutating: they resolve the current session from `context.ui.router.current()` and either open the browser URL or, for the native panels (`/statistics`, `/trajectory`), the fullscreen panel. They never enqueue a prompt.
 
 ### Native statistics panel
 
-`/statistics` (alias `/stats`) is the one TUI command that does not open a browser. It opens a fullscreen `session.panel`, and the host renders it through the plugin's `session.panel` slot:
+`/statistics` (alias `/stats`) does not open a browser by default. It opens a fullscreen `session.panel`, and the host renders it through the plugin's `session.panel` slot:
 
 ```text
 /statistics ──► ui.panel.open("statistics", fullscreen)
@@ -197,8 +197,25 @@ The TUI commands are intentionally non-mutating: they resolve the current sessio
 
 - `state.ts` binds `context.client.rpc(Observability)` once, then issues one `analysis` request per panel open or session change: the effect reacts only to the panel input because the fetch reads no signal in its synchronous window. It keeps loading/error/empty states and drops stale responses with a request ticket.
 - `columns.ts` owns breakpoints and ordered column sets; `status.ts` owns the symbol/label/palette table; `stepRows.ts` owns accordion rows. All three are pure and SDK-free, so they are unit-tested directly.
-- A keyboard layer gated on `ui.panel.current()?.name === "statistics"` maps `j`/`Down`, `k`/`Up`, `Enter` and `Esc` to a bridge that the mounted panel installs and clears. Keys are inert when the panel is closed, and `Esc` closes the panel rather than leaking to the host.
+- A keyboard layer gated on the open panel name maps `j`/`Down`, `k`/`Up`, `Enter` and `Esc` to the bridge the mounted panel installs and clears (see the trajectory section for the shared layer). Keys are inert when the panel is closed, and `Esc` closes the panel rather than leaking to the host.
 - The view resolves colours only through `themePalette` keys; a status symbol always accompanies the colour.
+
+### Native trajectory panel
+
+`/trajectory` and `/observability` open a second fullscreen `session.panel` claim, with id `trajectory` (issue #6, decision D2):
+
+```text
+/trajectory ──► ui.panel.open("trajectory", fullscreen)
+            ──► slot render (TrajectoryView, only when name = trajectory)
+            ──► createTrajectoryState(context.client)
+            ──► rpc.analysis({ sessionID }) ──► ObservabilityService
+            ──► turn ledger + per-turn step accordion
+```
+
+- `trajectory/state.ts` mirrors the statistics state (same request ticket, reconcile rules and error strings) and reuses `analysisResponse.ts` — the response parser factored out for both panels — plus `clampIndex` and `moveSelection`. `TrajectoryView.tsx` reuses `columns.ts`, `stepRows.ts` and `status.ts`, so both panels stay aligned.
+- Each `session.panel` claim renders only for its own panel id and returns `null` otherwise, so the host picks by name and the claims do not collide.
+- Without a selected session the panel opener returns `false`: the command shows one toast and falls back to the browser, and `--web` (also on `/observability`) always takes the browser path.
+- The keyboard layer is gated on `ui.panel.current()?.name` being either native panel and dispatches to that panel's bridge. The per-panel focus gate is deferred to the hardening phase.
 
 ## Read-only guarantees
 
