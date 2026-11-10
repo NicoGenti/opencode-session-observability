@@ -4,7 +4,7 @@ import {
   reachable,
   tokenFromFile,
   type Reachability,
-} from "./tui.ts";
+} from "./tui-net.ts";
 
 /**
  * Status badge seam (issue #9, phase 3).
@@ -171,19 +171,32 @@ async function loadCacheHitRate(
  * comes from the local analysis route and is cached per session for at least
  * 15 s, with one in-flight request shared by concurrent callers. Negative
  * results are cached the same way. Never throws and never toasts.
+ *
+ * A missing or blank session id yields no data and touches neither the cache nor
+ * the network: there is nothing to key on and nothing to probe.
  */
 export async function fetchSessionStatus(
   context: StatusContext,
   sessionID: string,
   options: SessionStatusOptions = {},
 ): Promise<SessionStatus> {
+  if (typeof sessionID !== "string" || sessionID.trim().length === 0) {
+    return { cost: null, cacheHitRate: null };
+  }
+
   const cost = sessionCost(context, sessionID);
   const now = options.now ?? Date.now;
   const ttl = resolveTtl(options.ttlMs);
 
   const cached = cache.get(sessionID);
-  if (cached && cached.expiresAt > now()) {
-    return { cost, cacheHitRate: cached.cacheHitRate };
+  if (cached) {
+    if (cached.expiresAt > now()) {
+      return { cost, cacheHitRate: cached.cacheHitRate };
+    }
+    // Housekeeping on the expired-miss path: drop the stale entry before the
+    // refresh starts, so an expired value is never held while its replacement is
+    // in flight (or abandoned).
+    cache.delete(sessionID);
   }
 
   let pending = inflight.get(sessionID);
@@ -201,6 +214,17 @@ export async function fetchSessionStatus(
 
   const cacheHitRate = await pending;
   return { cost, cacheHitRate };
+}
+
+/**
+ * Test seam: the cached entry for one session, copied so callers cannot mutate
+ * the cache. `null` means no entry is retained for that session.
+ */
+export function peekStatusCache(
+  sessionID: string,
+): { readonly cacheHitRate: number | null; readonly expiresAt: number } | null {
+  const entry = cache.get(sessionID);
+  return entry ? { ...entry } : null;
 }
 
 /** Drops the cached status for one session, or for every session. */

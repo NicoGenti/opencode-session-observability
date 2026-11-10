@@ -4,6 +4,7 @@ import {
   clearStatusCache,
   fetchSessionStatus,
   formatStatusBadge,
+  peekStatusCache,
   type SessionStatusOptions,
   type StatusContext,
 } from "../src/plugin/tui-status.ts";
@@ -322,4 +323,68 @@ test("fetchSessionStatus shares one in-flight analysis request across callers", 
   for (const result of results) {
     assert.deepEqual(result, { cost: 0.12, cacheHitRate: 0.25 });
   }
+});
+
+test("fetchSessionStatus ignores a missing or blank session id", async () => {
+  clearStatusCache();
+  const calls: FetchCall[] = [];
+  let probes = 0;
+  const options: SessionStatusOptions = {
+    health: async () => {
+      probes += 1;
+      return "ok";
+    },
+    fetch: recordFetch(calls, () => analysisResponse(0.38)),
+    now: () => 0,
+  };
+  const context = statusContext({ url: BASE }, 0.12);
+
+  for (const sessionID of [undefined, "", "  "] as unknown as string[]) {
+    const result = await fetchSessionStatus(context, sessionID, options);
+    assert.deepEqual(result, { cost: null, cacheHitRate: null }, String(sessionID));
+  }
+
+  // No health probe, no analysis fetch, and no cache entry: the guard runs first.
+  assert.equal(probes, 0);
+  assert.equal(calls.length, 0);
+  assert.equal(peekStatusCache(""), null);
+  assert.equal(peekStatusCache("  "), null);
+});
+
+test("fetchSessionStatus drops the expired entry before the refresh starts", async () => {
+  clearStatusCache();
+  let clock = 0;
+  let release: (response: Response) => void = () => {};
+  const calls: FetchCall[] = [];
+  const options: SessionStatusOptions = {
+    health: async () => "ok",
+    fetch: recordFetch(calls, () => {
+      if (calls.length === 1) return analysisResponse(0.2);
+      return new Promise<Response>((resolve) => {
+        release = resolve;
+      });
+    }),
+    now: () => clock,
+  };
+
+  await fetchSessionStatus(statusContext({ url: BASE }, 0.12), "ses_evict", options);
+  assert.deepEqual(peekStatusCache("ses_evict"), {
+    cacheHitRate: 0.2,
+    expiresAt: 15_000,
+  });
+
+  clock = 15_001;
+  const pending = fetchSessionStatus(statusContext({ url: BASE }, 0.12), "ses_evict", options);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  // The stale entry is gone while its replacement is still in flight.
+  assert.equal(peekStatusCache("ses_evict"), null);
+
+  release(analysisResponse(0.6));
+  const refreshed = await pending;
+  assert.equal(refreshed.cacheHitRate, 0.6);
+  assert.deepEqual(peekStatusCache("ses_evict"), {
+    cacheHitRate: 0.6,
+    expiresAt: 30_001,
+  });
 });

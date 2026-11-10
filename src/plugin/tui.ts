@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { readTokenFile } from "../server/token-file.ts";
 import { defineTuiPlugin } from "./define.ts";
+import { baseUrl, pluginToken, reachable, tokenFromFile } from "./tui-net.ts";
 import {
   TUI_PLUGIN_ID,
   openNativeStatistics,
@@ -22,11 +22,17 @@ export {
 // formatter and the cached fetcher from the same place as the commands.
 export { formatStatusBadge, fetchSessionStatus } from "./tui-status.ts";
 
-const DEFAULT_URL = "http://127.0.0.1:4517";
+// The local-UI transport helpers live in a leaf module so the status seam can
+// share them without importing this entry point. Re-exported here unchanged:
+// this entry point stays the single import site for the TUI surface.
+export {
+  baseUrl,
+  pluginToken,
+  tokenFromFile,
+  reachable,
+  type Reachability,
+} from "./tui-net.ts";
 
-const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
-
-export type Reachability = "ok" | "auth" | "down";
 type RouteLike = { type: string; sessionID?: string };
 type ViewOpener = (view: "trajectory" | "statistics") => void | false | Promise<void>;
 
@@ -148,27 +154,6 @@ function withoutToken(url: string): string {
   return url.replace(/([?&])token=[^&]*/g, "$1").replace(/[?&]$/, "");
 }
 
-export function pluginToken(value: unknown): string | null {
-  if (typeof value === "string" && value.trim().length > 0) return value.trim();
-  const env = process.env.OPENCODE_OBSERVABILITY_TOKEN;
-  return typeof env === "string" && env.trim().length > 0 ? env.trim() : null;
-}
-
-export async function tokenFromFile(base: string): Promise<string | null> {
-  try {
-    const url = new URL(base);
-    const port = url.port
-      ? Number(url.port)
-      : url.protocol === "https:"
-        ? 443
-        : 80;
-    if (!Number.isInteger(port) || port <= 0 || port > 65_535) return null;
-    return (await readTokenFile(port))?.token ?? null;
-  } catch {
-    return null;
-  }
-}
-
 function configuredTheme(context: {
   options: Readonly<Record<string, unknown>>;
 }): string | null {
@@ -236,43 +221,6 @@ export function themePalette(context: {
     if (value) palette[key] = value;
   }
   return palette;
-}
-
-export function baseUrl(value: unknown): string {
-  if (typeof value !== "string" || value.length === 0) return DEFAULT_URL;
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return DEFAULT_URL;
-    // The TUI only opens the local UI; restrict the target to loopback so the
-    // configurable URL cannot be turned into a launcher for arbitrary hosts.
-    if (!LOOPBACK.has(url.hostname.toLowerCase())) return DEFAULT_URL;
-    return url.toString().replace(/\/$/, "");
-  } catch {
-    return DEFAULT_URL;
-  }
-}
-
-export async function reachable(
-  url: string,
-  fetchImpl: typeof fetch = fetch,
-): Promise<Reachability> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 1_500);
-  try {
-    const response = await fetchImpl(`${url}/api/health`, {
-      signal: controller.signal,
-      headers: { Accept: "application/json" },
-    });
-    if (!response.ok) return "down";
-    const body = (await response.json().catch(() => null)) as {
-      authRequired?: unknown;
-    } | null;
-    return body?.authRequired === true ? "auth" : "ok";
-  } catch {
-    return "down";
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 function openBrowser(url: string): boolean {
