@@ -7,6 +7,8 @@
  * format.
  */
 
+import type { Diagnostics } from "./diagnostics.ts";
+
 export type Basis = "measured" | "derived" | "estimated" | "unavailable";
 
 /** A number plus the epistemic status of that number. */
@@ -430,6 +432,11 @@ export interface Analysis {
   unattachedEventIDs: string[];
   generatedAt: number;
   redacted: boolean;
+  /**
+   * Deterministic diagnostics over the recorded event order. Optional so
+   * analysis payloads produced before diagnostics existed stay valid.
+   */
+  diagnostics?: Diagnostics;
 }
 
 export interface EventPage {

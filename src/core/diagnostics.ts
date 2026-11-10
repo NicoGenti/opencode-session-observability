@@ -17,10 +17,13 @@
 import type {
   Analysis,
   Basis,
+  Metric,
   NormalizedEvent,
   ToolCallDetail,
   Turn,
+  TurnTrigger,
 } from "./types.ts";
+import { metric } from "./types.ts";
 
 export type RecoveryState =
   | "recovered"
@@ -67,6 +70,26 @@ export interface DiagnosticIncident {
    * scalar or empty comparable input). Never describes later failures.
    */
   inputKeyShape: string[] | null;
+  /** Event ID of the first failure in the maximal run. */
+  firstFailureEventID: string;
+  /** Event ID of the last failure in the maximal run. */
+  lastFailureEventID: string;
+  /** Every failure event ID in recorded order (1..n, single-event safe). */
+  failureEventIDs: string[];
+  /** Event ID of the same-tool success that closed the run, else null. */
+  successEventID: string | null;
+  /** Projected turn trigger (kind and label only); never prompt prose. */
+  trigger: TurnTrigger;
+  /**
+   * Turn duration contextual to the incident, reused from `Turn.totalTime`.
+   * Contextual, non-causal footprint — never a recovery signal.
+   */
+  elapsed: Metric;
+  /**
+   * Sum of recorded step costs in the incident's turn. `value` is null when
+   * no step recorded a cost. Contextual, non-causal footprint.
+   */
+  stepCostSum: Metric;
 }
 
 export interface DiagnosticsSummary {
@@ -338,6 +361,27 @@ function scanAfter(
   return result;
 }
 
+/** Sum of recorded step costs; unavailable when no step recorded one. */
+function sumStepCosts(
+  steps: ReadonlyArray<{ cost: number | null }>,
+): Metric {
+  if (steps.length === 0) return metric(null, "unavailable", "no model calls");
+  const present = steps
+    .map((step) => step.cost)
+    .filter((value): value is number => value !== null);
+  if (present.length === 0) {
+    return metric(null, "unavailable", "cost was not recorded");
+  }
+  const total = present.reduce((sum, value) => sum + value, 0);
+  return metric(
+    total,
+    "derived",
+    present.length === steps.length
+      ? "sum of recorded costs"
+      : `${steps.length - present.length} cost value(s) missing`,
+  );
+}
+
 function buildIncident(
   run: OpenRun,
   success: NormalizedEvent | null,
@@ -438,6 +482,17 @@ function buildIncident(
     inputsComparable,
     similarity,
     inputKeyShape,
+    firstFailureEventID: run.failures[0]!.id,
+    lastFailureEventID: run.failures[run.failures.length - 1]!.id,
+    failureEventIDs: run.failures.map((event) => event.id),
+    successEventID: success ? success.id : null,
+    trigger: {
+      kind: run.turn.trigger.kind,
+      eventID: run.turn.trigger.eventID,
+      label: run.turn.trigger.label,
+    },
+    elapsed: { ...run.turn.totalTime },
+    stepCostSum: sumStepCosts(run.turn.steps),
   };
   return { incident, turnIndex: run.turn.index, firstIndex: run.firstIndex };
 }
