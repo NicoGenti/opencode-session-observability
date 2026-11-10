@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { defineTuiPlugin } from "./define.ts";
 import { baseUrl, pluginToken, reachable, tokenFromFile } from "./tui-net.ts";
+import type { StatisticsKeyboardBridge } from "./tui/statistics/state.ts";
 import {
   TUI_PLUGIN_ID,
   openNativeStatistics,
@@ -32,6 +33,9 @@ export {
   reachable,
   type Reachability,
 } from "./tui-net.ts";
+
+/** Panel id shared by `ui.panel.open` and the `session.panel` slot claim. */
+const STATISTICS_PANEL = "statistics";
 
 type RouteLike = { type: string; sessionID?: string };
 type ViewOpener = (view: "trajectory" | "statistics") => void | false | Promise<void>;
@@ -244,15 +248,45 @@ function openBrowser(url: string): boolean {
 /**
  * OpenCode 2 TUI part.
  *
- * Registers `/observability`, `/trajectory`, `/statistics` and
- * `/statistics:web`. The commands are read-only: they never inject a prompt or
- * alter the session. They open the local web UI for the session currently shown
- * in the TUI, or explain how to start the UI when it is not running.
+ * Registers `/observability`, `/trajectory`, `/statistics` (alias `/stats`) and
+ * `/statistics:web` (alias `/stats:web`). The commands are read-only: they never
+ * inject a prompt or alter the session. `/statistics` opens the native
+ * fullscreen panel; passing `--web`, `-w` or `web` opens the local web UI
+ * instead, and `/statistics:web` always opens it for the session currently
+ * shown in the TUI, or explains how to start the UI when it is not running.
  */
 export default defineTuiPlugin({
   id: TUI_PLUGIN_ID,
-  setup(context) {
+  async setup(context) {
     const base = baseUrl(context.options.url);
+
+    // Loaded lazily: the raw source is a `.tsx` module for JSX-capable hosts,
+    // while Node-hosted tests import this module without a JSX loader.
+    const { statisticsPanelElement } = await import(
+      "./tui/statistics/StatisticsView.tsx"
+    );
+
+    /**
+     * Opens the native Statistics panel for the current session. Returns false
+     * when the host has no selected session to attach the panel to.
+     */
+    const openStatisticsPanel = (): boolean =>
+      context.ui.panel.open(STATISTICS_PANEL, { presentation: "fullscreen" });
+
+    /**
+     * The mounted panel installs its handlers here; the keymap layer below only
+     * forwards. When the panel is closed or not mounted, every command is a
+     * no-op even before the `enabled` gate is considered.
+     */
+    const statisticsKeyboard: StatisticsKeyboardBridge = { handlers: null };
+
+    context.ui.slot({
+      append: "session.panel",
+      render: (input) =>
+        input.name === STATISTICS_PANEL
+          ? statisticsPanelElement(context, input, statisticsKeyboard)
+          : null,
+    });
 
     const openView = async (view: "trajectory" | "statistics"): Promise<void> => {
       const configured = pluginToken(context.options.token);
@@ -307,8 +341,64 @@ export default defineTuiPlugin({
 
     context.keymap.layer(() => ({
       commands: tuiCommandDefinitions(openView, (browserFallback) => {
-        openNativeStatistics(context, browserFallback);
+        if (openStatisticsPanel()) return;
+        context.ui.toast.show({
+          title: "Session observability",
+          message: "No session is selected, so there is no statistics to show.",
+          variant: "warning",
+          duration: 6_000,
+        });
+        return browserFallback();
       }),
+    }));
+
+    /**
+     * Panel-scoped navigation. The layer is permanently registered but gated on
+     * `ui.panel.current()`, so it only claims keys while this plugin's
+     * statistics panel is the open panel; `priority` makes it win over host
+     * bindings such as `escape`.
+     */
+    context.keymap.layer(() => ({
+      enabled: () => context.ui.panel.current()?.name === STATISTICS_PANEL,
+      priority: 10,
+      commands: [
+        {
+          id: "statistics.moveDown",
+          title: "Statistics: select next turn",
+          group: "Statistics",
+          bind: "j,down",
+          run: () => {
+            statisticsKeyboard.handlers?.moveSelection(1);
+          },
+        },
+        {
+          id: "statistics.moveUp",
+          title: "Statistics: select previous turn",
+          group: "Statistics",
+          bind: "k,up",
+          run: () => {
+            statisticsKeyboard.handlers?.moveSelection(-1);
+          },
+        },
+        {
+          id: "statistics.toggleExpand",
+          title: "Statistics: expand or collapse the selected turn",
+          group: "Statistics",
+          bind: "return",
+          run: () => {
+            statisticsKeyboard.handlers?.toggleExpand();
+          },
+        },
+        {
+          id: "statistics.close",
+          title: "Statistics: close the panel",
+          group: "Statistics",
+          bind: "escape",
+          run: () => {
+            context.ui.panel.close();
+          },
+        },
+      ],
     }));
   },
 });

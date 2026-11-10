@@ -52,7 +52,7 @@ This is the design contract for the UI. It is a local, read-only ledger of OpenC
 - Banner: warning and error use the semantic border/background; body text stays ink, never warning-coloured text; persistent while the condition holds.
 - Drawer and modal: `role="dialog"`, `aria-modal="true"`, focus trapped, `Esc` closes, focus returns to the opener; the drawer's close button is the first focus target and the opening row is restored on close; destructive confirmations use the same modal pattern, not `window.confirm`.
 - Export: Markdown and HTML reuse the same token values and sentence-case conventions; the export token block is checked against the UI block by a test and is not a second hand-maintained palette; a custom OpenCode palette produces an export in that palette, or the export states which theme it used.
-- TUI: deep links carry the resolved palette and theme name and the browser validates them; the TUI never opens an unauthenticated page and never prints the token.
+- TUI: deep links carry the resolved palette and theme name and the browser validates them; the TUI never opens an unauthenticated page and never prints the token. `/statistics` (alias `/stats`) renders a native fullscreen `session.panel` in the terminal — a summary banner over a dense turn table — instead of opening a browser; `/statistics:web` (alias `/stats:web`) keeps the browser deep link as the fallback. The native panel consumes the same `analysis` RPC payload and the same `themePalette` keys, so provenance marks and status colours match the web view; the deep-link guarantee above still governs every browser-opening command.
 
 ## Color never carries meaning alone
 
@@ -65,6 +65,7 @@ This is the design contract for the UI. It is a local, read-only ledger of OpenC
 - Do keep the provenance system visible: M measured, D derived, E estimated, — unavailable.
 - Do keep status text next to status colour.
 - Don't change the read-only data flow, the Basic/Advanced concept, the 38 OpenCode themes, the documented keyboard model, or the export formats.
+- Panel-scoped keys (native Statistics only, active while that panel is open): `j`/`Down` next turn, `k`/`Up` previous turn, `Enter` expand/collapse the selected turn's steps, `Esc` close. They are registered on a layer gated to the open panel, so they never leak to other panels or to the browser keyboard model above.
 - Don't use: cream + terracotta (SD1); near-black + acid green as decoration (SD2); hairlines and zero radius as a costume (SD3); tracked all-caps labels, mono eyebrows, middle-dot metadata or `WORD — fragment` labels (SD4); an accented headline word (SD5); decorative 01/02/03 (SD6); fake window chrome (SD7); emerald as the escape accent (SD8).
 - Don't use purple/indigo gradients, gradient text, Inter or any webfont, `rounded-2xl`/`shadow-lg` on every surface, icon-in-a-rounded-square, unicode glyphs as the only icon, or red on an idle control.
 - Don't use `window.confirm`; use the themed modal. Don't put an all-caps label above content whose heading already says it.
