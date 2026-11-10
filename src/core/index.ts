@@ -8,6 +8,7 @@ export * from "./redact.ts";
 export * from "./diagnostics.ts";
 export * from "./episodes.ts";
 export * from "./episodeCompare.ts";
+export * from "./delegation.ts";
 export {
   ObservabilityService,
   SessionNotFoundError,
