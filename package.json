@@ -9,7 +9,7 @@
   },
   "exports": {
     ".": "./src/plugin/index.ts",
-    "./tui": "./src/plugin/tui.ts",
+    "./tui": "./src/plugin/tui.tsx",
     "./core": "./src/core/index.ts",
     "./rpc": "./src/plugin/rpc.ts"
   },
