@@ -16,3 +16,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - name: Verify TUI artifact fresh
+        run: |
+          npm run build:tui
+          git diff --exit-code -- dist-tui/tui.mjs

@@ -50,6 +50,7 @@ flowchart LR
 | Service | `core/service.ts` | Load a dataset, cache briefly, compute diagnostics once, redact, filter, keyset-page, detail, export. |
 | Presentation | `server/http.ts`, `server/auth.ts`, `server/token-file.ts`, `ui/*` | Local HTTP API, access token, static UI, view state. |
 | Integration | `plugin/index.ts`, `rpc.ts`, `service.ts`, `tui.ts` | OpenCode 2 server RPC + TUI commands. |
+| TUI statistics | `plugin/tui/statistics/{StatisticsView.tsx,columns.ts,status.ts,stepRows.ts,state.ts}` | Native fullscreen panel: summary banner, dense turn table, step accordion, selection state and panel-scoped keys. `columns.ts`, `status.ts` and `stepRows.ts` are pure helpers with no SDK import. |
 | Export | `core/export.ts` | Self-contained reports. |
 
 ## Adapter isolation
@@ -172,12 +173,29 @@ Redaction parity: diagnostics are plain DTO fields, so `redactValue(analysis).di
 
 ```text
 OpenCode 2 server ── loads ./exports["."] ──► Plugin.define → ctx.rpc.register
-OpenCode 2 TUI    ── loads ./exports["./tui"] ──► keymap slash commands
+OpenCode 2 TUI    ── loads ./exports["./tui"] ──► keymap slash commands + native session panel
 Browser           ── HTTP ──► local server ──► SQLite adapter
 Other clients     ── HTTP/RPC ──► service
 ```
 
-The TUI commands are intentionally non-mutating: they resolve the current session from `context.ui.router.current()` and open the browser URL. They never enqueue a prompt.
+The TUI commands are intentionally non-mutating: they resolve the current session from `context.ui.router.current()` and either open the browser URL or, for `/statistics`, the native panel. They never enqueue a prompt.
+
+### Native statistics panel
+
+`/statistics` (alias `/stats`) is the one TUI command that does not open a browser. It opens a fullscreen `session.panel`, and the host renders it through the plugin's `session.panel` slot:
+
+```text
+/statistics ──► ui.panel.open("statistics", fullscreen)
+             ──► slot render (StatisticsView, only when name = statistics)
+             ──► createStatisticsState(context.client)
+             ──► rpc.analysis({ sessionID }) ──► ObservabilityService
+             ──► banner + dense table (columns.ts / stepRows.ts / status.ts)
+```
+
+- `state.ts` issues one `analysis` request per panel open or session change, keeps loading/error/empty states, and drops stale responses with a request ticket.
+- `columns.ts` owns breakpoints and ordered column sets; `status.ts` owns the symbol/label/palette table; `stepRows.ts` owns accordion rows. All three are pure and SDK-free, so they are unit-tested directly.
+- A keyboard layer gated on `ui.panel.current()?.name === "statistics"` maps `j`/`Down`, `k`/`Up`, `Enter` and `Esc` to a bridge that the mounted panel installs and clears. Keys are inert when the panel is closed, and `Esc` closes the panel rather than leaking to the host.
+- The view resolves colours only through `themePalette` keys; a status symbol always accompanies the colour.
 
 ## Read-only guarantees
 
