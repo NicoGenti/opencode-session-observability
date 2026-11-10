@@ -35,8 +35,27 @@
   },
   "devDependencies": {
     "@opencode/plugin": "2.2.6",
+    "@opentui/core": "0.8.3",
+    "@opentui/solid": "0.8.3",
     "@types/node": "^24.10.0",
+    "solid-js": "1.9.17",
     "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@opentui/core": ">=0.8.1",
+    "@opentui/solid": ">=0.8.1",
+    "solid-js": ">=1.9.16"
+  },
+  "peerDependenciesMeta": {
+    "@opentui/core": {
+      "optional": true
+    },
+    "@opentui/solid": {
+      "optional": true
+    },
+    "solid-js": {
+      "optional": true
+    }
   },
   "overrides": {
     "glob": "14.0.4",
