@@ -5,7 +5,6 @@ import type { StatisticsKeyboardBridge } from "./tui/statistics/state.ts";
 import type { TrajectoryKeyboardBridge } from "./tui/trajectory/state.ts";
 import {
   TUI_PLUGIN_ID,
-  openNativeStatistics,
   type BrowserFallback,
 } from "./tui-native.ts";
 
@@ -155,6 +154,66 @@ export function activePanelKeyboard(
   if (!bridge) return null;
   // The name gate is the floor; a reported `focused: false` closes it.
   return bridge.focused === false ? null : bridge;
+}
+
+/** One panel-scoped keymap command, structurally compatible with the SDK. */
+export type PanelKeymapCommand = {
+  readonly id: string;
+  readonly title: string;
+  readonly group: string;
+  readonly bind: string;
+  readonly run: () => void;
+};
+
+/**
+ * Panel-scoped navigation commands, shared by both native panels. Every
+ * dispatch re-resolves the gate instead of trusting the layer's `enabled`
+ * evaluation: if focus moved away (or the panel closed) in between, the key is
+ * a no-op. `escape` follows the same rule as `j`/`k`/`Enter`, so a stale
+ * enabled layer cannot close a panel the user is not driving.
+ */
+export function panelKeymapCommands(
+  active: () => PanelKeyboardBridge | null,
+  close: () => void,
+): readonly PanelKeymapCommand[] {
+  return [
+    {
+      id: "panel.moveDown",
+      title: "Session panel: select next turn",
+      group: "Session panel",
+      bind: "j,down",
+      run: () => {
+        active()?.handlers?.moveSelection(1);
+      },
+    },
+    {
+      id: "panel.moveUp",
+      title: "Session panel: select previous turn",
+      group: "Session panel",
+      bind: "k,up",
+      run: () => {
+        active()?.handlers?.moveSelection(-1);
+      },
+    },
+    {
+      id: "panel.toggleExpand",
+      title: "Session panel: expand or collapse the selected turn",
+      group: "Session panel",
+      bind: "return",
+      run: () => {
+        active()?.handlers?.toggleExpand();
+      },
+    },
+    {
+      id: "panel.close",
+      title: "Session panel: close the panel",
+      group: "Session panel",
+      bind: "escape",
+      run: () => {
+        if (active()) close();
+      },
+    },
+  ];
 }
 
 /** Where `/statistics` should render: the TUI route, or the local web UI. */
@@ -444,11 +503,11 @@ export default defineTuiPlugin({
 
     /**
      * Status badge (issue #6, decision D3). `prompt.footer.status` carries the
-     * session id, the input mode and `showDetails`; the badge renders one line
-     * and degrades every missing value to `n/a`. When an older host does not
-     * publish this path, the SDK appends the claim to the nearest surviving
-     * ancestor (`prompt.footer`), so no second claim is needed and nothing
-     * throws or toasts.
+     * session id, the input mode and `showDetails`. The badge renders nothing
+     * without a session id, and refetch frequency is bounded by the 15 s
+     * per-session cache. When an older host does not publish this path, the SDK
+     * appends the claim to the nearest surviving ancestor (`prompt.footer`), so
+     * no second claim is needed and nothing throws or toasts.
      */
     context.ui.slot({
       append: "prompt.footer.status",
@@ -548,44 +607,9 @@ export default defineTuiPlugin({
     context.keymap.layer(() => ({
       enabled: () => activeKeyboard() !== null,
       priority: 10,
-      commands: [
-        {
-          id: "panel.moveDown",
-          title: "Session panel: select next turn",
-          group: "Session panel",
-          bind: "j,down",
-          run: () => {
-            activeKeyboard()?.handlers?.moveSelection(1);
-          },
-        },
-        {
-          id: "panel.moveUp",
-          title: "Session panel: select previous turn",
-          group: "Session panel",
-          bind: "k,up",
-          run: () => {
-            activeKeyboard()?.handlers?.moveSelection(-1);
-          },
-        },
-        {
-          id: "panel.toggleExpand",
-          title: "Session panel: expand or collapse the selected turn",
-          group: "Session panel",
-          bind: "return",
-          run: () => {
-            activeKeyboard()?.handlers?.toggleExpand();
-          },
-        },
-        {
-          id: "panel.close",
-          title: "Session panel: close the panel",
-          group: "Session panel",
-          bind: "escape",
-          run: () => {
-            context.ui.panel.close();
-          },
-        },
-      ],
+      commands: panelKeymapCommands(activeKeyboard, () =>
+        context.ui.panel.close(),
+      ),
     }));
   },
 });
