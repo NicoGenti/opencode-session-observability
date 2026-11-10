@@ -1,17 +1,85 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ObservabilityService } from "../src/core/service.ts";
+import { evaluateDiagnostics } from "../src/core/diagnostics.ts";
 import { ApiSource } from "../src/core/adapters/api.ts";
 import { MemorySource } from "../src/core/adapters/memory.ts";
 import { mergePages } from "../src/core/paging.ts";
 import {
+  BASE,
+  assistant,
+  fixture,
+  idle,
   longFixture,
   memorySource,
+  session,
   simpleFixture,
   subagentFixture,
+  toolBlock,
   toolsFixture,
+  user,
 } from "./fixtures/build.ts";
 import type { Fixture } from "./fixtures/build.ts";
+
+/**
+ * One turn with two failing `read` calls closed by an identical success:
+ * the canonical single-incident shape the service must deliver.
+ */
+function incidentFixture(): Fixture {
+  return fixture([
+    {
+      meta: session("ses_incident", {
+        time: {
+          created: BASE,
+          updated: BASE + 2_000,
+          busy: BASE,
+          idle: BASE + 1_900,
+        },
+      }),
+      messages: [
+        user("msg_u1", 1, BASE),
+        assistant({
+          id: "msg_a1",
+          seq: 2,
+          created: BASE + 100,
+          streamed: BASE + 1_000,
+          completed: BASE + 1_100,
+          content: [
+            toolBlock({
+              name: "read",
+              created: BASE + 200,
+              ran: BASE + 300,
+              completed: BASE + 400,
+              status: "error",
+              input: { path: "src/a.ts", limit: 10 },
+              output: "",
+            }),
+            toolBlock({
+              name: "read",
+              created: BASE + 500,
+              ran: BASE + 600,
+              completed: BASE + 700,
+              status: "error",
+              input: { path: "src/a.ts", limit: 10 },
+              output: "",
+            }),
+            toolBlock({
+              name: "read",
+              created: BASE + 800,
+              ran: BASE + 900,
+              completed: BASE + 1_000,
+              input: { path: "src/a.ts", limit: 10 },
+              output: "ok",
+            }),
+          ],
+          tokens: { input: 100, output: 20, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+          cost: 0.02,
+        }),
+        idle("msg_i1", 3, BASE + 1_500, "succeeded"),
+      ],
+    },
+  ]);
+}
 
 function fakeClient(data: Fixture) {
   const sessions = data.sessions.map((entry) => ({
@@ -219,4 +287,84 @@ test("session listing and analysis support windowed coverage", async () => {
   const { analysis } = await service.analyze("ses_long", { fromSeq: 1, toSeq: 20 });
   assert.equal(analysis.coverage.complete, false);
   assert.equal(analysis.totals.scope, "window");
+});
+
+test("analysis exposes diagnostics with stable event anchors", async () => {
+  const service = new ObservabilityService(memorySource(incidentFixture()));
+  const { analysis, events } = await service.analyze("ses_incident", {
+    reveal: true,
+  });
+  const diagnostics = analysis.diagnostics;
+  assert.ok(diagnostics, "diagnostics are attached to the analysis payload");
+  assert.equal(diagnostics.incidents.length, 1);
+  const incident = diagnostics.incidents[0]!;
+
+  const failures = events.filter(
+    (event) => event.kind === "tool" && event.tool?.status === "error",
+  );
+  const success = events.find(
+    (event) => event.kind === "tool" && event.tool?.status === "completed",
+  )!;
+  assert.equal(failures.length, 2);
+
+  assert.equal(incident.tool, "read");
+  assert.equal(incident.recovery, "recovered");
+  assert.equal(incident.firstFailureEventID, failures[0]!.id);
+  assert.equal(incident.lastFailureEventID, failures[1]!.id);
+  assert.deepEqual(
+    incident.failureEventIDs,
+    failures.map((event) => event.id),
+  );
+  assert.equal(incident.successEventID, success.id);
+  assert.equal(incident.trigger.kind, "user");
+  assert.equal(incident.elapsed.value, analysis.turns[0]!.totalTime.value);
+  assert.ok(incident.why.length > 0);
+  assert.deepEqual(diagnostics, evaluateDiagnostics(events, analysis));
+});
+
+test("diagnostics are computed once and reused through cache and presentation", async () => {
+  const service = new ObservabilityService(memorySource(incidentFixture()));
+  const first = await service.loadDataset("ses_incident");
+  const warm = await service.loadDataset("ses_incident");
+  assert.equal(warm, first, "the 4s cache returns the same dataset object");
+  assert.equal(
+    warm.analysis.diagnostics,
+    first.analysis.diagnostics,
+    "warm cache reuses the attached engine object",
+  );
+
+  const presented = await service.analyze("ses_incident", { reveal: true });
+  assert.equal(
+    presented.analysis.diagnostics,
+    first.analysis.diagnostics,
+    "presentAnalysis copies the analysis without recomputing diagnostics",
+  );
+
+  service.clearCache();
+  const refreshed = await service.loadDataset("ses_incident");
+  assert.notEqual(refreshed, first);
+  assert.deepEqual(refreshed.analysis.diagnostics, first.analysis.diagnostics);
+});
+
+test("windowed analysis attaches the direct engine result including excluded counts", async () => {
+  const service = new ObservabilityService(memorySource(incidentFixture()));
+  const windowed = await service.analyze("ses_incident", {
+    fromSeq: 2,
+    toSeq: 3,
+    windowed: true,
+  });
+  assert.equal(windowed.analysis.coverage.complete, false);
+  assert.ok(windowed.analysis.diagnostics, "an incident in the window is attached");
+  const direct = evaluateDiagnostics(windowed.events, windowed.analysis);
+  assert.deepEqual(windowed.analysis.diagnostics, direct);
+  assert.equal(
+    windowed.analysis.diagnostics!.summary.excludedTurnlessToolEvents,
+    direct.summary.excludedTurnlessToolEvents,
+  );
+});
+
+test("sessions without incidents keep diagnostics absent", async () => {
+  const service = new ObservabilityService(memorySource(simpleFixture()));
+  const { analysis } = await service.analyze("ses_simple", { reveal: true });
+  assert.equal("diagnostics" in analysis, false);
 });
