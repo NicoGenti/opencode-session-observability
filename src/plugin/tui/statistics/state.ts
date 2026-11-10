@@ -1,4 +1,4 @@
-import { createMemo, createSignal, type Accessor } from "solid-js";
+import { createMemo, createSignal, untrack, type Accessor } from "solid-js";
 import type { OpenCodeClient } from "@opencode/client";
 
 import type { Analysis, Metric, Turn } from "../../../core/types.ts";
@@ -8,9 +8,10 @@ import { Observability } from "../../rpc.ts";
  * Reactive state for the native statistics panel.
  *
  * One request is issued per call; the view calls `fetchAnalysis` only when the
- * panel opens or the selected session changes. Responses are validated before
- * they reach the view because the payload crosses the RPC boundary and can be
- * absent, wrapped, or malformed.
+ * panel opens or the selected session changes. `fetchAnalysis` never reads a
+ * signal inside its synchronous window, so it cannot re-trigger the effect that
+ * called it. Responses are validated before they reach the view because the
+ * payload crosses the RPC boundary and can be absent, wrapped, or malformed.
  */
 
 export interface StatisticsTotals {
@@ -98,7 +99,7 @@ function looksLikeAnalysis(value: unknown): value is Analysis {
 }
 
 /**
- * Accepts the raw `rpc.call` envelope (`{ output: … }`), the handler result
+ * Accepts the raw RPC envelope (`{ output: … }`), the handler result
  * (`{ analysis, revealAllowed }`) and a bare `Analysis`. Anything else becomes
  * a short, non-leaking error message.
  */
@@ -135,6 +136,7 @@ function asMetric(value: Metric | undefined): Metric {
 }
 
 export function createStatisticsState(client: RpcCapable): StatisticsState {
+  const rpc = client.rpc(Observability);
   const [analysis, setAnalysis] = createSignal<Analysis | null>(null);
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
@@ -209,8 +211,14 @@ export function createStatisticsState(client: RpcCapable): StatisticsState {
       typeof nextSessionID === "string" ? nextSessionID.trim() : "";
     const ticket = ++request;
 
-    if (target !== sessionID()) {
-      setSelectedIndex(0);
+    // `untrack` keeps this read out of the calling effect's dependency set: a
+    // tracked read would subscribe the effect to the `setSessionID` write below
+    // and issue a second request per open/session change.
+    const previous = untrack(sessionID);
+    if (target !== previous) {
+      // Written signal-level rather than through `setSelectedIndex`, which
+      // reads `turns()` and would re-subscribe the effect to the response.
+      setSelectedIndexSignal(0);
       setExpandedTurns(new Set<string>());
     }
     setSessionID(target);
@@ -225,11 +233,7 @@ export function createStatisticsState(client: RpcCapable): StatisticsState {
 
     setLoading(true);
     try {
-      const response = await client.rpc.call({
-        rpcID: Observability.id,
-        method: "analysis",
-        input: { sessionID: target },
-      });
+      const response = await rpc.analysis({ sessionID: target });
       if (ticket !== request) return;
       const parsed = parseAnalysisResponse(response);
       if (!parsed.ok) {

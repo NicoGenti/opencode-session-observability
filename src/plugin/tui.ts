@@ -303,7 +303,14 @@ export default defineTuiPlugin({
           palette: true,
           slash: { name: "statistics", aliases: ["stats"] },
           run: () => {
-            openStatisticsPanel();
+            if (!openStatisticsPanel()) {
+              context.ui.toast.show({
+                title: "Session observability",
+                message: "No session is selected, so there is no statistics to show.",
+                variant: "warning",
+                duration: 6_000,
+              });
+            }
           },
         },
         {

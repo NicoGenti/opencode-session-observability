@@ -192,7 +192,7 @@ The TUI commands are intentionally non-mutating: they resolve the current sessio
              ──► banner + dense table (columns.ts / stepRows.ts / status.ts)
 ```
 
-- `state.ts` issues one `analysis` request per panel open or session change, keeps loading/error/empty states, and drops stale responses with a request ticket.
+- `state.ts` binds `context.client.rpc(Observability)` once, then issues one `analysis` request per panel open or session change: the effect reacts only to the panel input because the fetch reads no signal in its synchronous window. It keeps loading/error/empty states and drops stale responses with a request ticket.
 - `columns.ts` owns breakpoints and ordered column sets; `status.ts` owns the symbol/label/palette table; `stepRows.ts` owns accordion rows. All three are pure and SDK-free, so they are unit-tested directly.
 - A keyboard layer gated on `ui.panel.current()?.name === "statistics"` maps `j`/`Down`, `k`/`Up`, `Enter` and `Esc` to a bridge that the mounted panel installs and clears. Keys are inert when the panel is closed, and `Esc` closes the panel rather than leaking to the host.
 - The view resolves colours only through `themePalette` keys; a status symbol always accompanies the colour.

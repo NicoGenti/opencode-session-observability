@@ -149,7 +149,7 @@ function StateMessage(props: { state: StatisticsState; palette: Palette }) {
         </text>
       </Show>
       <Show when={!props.state.loading() && !props.state.error()}>
-        <text fg={colorOf(props.palette, "muted")}>Loading…</text>
+        <text fg={colorOf(props.palette, "muted")}>Preparing…</text>
       </Show>
     </box>
   );
@@ -277,6 +277,8 @@ function StatisticsPanel(props: {
   });
 
   createEffect(() => {
+    // Reacts to the panel input only: `fetchAnalysis` reads no signal in its
+    // synchronous window, so its own state writes cannot re-trigger this.
     const sessionID = props.sessionID;
     void state.fetchAnalysis(sessionID);
   });
@@ -299,9 +301,6 @@ function StatisticsPanel(props: {
               totals={state.totals()}
               palette={palette()}
             />
-            <Show when={state.error()}>
-              <text fg={colorOf(palette(), "critical")}>{state.error()}</text>
-            </Show>
             <Show
               when={state.loading()}
               fallback={

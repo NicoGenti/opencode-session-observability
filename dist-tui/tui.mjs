@@ -1,5 +1,5 @@
-import { createComponent, createElement, setProp, insert, effect, insertNode, createTextNode, memo } from '@opentui/solid';
-import { createSignal, createMemo, onMount, onCleanup, createEffect, Show, For } from 'solid-js';
+import { createComponent, createElement, setProp, insert, insertNode, createTextNode, effect, memo } from '@opentui/solid';
+import { createSignal, createMemo, untrack, onMount, onCleanup, createEffect, Show, For } from 'solid-js';
 import { PluginContextProvider, usePlugin } from '@opencode/plugin/tui';
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
@@ -252,7 +252,14 @@ const tui = defineTuiPlugin({
           palette: true,
           slash: { name: "statistics", aliases: ["stats"] },
           run: () => {
-            openStatisticsPanel();
+            if (!openStatisticsPanel()) {
+              context.ui.toast.show({
+                title: "Session observability",
+                message: "No session is selected, so there is no statistics to show.",
+                variant: "warning",
+                duration: 6e3
+              });
+            }
           }
         },
         {
@@ -875,6 +882,7 @@ function asMetric(value) {
   return value ?? UNAVAILABLE;
 }
 function createStatisticsState(client) {
+  const rpc = client.rpc(Observability);
   const [analysis, setAnalysis] = createSignal(null);
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal(null);
@@ -931,8 +939,9 @@ function createStatisticsState(client) {
   async function fetchAnalysis(nextSessionID) {
     const target = typeof nextSessionID === "string" ? nextSessionID.trim() : "";
     const ticket = ++request;
-    if (target !== sessionID()) {
-      setSelectedIndex(0);
+    const previous = untrack(sessionID);
+    if (target !== previous) {
+      setSelectedIndexSignal(0);
       setExpandedTurns(/* @__PURE__ */ new Set());
     }
     setSessionID(target);
@@ -945,11 +954,7 @@ function createStatisticsState(client) {
     }
     setLoading(true);
     try {
-      const response = await client.rpc.call({
-        rpcID: Observability.id,
-        method: "analysis",
-        input: { sessionID: target }
-      });
+      const response = await rpc.analysis({ sessionID: target });
       if (ticket !== request) return;
       const parsed = parseAnalysisResponse(response);
       if (!parsed.ok) {
@@ -1111,7 +1116,7 @@ function StateMessage(props) {
       },
       get children() {
         var _el$18 = createElement("text");
-        insertNode(_el$18, createTextNode(`Loading…`));
+        insertNode(_el$18, createTextNode(`Preparing…`));
         effect((_$p) => setProp(_el$18, "fg", colorOf(props.palette, "muted"), _$p));
         return _el$18;
       }
@@ -1266,16 +1271,6 @@ function StatisticsPanel(props) {
         }
       }), createComponent(Show, {
         get when() {
-          return state.error();
-        },
-        get children() {
-          var _el$31 = createElement("text");
-          insert(_el$31, () => state.error());
-          effect((_$p) => setProp(_el$31, "fg", colorOf(palette(), "critical"), _$p));
-          return _el$31;
-        }
-      }), createComponent(Show, {
-        get when() {
           return state.loading();
         },
         get fallback() {
@@ -1298,10 +1293,10 @@ function StatisticsPanel(props) {
           });
         },
         get children() {
-          var _el$32 = createElement("text");
-          insertNode(_el$32, createTextNode(`Loading…`));
-          effect((_$p) => setProp(_el$32, "fg", colorOf(palette(), "muted"), _$p));
-          return _el$32;
+          var _el$31 = createElement("text");
+          insertNode(_el$31, createTextNode(`Loading…`));
+          effect((_$p) => setProp(_el$31, "fg", colorOf(palette(), "muted"), _$p));
+          return _el$31;
         }
       })]
     }));
