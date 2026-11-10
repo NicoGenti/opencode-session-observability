@@ -1,8 +1,14 @@
 import { spawn } from "node:child_process";
+import type { Plugin } from "@opencode/plugin/tui";
 import { readTokenFile } from "../server/token-file.ts";
 import { defineTuiPlugin } from "./define.ts";
 
 const DEFAULT_URL = "http://127.0.0.1:4517";
+
+type Context = Plugin.Context;
+
+/** Panel id shared by `ui.panel.open` and the `session.panel` slot claim. */
+const STATISTICS_PANEL = "statistics";
 
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
 
@@ -178,15 +184,37 @@ function openBrowser(url: string): boolean {
 /**
  * OpenCode 2 TUI part.
  *
- * Registers `/observability`, `/trajectory` and `/statistics`. The commands
- * are read-only: they never inject a prompt or alter the session. They open the
- * local web UI for the session currently shown in the TUI, or explain how to
- * start the UI when it is not running.
+ * Registers `/observability`, `/trajectory`, `/statistics` and
+ * `/statistics-web`. The commands are read-only: they never inject a prompt or
+ * alter the session. `/statistics` opens the native panel; the other commands
+ * open the local web UI for the session currently shown in the TUI, or explain
+ * how to start the UI when it is not running.
  */
 export default defineTuiPlugin({
   id: "opencode-session-observability.tui",
-  setup(context) {
+  async setup(context) {
     const base = baseUrl(context.options.url);
+
+    // Loaded lazily: the raw source is a `.tsx` module for JSX-capable hosts,
+    // while Node-hosted tests import this module without a JSX loader.
+    const { statisticsPanelElement } = await import(
+      "./tui/statistics/StatisticsView.tsx"
+    );
+
+    /**
+     * Opens the native Statistics panel for the current session. Returns false
+     * when the host has no selected session to attach the panel to.
+     */
+    const openStatisticsPanel = (): boolean =>
+      context.ui.panel.open(STATISTICS_PANEL, { presentation: "fullscreen" });
+
+    context.ui.slot({
+      append: "session.panel",
+      render: (input) =>
+        input.name === STATISTICS_PANEL
+          ? statisticsPanelElement(context)
+          : null,
+    });
 
     const openView = async (view: "trajectory" | "statistics"): Promise<void> => {
       const configured = pluginToken(context.options.token);
@@ -262,10 +290,21 @@ export default defineTuiPlugin({
         {
           id: "observability.statistics",
           title: "Open session Statistics",
-          description: "Open the turn/step metrics table for the current session",
+          description: "Open the native turn/step metrics panel",
           group: "Observability",
           palette: true,
-          slash: { name: "statistics" },
+          slash: { name: "statistics", aliases: ["stats"] },
+          run: () => {
+            openStatisticsPanel();
+          },
+        },
+        {
+          id: "observability.statistics-web",
+          title: "Open session Statistics in the browser",
+          description: "Open the local web UI metrics table for the current session",
+          group: "Observability",
+          palette: true,
+          slash: { name: "statistics-web", aliases: ["stats:web"] },
           run: () => openView("statistics"),
         },
       ],
