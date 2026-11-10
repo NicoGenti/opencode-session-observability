@@ -70,9 +70,9 @@ This checklist separates what is implemented, what is available from OpenCode 2,
 - [x] Local HTTP API + static UI; GET/HEAD only; strict CSP; loopback bind.
 - [x] Default-on access token with constant-time comparison and a per-port token file for the TUI.
 - [x] `--no-auth` loopback opt-out; non-loopback binds always require authentication.
-- [x] 201 automated tests (pinned at v0.1.0).
+- [x] 236 automated tests (current package).
 - [x] Read-only file hash test and write-rejection test.
-- [x] OpenCode SDK kept as a type-only devDependency; production and full audits clean (overrides pin patched `glob` and `minimatch`).
+- [x] OpenCode SDK kept as a type-only devDependency; production and full audits clean (overrides pin patched `glob` and `minimatch`). Optional `@opentui/core`, `@opentui/solid` and `solid-js` are peer + dev only (no production deps), so `npm run audit:prod` stays at zero.
 - [x] Fixtures: simple, tools, subagents, retry/error, compaction, long paging, incomplete, out-of-order, secrets, empty.
 - [x] README, data-source analysis, architecture, metrics reference, UI guide.
 
@@ -149,7 +149,7 @@ The `/family-recovery` endpoint itself is covered in `test/server.test.ts`; a pl
 
 ## Known gaps / next steps
 
-1. **Desktop GUI panel.** The experimental `./gui-experimental` export is not shipped. The RPC contract is ready for a Solid panel if desired.
+1. **Desktop GUI panel.** The experimental `./gui-experimental` export is not shipped. The RPC contract is ready for a Solid panel if desired. The typed `./tui` sidecar exports `NativeObservabilityView` as a scaffold only: it is not auto-mounted, and the precompiled rendering/build lane is owned by issue #8.
 2. **Live streaming.** The web UI refreshes on demand and has an optional 10s live mode. It does not consume the OpenCode SSE event stream. A live tap using `session.hook("http.request")`/`"http.response"` could add headers/retries/approvals, but it would be a separate, explicit capture surface.
 3. **Approval history.** Without a persisted permission event, this remains unavailable. The UI does not fake it.
 4. **Compaction duration and removed-token exactness.** The current values are the best derivable values; a future schema could record start/end and a direct ledger.

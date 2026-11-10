@@ -21,12 +21,12 @@ Use `npm ci` rather than `npm install`: `package-lock.json` is committed and the
 ```bash
 npm run check       # typecheck + full test suite — the standard gate
 npm run typecheck   # tsc --noEmit only
-npm test            # node:test, 23 files, 201 tests at v0.1.0
+npm test            # node:test, 26 files, 236 tests
 npm run audit:prod  # production dependency audit
 npm run serve       # start the local UI (alias of npm start)
 ```
 
-`npm run check` must be green before you open a pull request. The suite is pinned at 201 tests for this revision and grows with each new suite.
+`npm run check` must be green before you open a pull request. The suite is at 236 tests and grows with each new suite.
 
 ## Architecture pointers
 

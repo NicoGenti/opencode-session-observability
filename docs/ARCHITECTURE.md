@@ -49,8 +49,8 @@ flowchart LR
 | Delegation recovery | `core/delegation.ts` | Pure assessment of a parent session and its direct children: recorded delegation links, child failure evidence, parent reaction classification and labelled recovery patterns. No I/O and no writes. |
 | Service | `core/service.ts` | Load a dataset, cache briefly, compute diagnostics once, redact, filter, keyset-page, detail, export. |
 | Presentation | `server/http.ts`, `server/auth.ts`, `server/token-file.ts`, `ui/*` | Local HTTP API, access token, static UI, view state. |
-| Integration | `plugin/index.ts`, `rpc.ts`, `service.ts`, `tui.ts` | OpenCode 2 server RPC + TUI commands. |
-| TUI statistics | `plugin/tui/statistics/{StatisticsView.tsx,columns.ts,status.ts,stepRows.ts,state.ts}` | Native fullscreen panel: summary banner, dense turn table, step accordion, selection state and panel-scoped keys. `columns.ts`, `status.ts` and `stepRows.ts` are pure helpers with no SDK import. |
+| Integration | `plugin/index.ts`, `rpc.ts`, `service.ts`, `tui.ts`, `tui.tsx` | OpenCode 2 server RPC + TUI commands; `tui.tsx` is a typechecked-only OpenTUI scaffold (`NativeObservabilityView`), not bundled. |
+| TUI statistics | `plugin/tui/statistics/{StatisticsView.tsx,columns.ts,status.ts,stepRows.ts,state.ts}` | Native fullscreen panel: summary banner, dense turn table, step accordion, selection state and panel-scoped keys. `columns.ts`, `status.ts` and `stepRows.ts` are pure helpers with no SDK import. Built by `vite build --config vite.tui.config.ts` into `dist-tui/tui.mjs`. |
 | Export | `core/export.ts` | Self-contained reports. |
 
 ## Adapter isolation
@@ -174,9 +174,12 @@ Redaction parity: diagnostics are plain DTO fields, so `redactValue(analysis).di
 ```text
 OpenCode 2 server ── loads ./exports["."] ──► Plugin.define → ctx.rpc.register
 OpenCode 2 TUI    ── loads ./exports["./tui"] ──► keymap slash commands + native session panel
+                     (prebuilt dist-tui/tui.mjs; types from the src/plugin/tui.ts sidecar)
 Browser           ── HTTP ──► local server ──► SQLite adapter
 Other clients     ── HTTP/RPC ──► service
 ```
+
+The `./tui` entry resolves to the prebuilt `dist-tui/tui.mjs` bundle, built by `vite build --config vite.tui.config.ts` from the `src/plugin/tui.ts` entry, so the host loads plain ESM. Loading the raw `.tsx` sources is a Bun-only alternative that this package does not rely on. `src/plugin/tui.tsx` is a typechecked-only scaffold: it exposes `NativeObservabilityView` without mounting or registering it, and it is not part of the bundle. The browser UI remains the primary surface.
 
 The TUI commands are intentionally non-mutating: they resolve the current session from `context.ui.router.current()` and either open the browser URL or, for `/statistics`, the native panel. They never enqueue a prompt.
 
@@ -222,4 +225,5 @@ The TUI commands are intentionally non-mutating: they resolve the current sessio
 - Add a new message/content type in `normalize.ts`; unknown types are already preserved.
 - Add a metric in `metrics.ts` and surface it in `project.ts`/UI.
 - Add a live capture plugin using `session.hook("http.request")`/`"http.response"`; keep it separate from the read-only historical analysis.
+- Add a native OpenTUI view by extending `NativeObservabilityView` in the `./tui` `.tsx` sidecar; the scaffold is exposed but not auto-mounted, so wiring it into a TUI slot is a separate step.
 - Add a Desktop GUI panel by implementing `./gui-experimental`; the RPC contract is already available.

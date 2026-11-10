@@ -26,7 +26,7 @@ The implementation is original and targets OpenCode 2.2.x. It was built against 
 | UI | Local browser app: Trajectory + Statistics, Basic/Advanced modes, OpenCode themes, project-grouped session tree, settings, filters, full-text search, detail drawer, copy, export |
 | Integration | OpenCode 2 server plugin with read-only RPC + TUI commands `/observability`, `/trajectory`, native `/statistics` (and `/statistics-web`) |
 | Export | Self-contained HTML, Markdown and JSON |
-| Tests | 233 tests: parsing, projection, metrics, paging, scroll preservation, redaction, authentication, adapters, HTTP API, RPC, exports, settings/theme persistence, TUI columns/status helpers, read-only guarantees |
+| Tests | 236 tests: parsing, projection, metrics, paging, scroll preservation, redaction, authentication, adapters, HTTP API, RPC, exports, settings/theme persistence, TUI columns/status helpers, plugin entry shape, read-only guarantees |
 
 Screenshots of both views in dark and light mode (1440×900):
 
@@ -106,7 +106,7 @@ Other flags:
 Run the checks:
 
 ```bash
-npm run check       # typecheck + 201 tests (node:test)
+npm run check       # typecheck + 236 tests (node:test)
 npm run audit:prod  # production dependency audit (0 advisories)
 ```
 
@@ -138,9 +138,11 @@ The package is both a standalone app and an OpenCode 2 plugin with a **server pa
 
 ```text
 exports: "."            -> server plugin (RPC)
-         "./tui"        -> TUI plugin (slash commands)
+         "./tui"        -> prebuilt native panel (dist-tui/tui.mjs, typed by src/plugin/tui.ts)
          "./rpc"        -> typed RPC contract
 ```
+
+The `./tui` entry resolves to the prebuilt `dist-tui/tui.mjs` bundle and is typed by the `src/plugin/tui.ts` sidecar, which also re-exports the slash-command helpers. `src/plugin/tui.tsx` is a typechecked-only OpenTUI scaffold that exposes `NativeObservabilityView` without mounting it; it is not bundled. The browser UI stays the primary surface.
 
 Why this shape? OpenCode 2.2.x plugins can add tools, hooks, RPC methods, commands, agents, TUI routes/slots and experimental GUI panels. They do **not** expose arbitrary HTTP routes for a third-party web page. The supported integration path is therefore:
 
@@ -381,9 +383,10 @@ src/
     rpc-define.ts       local Rpc.define equivalent
     service.ts          RPC handlers
     tui.ts              TUI commands
+    tui.tsx             typed OpenTUI JSX sidecar (provide-only)
 test/
   fixtures/build.ts     synthetic OpenCode 2 fixtures
-  *.test.ts             233 tests
+  *.test.ts             236 tests
 docs/
   DATA-SOURCES.md
   ARCHITECTURE.md
@@ -397,11 +400,11 @@ docs/
 ## Testing
 
 ```bash
-npm run check       # typecheck + 201 tests
+npm run check       # typecheck + 236 tests
 npm run audit:prod  # production dependency audit
 ```
 
-The suite is pinned at **201 tests** for this revision (v0.1.0) and grows with each new suite.
+The suite is at **236 tests** for the current package and grows with each new suite.
 
 The fixtures cover: a simple session, multiple tool calls (including parallel and error), subagents, retry + error, compaction, a long paging session, an incomplete/interrupted run, out-of-order timestamps, secrets, and an empty session. The HTTP tests start the real server on an ephemeral port against a synthetic SQLite database.
 
