@@ -239,6 +239,18 @@ export async function statusBadgeText(
 }
 
 /**
+ * Whether a badge render must drop its previous line: only a session change
+ * (including losing the session) invalidates it. A same-session re-render keeps
+ * the last line until the new resolution lands, so the footer does not blink.
+ */
+export function badgeLineInvalidated(
+  previous: string | null | undefined,
+  next: string | null | undefined,
+): boolean {
+  return (previous ?? null) !== (next ?? null);
+}
+
+/**
  * Test seam: the cached entry for one session, copied so callers cannot mutate
  * the cache. `null` means no entry is retained for that session.
  */

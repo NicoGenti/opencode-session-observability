@@ -252,6 +252,9 @@ async function statusBadgeText(context, sessionID, options = {}) {
   }
   return formatStatusBadge(await fetchSessionStatus(context, sessionID, options));
 }
+function badgeLineInvalidated(previous, next) {
+  return (previous ?? null) !== (next ?? null);
+}
 
 const STATISTICS_PANEL = "statistics";
 const TRAJECTORY_PANEL = "trajectory";
@@ -284,6 +287,46 @@ function activePanelKeyboard(name, bridges) {
   const bridge = name === STATISTICS_PANEL ? bridges.statistics : name === TRAJECTORY_PANEL ? bridges.trajectory : null;
   if (!bridge) return null;
   return bridge.focused === false ? null : bridge;
+}
+function panelKeymapCommands(active, close) {
+  return [
+    {
+      id: "panel.moveDown",
+      title: "Session panel: select next turn",
+      group: "Session panel",
+      bind: "j,down",
+      run: () => {
+        active()?.handlers?.moveSelection(1);
+      }
+    },
+    {
+      id: "panel.moveUp",
+      title: "Session panel: select previous turn",
+      group: "Session panel",
+      bind: "k,up",
+      run: () => {
+        active()?.handlers?.moveSelection(-1);
+      }
+    },
+    {
+      id: "panel.toggleExpand",
+      title: "Session panel: expand or collapse the selected turn",
+      group: "Session panel",
+      bind: "return",
+      run: () => {
+        active()?.handlers?.toggleExpand();
+      }
+    },
+    {
+      id: "panel.close",
+      title: "Session panel: close the panel",
+      group: "Session panel",
+      bind: "escape",
+      run: () => {
+        if (active()) close();
+      }
+    }
+  ];
 }
 const WEB_FLAGS = /* @__PURE__ */ new Set(["--web", "-w", "web"]);
 function parseStatsArg(input) {
@@ -530,44 +573,10 @@ const tui = defineTuiPlugin({
     context.keymap.layer(() => ({
       enabled: () => activeKeyboard() !== null,
       priority: 10,
-      commands: [
-        {
-          id: "panel.moveDown",
-          title: "Session panel: select next turn",
-          group: "Session panel",
-          bind: "j,down",
-          run: () => {
-            activeKeyboard()?.handlers?.moveSelection(1);
-          }
-        },
-        {
-          id: "panel.moveUp",
-          title: "Session panel: select previous turn",
-          group: "Session panel",
-          bind: "k,up",
-          run: () => {
-            activeKeyboard()?.handlers?.moveSelection(-1);
-          }
-        },
-        {
-          id: "panel.toggleExpand",
-          title: "Session panel: expand or collapse the selected turn",
-          group: "Session panel",
-          bind: "return",
-          run: () => {
-            activeKeyboard()?.handlers?.toggleExpand();
-          }
-        },
-        {
-          id: "panel.close",
-          title: "Session panel: close the panel",
-          group: "Session panel",
-          bind: "escape",
-          run: () => {
-            context.ui.panel.close();
-          }
-        }
-      ]
+      commands: panelKeymapCommands(
+        activeKeyboard,
+        () => context.ui.panel.close()
+      )
     }));
   }
 });
@@ -2040,13 +2049,17 @@ const TrajectoryView$1 = /*#__PURE__*/Object.freeze(/*#__PURE__*/Object.definePr
 
 function StatusBadge(props) {
   const [line, setLine] = createSignal(null);
+  let lastSessionID;
   createEffect(() => {
     const sessionID = props.input.sessionID;
     let active = true;
     onCleanup(() => {
       active = false;
     });
-    setLine(null);
+    if (badgeLineInvalidated(lastSessionID, sessionID)) {
+      lastSessionID = sessionID;
+      setLine(null);
+    }
     void statusBadgeText(props.context, sessionID).then((text) => {
       if (active) setLine(text);
     });
@@ -2074,4 +2087,4 @@ const statusBadge = /*#__PURE__*/Object.freeze(/*#__PURE__*/Object.definePropert
   statusBadgeElement
 }, Symbol.toStringTag, { value: 'Module' }));
 
-export { PANEL_FALLBACK, STATISTICS_PANEL, STATISTICS_ROUTE, TRAJECTORY_PANEL, TRAJECTORY_ROUTE, activePanelKeyboard, baseUrl, bridgeFocus, buildTuiUrl, currentSessionID, tui as default, fetchSessionStatus, formatStatusBadge, hasNativeView, openNativeStatistics, openPanelOrFallback, parseStatsArg, pluginToken, reachable, registerNativeView, statusBadgeText, themePalette, tokenFromFile, tuiCommandDefinitions };
+export { PANEL_FALLBACK, STATISTICS_PANEL, STATISTICS_ROUTE, TRAJECTORY_PANEL, TRAJECTORY_ROUTE, activePanelKeyboard, baseUrl, bridgeFocus, buildTuiUrl, currentSessionID, tui as default, fetchSessionStatus, formatStatusBadge, hasNativeView, openNativeStatistics, openPanelOrFallback, panelKeymapCommands, parseStatsArg, pluginToken, reachable, registerNativeView, statusBadgeText, themePalette, tokenFromFile, tuiCommandDefinitions };

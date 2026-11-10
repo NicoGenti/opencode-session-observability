@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 import {
+  badgeLineInvalidated,
   clearStatusCache,
   formatStatusBadge,
   statusBadgeText,
@@ -204,6 +205,20 @@ test("the badge never throws and never shows a toast", async () => {
 
   assert.equal(text, `n/a${MIDDLE_DOT}cache n/a`);
   assert.equal(toasts, 0);
+});
+
+test("the badge keeps its line across same-session re-renders (F5)", () => {
+  // Same session (e.g. the host toggling `showDetails`) keeps the text.
+  assert.equal(badgeLineInvalidated("ses_1", "ses_1"), false);
+  assert.equal(badgeLineInvalidated(undefined, undefined), false);
+  assert.equal(badgeLineInvalidated(null, null), false);
+
+  // A session change, including losing or gaining the session, clears it.
+  assert.equal(badgeLineInvalidated("ses_1", "ses_2"), true);
+  assert.equal(badgeLineInvalidated("ses_1", undefined), true);
+  assert.equal(badgeLineInvalidated(undefined, "ses_1"), true);
+  assert.equal(badgeLineInvalidated("", undefined), true);
+  assert.equal(badgeLineInvalidated(null, "ses_1"), true);
 });
 
 test("tui.ts re-exports the badge text and claims prompt.footer.status", async () => {
