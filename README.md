@@ -138,9 +138,11 @@ The package is both a standalone app and an OpenCode 2 plugin with a **server pa
 
 ```text
 exports: "."            -> server plugin (RPC)
-         "./tui"        -> TUI plugin (slash commands)
+         "./tui"        -> typed .tsx sidecar (slash commands + non-mounting NativeObservabilityView scaffold)
          "./rpc"        -> typed RPC contract
 ```
+
+The `./tui` entry is a typed `.tsx` sidecar: it re-exports the slash-command helpers and exposes `NativeObservabilityView` as a non-mounting OpenTUI scaffold. The browser UI stays the primary surface.
 
 Why this shape? OpenCode 2.2.x plugins can add tools, hooks, RPC methods, commands, agents, TUI routes/slots and experimental GUI panels. They do **not** expose arbitrary HTTP routes for a third-party web page. The supported integration path is therefore:
 
