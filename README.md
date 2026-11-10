@@ -1,4 +1,5 @@
 # OpenCode Session Observability
+[![CI](https://github.com/NicoGenti/opencode-statistics/actions/workflows/ci.yml/badge.svg)](https://github.com/NicoGenti/opencode-statistics/actions/workflows/ci.yml)
 
 A local-first, read-only observability layer for **OpenCode 2** sessions. It adds two views:
 
