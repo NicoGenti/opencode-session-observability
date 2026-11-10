@@ -46,6 +46,14 @@ export interface DiagnosticIncident {
   turnID: string;
   /** Number of failures in the maximal run. */
   attempts: number;
+  /** Event ids of the failing calls, in recorded order. Names the run's events. */
+  failureEventIDs: string[];
+  /**
+   * Event id of the same-tool success that actually closed the run as
+   * recovered. Null in every other recovery state, including a different-shape
+   * same-tool success and a recovery signalled by another tool.
+   */
+  recoveryEventID: string | null;
   recovery: RecoveryState;
   /**
    * Basis of the recovery verdict: `measured` only when the blocker was
@@ -174,7 +182,7 @@ function walkStrings(
  * Classifies whether a recorded input can participate in a comparison.
  * Absence, truncation and redaction are terminal: the engine never guesses.
  */
-function classifyInput(input: unknown): InputComparability {
+export function classifyInput(input: unknown): InputComparability {
   if (input === undefined || input === null || input === "") return "absent";
   let redacted = false;
   let truncated = false;
@@ -269,7 +277,7 @@ function keyShape(value: unknown): string[] {
   return [...keys].sort();
 }
 
-function compareInputs(left: unknown, right: unknown): Comparison {
+export function compareInputs(left: unknown, right: unknown): Comparison {
   if (canonicalJson(left) === canonicalJson(right)) {
     return { verdict: "identical", overlap: 1 };
   }
@@ -430,6 +438,8 @@ function buildIncident(
     turn: run.turn.index,
     turnID: run.turn.id,
     attempts: run.failures.length,
+    failureEventIDs: run.failures.map((event) => event.id),
+    recoveryEventID: recovery === "recovered" && success ? success.id : null,
     recovery,
     basis: recovery === "insufficient-data" ? "measured" : "derived",
     failureBasis: "measured",
