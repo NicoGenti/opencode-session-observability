@@ -9,10 +9,11 @@ import {
 /**
  * Status badge seam (issue #9, phase 3).
  *
- * The `prompt.footer.status` slot is owned by sibling issue #6; this module only
- * owns the pure presentation and the cached data fetch the slot will call. It is
- * pure `.ts`: no JSX, no `@opentui/*`. Every failure path resolves to `null`
- * data, and nothing here shows a toast or writes to the session.
+ * The `prompt.footer.status` slot is owned by sibling issue #6; this module owns
+ * the pure presentation, the cached data fetch and the one-line text the slot
+ * renders, so the JSX side stays a thin renderer. It is pure `.ts`: no JSX, no
+ * `@opentui/*`. Every failure path resolves to `null` data, and nothing here
+ * shows a toast or writes to the session.
  */
 
 /** The badge text shown when a value is missing or out of its domain. */
@@ -214,6 +215,27 @@ export async function fetchSessionStatus(
 
   const cacheHitRate = await pending;
   return { cost, cacheHitRate };
+}
+
+/**
+ * Resolves the one-line text the `prompt.footer.status` badge renders: `null`
+ * when there is no session to describe, otherwise the formatted cost/cache
+ * line. A blank session id short-circuits before any cache or network work, so
+ * a host that renders the badge without a session costs nothing.
+ *
+ * This is the badge's whole data path: it never throws, never toasts and never
+ * writes session state. An offline server, a 401 or an unparsable body degrades
+ * that field to `n/a` inside `formatStatusBadge`.
+ */
+export async function statusBadgeText(
+  context: StatusContext,
+  sessionID: string | null | undefined,
+  options: SessionStatusOptions = {},
+): Promise<string | null> {
+  if (typeof sessionID !== "string" || sessionID.trim().length === 0) {
+    return null;
+  }
+  return formatStatusBadge(await fetchSessionStatus(context, sessionID, options));
 }
 
 /**
