@@ -482,12 +482,32 @@ async function refreshCurrent() {
     const scrollTop = dom.ledger?.scroller?.scrollTop ?? state.scrollTop;
     const hadEarlier = state.page?.hasMoreAfter === true;
     const listScrollTop = dom.sessionList?.scrollTop ?? 0;
+    // The list re-fetch below rebuilds the sidebar markup, which drops keyboard
+    // focus to <body>; remember the focused control by its data attribute so it
+    // can be restored once the new markup is in place.
+    const active = document.activeElement;
+    let focusSelector = null;
+    if (dom.sessionList && active && dom.sessionList.contains(active)) {
+      const control = active.closest(
+        "[data-parent-toggle], [data-project-toggle], [data-session-id]",
+      );
+      if (control?.dataset.parentToggle !== undefined) {
+        focusSelector = `[data-parent-toggle="${CSS.escape(control.dataset.parentToggle)}"]`;
+      } else if (control?.dataset.projectToggle !== undefined) {
+        focusSelector = `[data-project-toggle="${CSS.escape(control.dataset.projectToggle)}"]`;
+      } else if (control?.dataset.sessionId !== undefined) {
+        focusSelector = `[data-session-id="${CSS.escape(control.dataset.sessionId)}"]`;
+      }
+    }
     // Re-fetch the list too so sessions created since the last load (including
     // newly spawned children) show up in the sidebar without a page reload.
     await loadSessions(state.sessionQuery);
     if (dom.sessionList) {
       dom.sessionList.scrollTop = Math.min(listScrollTop, dom.sessionList.scrollHeight);
     }
+    // Best effort: the focused session may have moved outside the reloaded
+    // window, in which case there is nothing to focus and no error either.
+    if (focusSelector) dom.sessionList?.querySelector(focusSelector)?.focus();
     await loadSessionData({ preserveScroll: hadEarlier, refresh: true });
     if (dom.ledger?.scroller) dom.ledger.scroller.scrollTop = scrollTop;
   } finally {
