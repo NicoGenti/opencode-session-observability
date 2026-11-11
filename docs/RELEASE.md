@@ -49,4 +49,4 @@ The host integration is user-owned and cannot be exercised in CI. As a release s
 
 ## Artifact lifecycle
 
-The `package` job uploads the exact tarball the gate tested as `package-tarball`, retained for 30 days. The baseline is 154 files; `scripts/check-pack.mjs` pins the required-present allowlist, so the file set cannot drift silently.
+The `package` job uploads the exact tarball the gate tested as `package-tarball`, retained for 30 days. The 154-file total is a point-in-time baseline for the current file set; `scripts/check-pack.mjs` pins the required-present allowlist, so required files cannot drift silently.

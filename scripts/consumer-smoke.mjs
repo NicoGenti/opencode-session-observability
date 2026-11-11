@@ -1,8 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -91,6 +91,36 @@ function collectFixtureSecrets(fixture) {
   return [...secrets];
 }
 
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Resolves a literal tarball path or a single-match `*.tgz` pattern. */
+function resolveTarball(arg) {
+  const resolved = resolve(ROOT, arg);
+  if (!resolved.includes("*")) {
+    if (!existsSync(resolved) || !statSync(resolved).isFile()) {
+      fail(`tarball not found: ${resolved}`);
+    }
+    return resolved;
+  }
+  const directory = dirname(resolved);
+  const pattern = basename(resolved);
+  if (!existsSync(directory)) fail(`tarball directory not found: ${directory}`);
+  const matcher = new RegExp(`^${pattern.split("*").map(escapeRegex).join(".*")}$`);
+  const matches = readdirSync(directory)
+    .filter((entry) => matcher.test(entry))
+    .map((entry) => join(directory, entry))
+    .filter((entry) => statSync(entry).isFile());
+  if (matches.length === 0) fail(`no tarball matched ${pattern} in ${directory}`);
+  if (matches.length > 1) {
+    fail(
+      `multiple tarballs matched ${pattern}: ${matches.map((entry) => basename(entry)).join(", ")}`,
+    );
+  }
+  return matches[0];
+}
+
 async function parseBind(stdoutChunks, deadline, child) {
   while (Date.now() < deadline) {
     const match = /Bind:\s+([^\s:]+):(\d+)/.exec(stdoutChunks.join(""));
@@ -108,10 +138,7 @@ async function main() {
   const index = args.indexOf("--tarball");
   const tarballArg = index === -1 ? undefined : args[index + 1];
   if (!tarballArg) fail("usage: node scripts/consumer-smoke.mjs --tarball <package.tgz>");
-  const tarball = resolve(ROOT, tarballArg);
-  if (!existsSync(tarball) || !statSync(tarball).isFile()) {
-    fail(`tarball not found: ${tarball}`);
-  }
+  const tarball = resolveTarball(tarballArg);
 
   const repoPkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
   const repoVersion = repoPkg.version;
