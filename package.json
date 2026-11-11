@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "Local-first, read-only Trajectory and Statistics views for OpenCode 2 sessions.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NicoGenti/opencode-session-observability.git"
+  },
   "type": "module",
   "engines": {
     "node": ">=22.18"
