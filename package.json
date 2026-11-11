@@ -49,7 +49,7 @@
     "audit:prod": "npm audit --omit=dev --audit-level=high",
     "lint:package": "publint",
     "pack:check": "node scripts/check-pack.mjs",
-    "release:gate": "npm run check && npm run build:tui && npm run build:server && npm run lint:package && npm run pack:check"
+    "release:gate": "npm run check && npm run build:tui && npm run build:server && npm run lint:package && node scripts/check-pack.mjs --selftest && npm run pack:check"
   },
   "devDependencies": {
     "@opencode/client": "2.2.6",

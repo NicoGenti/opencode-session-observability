@@ -225,6 +225,25 @@ async function main() {
     }
     console.log(`health: 200 ok/readOnly true, version ${healthBody.version}`);
 
+    // Static UI proof: the installed server must serve the shipped src/ui
+    // assets, not a dist/ui copy (there is none).
+    const repoIndexHtml = readFileSync(join(ROOT, "src", "ui", "index.html"), "utf8");
+    const markerMatch = /<title>([^<]+)<\/title>/.exec(repoIndexHtml);
+    if (!markerMatch) fail("could not extract a shell marker from src/ui/index.html");
+    const marker = markerMatch[1].trim();
+    const shell = await fetch(`${base}/`);
+    const shellBody = await shell.text();
+    const shellType = shell.headers.get("content-type") ?? "";
+    if (shell.status !== 200 || !shellType.includes("text/html") || !shellBody.includes(marker)) {
+      fail("installed server did not serve the UI shell with the expected marker");
+    }
+    const styles = await fetch(`${base}/ui/styles.css`);
+    const stylesType = styles.headers.get("content-type") ?? "";
+    if (styles.status !== 200 || !stylesType.includes("text/css")) {
+      fail("installed server did not serve /ui/styles.css");
+    }
+    console.log("static ui: / 200 text/html with shell marker, /ui/styles.css 200 text/css");
+
     const headers = { Authorization: `Bearer ${token}` };
     const analysisResponse = await fetch(`${base}/api/sessions/${sessionID}/analysis`, {
       headers,

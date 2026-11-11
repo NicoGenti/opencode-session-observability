@@ -32,6 +32,7 @@ const REQUIRED_PRESENT = [
   "docs/DATA-SOURCES.md",
   "docs/METRICS.md",
   "docs/UI.md",
+  "docs/RELEASE.md",
 ];
 
 const PACKED_UI_MJS = "dist-tui/tui.mjs";

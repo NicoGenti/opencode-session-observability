@@ -36,6 +36,7 @@ jobs:
         run: git diff --exit-code -- dist-tui/tui.mjs
       - run: npm run build:server
       - run: npm run audit:prod
+      - run: node scripts/check-pack.mjs --selftest
       - run: npm run pack:check
       - run: npm run lint:package
       - run: npm pack
