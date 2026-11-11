@@ -37,6 +37,31 @@ npm run build:tui
 git diff --exit-code -- dist-tui/tui.mjs
 ```
 
+## Dependency updates
+
+Dependabot opens version-update pull requests from [`.github/dependabot.yml`](.github/dependabot.yml):
+
+| Ecosystem | Schedule | Open pull requests |
+| --- | --- | --- |
+| `npm` | weekly | 5 |
+| `github-actions` | monthly | 5 |
+
+The `@opencode/*`, `@opentui/*` and `solid-js` pins arrive together in a single grouped pull request (`tui-host-stack`) and must be reviewed as a unit against the OpenCode and OpenTUI release notes. They are the host-API pins declared in `package.json` (peer floors `@opentui/* >=0.8.1`, `solid-js >=1.9.16`), so never blind-upgrade them. Every other dev dependency arrives as an individual pull request.
+
+Every dependency pull request is reviewed and then merged manually; no unconditional auto-merge is enabled. CI (`.github/workflows/ci.yml`) runs on these pull requests, and the reviewer also confirms:
+
+- `npm run check` is green.
+- `npm run audit:prod` reports 0 high vulnerabilities.
+- If the pull request changes the bundled dependency graph, rebuild with `npm run build:tui` and commit the refreshed `dist-tui/tui.mjs`; the freshness gate `git diff --exit-code -- dist-tui/tui.mjs` must then be clean.
+
+### Overrides
+
+`package.json` pins the transitive `glob` (14.0.4) and `minimatch` (11.0.5) dependencies through `overrides`. Run `npm ls glob minimatch` to list the transitive paths that currently justify them. To test removing an override, delete it, run `npm install` (the lockfile regenerates using the committed `.npmrc` `legacy-peer-deps=true`), then rerun `npm run check` and `npm run audit:prod`. Remove an override only once the upstream (or transitive parent) fix is verifiably in effect and both commands are clean; otherwise restore it.
+
+### GitHub-side settings
+
+Dependabot vulnerability alerts and Dependabot security updates are repository settings rather than part of `dependabot.yml`, and a maintainer with admin access owns them: enable both under **Settings → Code security**. Optionally protect `main` with branch rules that require the CI checks on dependency pull requests.
+
 ## Architecture pointers
 
 - `src/core/` — pure domain logic: normalization, projection, metrics, diagnostics, export, redaction, paging. No I/O.
