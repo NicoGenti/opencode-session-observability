@@ -126,6 +126,9 @@ const state = {
   compareLeft: { sessionID: null, episodes: [], episodeID: null, error: null, loading: false },
   compareRight: { sessionID: null, episodes: [], episodeID: null, error: null, loading: false },
   loading: false,
+  // True while a refreshCurrent() pass is in flight so the live poll and the
+  // manual refresh button cannot interleave their list/session re-fetches.
+  refreshing: false,
 };
 
 function responseLimitSetting() {
@@ -473,17 +476,25 @@ async function loadNewer() {
 }
 
 async function refreshCurrent() {
-  const scrollTop = dom.ledger?.scroller?.scrollTop ?? state.scrollTop;
-  const hadEarlier = state.page?.hasMoreAfter === true;
-  const listScrollTop = dom.sessionList?.scrollTop ?? 0;
-  // Re-fetch the list too so sessions created since the last load (including
-  // newly spawned children) show up in the sidebar without a page reload.
-  await loadSessions(state.sessionQuery);
-  if (dom.sessionList) {
-    dom.sessionList.scrollTop = Math.min(listScrollTop, dom.sessionList.scrollHeight);
+  if (state.refreshing) return;
+  state.refreshing = true;
+  try {
+    const scrollTop = dom.ledger?.scroller?.scrollTop ?? state.scrollTop;
+    const hadEarlier = state.page?.hasMoreAfter === true;
+    const listScrollTop = dom.sessionList?.scrollTop ?? 0;
+    // Re-fetch the list too so sessions created since the last load (including
+    // newly spawned children) show up in the sidebar without a page reload.
+    await loadSessions(state.sessionQuery);
+    if (dom.sessionList) {
+      dom.sessionList.scrollTop = Math.min(listScrollTop, dom.sessionList.scrollHeight);
+    }
+    await loadSessionData({ preserveScroll: hadEarlier, refresh: true });
+    if (dom.ledger?.scroller) dom.ledger.scroller.scrollTop = scrollTop;
+  } finally {
+    // Cleared on every exit path: loadSessions() swallows its own errors but
+    // must never leave the guard latched and block later refreshes.
+    state.refreshing = false;
   }
-  await loadSessionData({ preserveScroll: hadEarlier, refresh: true });
-  if (dom.ledger?.scroller) dom.ledger.scroller.scrollTop = scrollTop;
 }
 
 // ---------------------------------------------------------------------------
