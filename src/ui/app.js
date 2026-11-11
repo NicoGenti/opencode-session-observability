@@ -475,6 +475,13 @@ async function loadNewer() {
 async function refreshCurrent() {
   const scrollTop = dom.ledger?.scroller?.scrollTop ?? state.scrollTop;
   const hadEarlier = state.page?.hasMoreAfter === true;
+  const listScrollTop = dom.sessionList?.scrollTop ?? 0;
+  // Re-fetch the list too so sessions created since the last load (including
+  // newly spawned children) show up in the sidebar without a page reload.
+  await loadSessions(state.sessionQuery);
+  if (dom.sessionList) {
+    dom.sessionList.scrollTop = Math.min(listScrollTop, dom.sessionList.scrollHeight);
+  }
   await loadSessionData({ preserveScroll: hadEarlier, refresh: true });
   if (dom.ledger?.scroller) dom.ledger.scroller.scrollTop = scrollTop;
 }
