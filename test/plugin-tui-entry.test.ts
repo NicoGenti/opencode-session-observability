@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-type ExportTarget = string | { import?: string; types?: string };
+type ExportTarget = string | { types?: string; import?: string; default?: string };
 
 type PackageJson = {
   exports?: Record<string, ExportTarget>;
@@ -21,8 +21,20 @@ async function readJson<T>(name: string): Promise<T> {
 test("the ./tui export points at the prebuilt bundle typed by the ts sidecar", async () => {
   const pkg = await readJson<PackageJson>("../package.json");
   assert.deepEqual(pkg.exports?.["./tui"], {
-    import: "./dist-tui/tui.mjs",
     types: "./src/plugin/tui.ts",
+    import: "./dist-tui/tui.mjs",
+  });
+});
+
+test("the standalone core and rpc exports resolve the compiled dist targets", async () => {
+  const pkg = await readJson<PackageJson>("../package.json");
+  assert.deepEqual(pkg.exports?.["./core"], {
+    types: "./src/core/index.ts",
+    default: "./dist/core/index.js",
+  });
+  assert.deepEqual(pkg.exports?.["./rpc"], {
+    types: "./src/plugin/rpc.ts",
+    default: "./dist/plugin/rpc.js",
   });
 });
 

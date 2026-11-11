@@ -10,11 +10,17 @@
   "exports": {
     ".": "./src/plugin/index.ts",
     "./tui": {
-      "import": "./dist-tui/tui.mjs",
-      "types": "./src/plugin/tui.ts"
+      "types": "./src/plugin/tui.ts",
+      "import": "./dist-tui/tui.mjs"
     },
-    "./core": "./src/core/index.ts",
-    "./rpc": "./src/plugin/rpc.ts"
+    "./core": {
+      "types": "./src/core/index.ts",
+      "default": "./dist/core/index.js"
+    },
+    "./rpc": {
+      "types": "./src/plugin/rpc.ts",
+      "default": "./dist/plugin/rpc.js"
+    }
   },
   "bin": {
     "opencode-observability": "./bin/opencode-observability.mjs"
@@ -22,6 +28,7 @@
   "files": [
     "bin",
     "src",
+    "dist",
     "dist-tui",
     "docs",
     "README.md",
