@@ -20,3 +20,47 @@ jobs:
         run: |
           npm run build:tui
           git diff --exit-code -- dist-tui/tui.mjs
+
+  package:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build:tui
+      - name: Verify TUI artifact fresh
+        run: git diff --exit-code -- dist-tui/tui.mjs
+      - run: npm run build:server
+      - run: npm run audit:prod
+      - run: npm run pack:check
+      - run: npm run lint:package
+      - run: npm pack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-tarball
+          path: '*.tgz'
+          retention-days: 30
+
+  consumer:
+    needs: package
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['22.x', '24.x']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - uses: actions/download-artifact@v4
+        with:
+          name: package-tarball
+          path: tarball/
+      - name: Consumer smoke against the installed tarball
+        run: node scripts/consumer-smoke.mjs --tarball tarball/opencode-session-observability-*.tgz
