@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createObservabilityServer } from "./http.ts";
 import { generateToken } from "./auth.ts";
 import {
@@ -15,7 +18,32 @@ import {
   UnsupportedSchemaError,
 } from "../core/adapters/sqlite.ts";
 
-const VERSION = "0.1.0";
+/**
+ * Resolves the package version by walking up from this module to the nearest
+ * package.json. Walking up (instead of a fixed relative path) keeps the lookup
+ * correct in both layouts: `src/server/index.ts` during development and
+ * `dist/server/index.js` after the build, in the checkout or installed from npm.
+ */
+function resolvePackageVersion(): string {
+  let directory = dirname(fileURLToPath(import.meta.url));
+  for (;;) {
+    try {
+      const manifest = JSON.parse(readFileSync(join(directory, "package.json"), "utf8")) as {
+        version?: unknown;
+      };
+      if (typeof manifest.version === "string") return manifest.version;
+    } catch {
+      // No readable package.json here; continue towards the filesystem root.
+    }
+    const parent = dirname(directory);
+    if (parent === directory) {
+      throw new Error("Could not resolve the package version from package.json");
+    }
+    directory = parent;
+  }
+}
+
+const VERSION = resolvePackageVersion();
 
 const HELP = `opencode-session-observability ${VERSION}
 

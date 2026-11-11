@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "allowImportingTsExtensions": false,
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "declaration": true
+  },
+  "include": [
+    "src/core/**/*.ts",
+    "src/plugin/**/*.ts",
+    "src/server/**/*.ts"
+  ],
+  "exclude": ["node_modules", "vendor-inspect", "scripts", "src/plugin/tui.ts", "src/**/*.tsx"]
+}
