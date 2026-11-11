@@ -54,8 +54,9 @@ export class WorkerSqliteSource implements ObservabilitySource {
       else pending.reject(reviveError(message.error ?? { name: "Error", message: "Worker error" }));
     });
     this.worker.on("error", (error) => {
-      this.failure = error;
-      this.failAll(error);
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.failure = err;
+      this.failAll(err);
     });
     this.worker.on("exit", (code) => {
       if (!this.closed && code !== 0) {
