@@ -1,0 +1,25 @@
+# Scheduled version updates (npm weekly, GitHub Actions monthly).
+# Vulnerability alerts and Dependabot security updates are repository-level
+# GitHub settings and are intentionally NOT driven by this file.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      # Host/TUI pins share one PR on purpose: they must be reviewed and
+      # bumped together (OpenCode host API + peers floors in package.json).
+      tui-host-stack:
+        applies-to: version-updates
+        patterns:
+          - "@opencode/*"
+          - "@opentui/*"
+          - "solid-js"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
