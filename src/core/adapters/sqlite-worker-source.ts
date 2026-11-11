@@ -8,6 +8,14 @@ import type {
   SessionSummary,
 } from "../types.ts";
 
+/**
+ * TypeScript rewrites `.ts` import specifiers on emit, but not string arguments
+ * such as `new URL(...)`. Deriving the sibling's extension from this module's
+ * own extension keeps the worker resolvable in both layouts: `.ts` when this
+ * module runs from `src`, `.js` in the emitted `dist` lane.
+ */
+const WORKER_EXTENSION = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
+
 interface WorkerReply {
   id: number;
   ok: boolean;
@@ -45,7 +53,9 @@ export class WorkerSqliteSource implements ObservabilitySource {
 
   constructor(path: string) {
     this.path = path;
-    this.worker = new Worker(new URL("./sqlite-worker.ts", import.meta.url));
+    this.worker = new Worker(
+      new URL(`./sqlite-worker${WORKER_EXTENSION}`, import.meta.url),
+    );
     this.worker.on("message", (message: WorkerReply) => {
       const pending = this.pending.get(message.id);
       if (!pending) return;

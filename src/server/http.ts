@@ -2,12 +2,12 @@ import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { basename, extname, join, normalize, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import { discoverDatabase } from "../core/adapters/paths.ts";
 import { DatabaseBusyError, UnsupportedSchemaError } from "../core/adapters/sqlite.ts";
 import { openWorkerSqliteSource } from "../core/adapters/sqlite-worker-source.ts";
 import type { ObservabilitySource } from "../core/types.ts";
 import { isAuthorized } from "./auth.ts";
+import { PACKAGE_ROOT, readPackageVersion } from "./package-root.ts";
 import { readOpenCodeTheme } from "./opencode-theme.ts";
 import {
   EpisodeNotFoundError,
@@ -17,8 +17,11 @@ import {
 } from "../core/service.ts";
 import type { EventFilter, EventKind, ExportOptions } from "../core/types.ts";
 
-const UI_ROOT = fileURLToPath(new URL("../ui/", import.meta.url));
-const VERSION = "0.1.0";
+// The UI is shipped as `src/ui` (see the package `files` entry) and is not
+// emitted into `dist`, so resolve it from the package root instead of from
+// this module's directory; that keeps both the src and dist layouts correct.
+const UI_ROOT = join(PACKAGE_ROOT, "src", "ui");
+const VERSION = readPackageVersion();
 
 /**
  * `/api/sessions/{id}/diagnostics`. Exported so tests build requests from the
