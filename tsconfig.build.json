@@ -9,6 +9,7 @@
     "declaration": true
   },
   "include": [
+    "src/version.ts",
     "src/core/**/*.ts",
     "src/plugin/**/*.ts",
     "src/server/**/*.ts"

@@ -489,6 +489,8 @@ export interface ExportOptions {
   format: "json" | "markdown" | "html";
   reveal?: boolean;
   includeEvents?: boolean;
+  /** Generator string stamped into the exported artifact. */
+  generator: string;
 }
 
 export interface ExportResult {

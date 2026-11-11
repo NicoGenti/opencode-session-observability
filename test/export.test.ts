@@ -2,16 +2,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { ObservabilityService } from "../src/core/service.ts";
+import { GENERATOR } from "../src/version.ts";
 import { memorySource, secretsFixture, simpleFixture } from "./fixtures/build.ts";
 
 test("exports JSON with the normalized analysis and optional events", async () => {
   const service = new ObservabilityService(memorySource(simpleFixture()));
-  const result = await service.export("ses_simple", { format: "json" });
+  const result = await service.export("ses_simple", { format: "json", generator: GENERATOR });
   assert.match(result.filename, /^session-ses-simple-\d{8}T\d{6}Z\.json$/);
   assert.equal(result.mime, "application/json; charset=utf-8");
   assert.equal(result.redacted, true);
   const parsed = JSON.parse(result.content) as Record<string, any>;
-  assert.equal(parsed.generator, "opencode-session-observability/0.1.0");
+  assert.equal(parsed.generator, GENERATOR);
   assert.equal(parsed.redacted, true);
   assert.equal(parsed.session.id, "ses_simple");
   assert.equal(parsed.analysis.turns.length, 1);
@@ -22,13 +23,14 @@ test("exports JSON with the normalized analysis and optional events", async () =
   const withoutEvents = await service.export("ses_simple", {
     format: "json",
     includeEvents: false,
+    generator: GENERATOR,
   });
   assert.equal("events" in (JSON.parse(withoutEvents.content) as object), false);
 });
 
 test("exports a Markdown report with labeled metrics and limitations", async () => {
   const service = new ObservabilityService(memorySource(simpleFixture()));
-  const result = await service.export("ses_simple", { format: "markdown" });
+  const result = await service.export("ses_simple", { format: "markdown", generator: GENERATOR });
   assert.match(result.filename, /\.md$/);
   assert.match(result.content, /^# Session ses_simple/m);
   assert.match(result.content, /## Summary \(Session total\)/);
@@ -42,7 +44,7 @@ test("exports a Markdown report with labeled metrics and limitations", async () 
 
 test("exports a self-contained HTML report", async () => {
   const service = new ObservabilityService(memorySource(simpleFixture()));
-  const result = await service.export("ses_simple", { format: "html" });
+  const result = await service.export("ses_simple", { format: "html", generator: GENERATOR });
   assert.match(result.filename, /\.html$/);
   assert.match(result.content, /^<!doctype html>/);
   assert.match(result.content, /Session total/);
@@ -56,7 +58,7 @@ test("HTML export escapes session and event content", async () => {
   const data = simpleFixture();
   data.sessions[0]!.meta.title = '<script>alert("x")</script>';
   const service = new ObservabilityService(memorySource(data));
-  const result = await service.export("ses_simple", { format: "html" });
+  const result = await service.export("ses_simple", { format: "html", generator: GENERATOR });
   assert.doesNotMatch(result.content, /<script>alert/);
   assert.match(result.content, /&lt;script&gt;alert/);
 });
@@ -67,6 +69,7 @@ test("redacted Markdown and HTML exports contain no fixture secrets", async () =
     const result = await service.export("ses_secrets", {
       format,
       includeEvents: true,
+      generator: GENERATOR,
     });
     assert.equal(result.redacted, true);
     assert.doesNotMatch(result.content, /sk-supersecretvalue12345/);
@@ -81,6 +84,7 @@ test("redacted exports hide credentials and reveal exports include them", async 
   const redacted = await service.export("ses_secrets", {
     format: "json",
     includeEvents: true,
+    generator: GENERATOR,
   });
   assert.doesNotMatch(redacted.content, /sk-supersecretvalue12345/);
   assert.doesNotMatch(redacted.content, /ghp_abcdefghijklmnop/);
@@ -91,6 +95,7 @@ test("redacted exports hide credentials and reveal exports include them", async 
     format: "json",
     includeEvents: true,
     reveal: true,
+    generator: GENERATOR,
   });
   assert.equal(revealed.redacted, false);
   assert.match(revealed.content, /sk-supersecretvalue12345/);
@@ -149,7 +154,7 @@ test("light and dark text tokens meet WCAG AA on their surfaces", () => {
 
 test("HTML export mirrors the UI token block", async () => {
   const service = new ObservabilityService(memorySource(simpleFixture()));
-  const result = await service.export("ses_simple", { format: "html" });
+  const result = await service.export("ses_simple", { format: "html", generator: GENERATOR });
   const css = readFileSync(new URL("../src/ui/styles.css", import.meta.url), "utf8");
   const light = lightTokens(css);
   const exported = lightTokens(result.content);

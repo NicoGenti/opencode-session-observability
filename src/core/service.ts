@@ -617,6 +617,7 @@ export class ObservabilityService {
       format: options.format,
       includeEvents: options.includeEvents !== false,
       redacted: !reveal,
+      generator: options.generator,
     });
   }
 

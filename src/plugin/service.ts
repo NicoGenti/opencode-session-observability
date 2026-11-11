@@ -1,5 +1,6 @@
 import type { ObservabilityService } from "../core/service.ts";
 import type { EventKind } from "../core/types.ts";
+import { GENERATOR, PACKAGE_VERSION } from "../version.ts";
 
 type Input = Record<string, any>;
 
@@ -29,7 +30,7 @@ export function createRpcHandlers(
       const description = service.describe();
       return {
         ok: true,
-        version: "0.1.0",
+        version: PACKAGE_VERSION,
         source: description.source,
         revealAllowed: allowReveal,
         readOnly: true,
@@ -114,6 +115,7 @@ export function createRpcHandlers(
         format: input.format,
         includeEvents: input.includeEvents !== false,
         reveal: revealOf(input),
+        generator: GENERATOR,
       }),
   };
 }

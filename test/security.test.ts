@@ -4,6 +4,7 @@ import http from "node:http";
 import { createObservabilityServer } from "../src/server/http.ts";
 import { ObservabilityService } from "../src/core/service.ts";
 import { preview, redactString, redactValue } from "../src/core/util.ts";
+import { GENERATOR } from "../src/version.ts";
 // @ts-expect-error - plain browser module without type declarations
 import { renderMarkdown } from "../src/ui/markdown.js";
 import {
@@ -269,7 +270,7 @@ test("Markdown export escapes raw HTML in interpolated text", async () => {
   const data = simpleFixture();
   data.sessions[0]!.meta.title = '<img src=x onerror=alert(1)>';
   const service = new ObservabilityService(memorySource(data));
-  const result = await service.export("ses_simple", { format: "markdown" });
+  const result = await service.export("ses_simple", { format: "markdown", generator: GENERATOR });
   const firstLine = result.content.split("\n")[0]!;
   const rendered = firstLine.replace(/\\[<>&[\]`]/g, "");
   assert.doesNotMatch(rendered, /<img/);
@@ -327,7 +328,7 @@ test("redacted and revealed analyses carry identical diagnostics metadata", asyn
 test("JSON export keeps diagnostics inside the redacted analysis", async () => {
   const service = new ObservabilityService(memorySource(secretIncidentFixture()));
   const redacted = (await service.analyze("ses_diag_redact")).analysis;
-  const exported = await service.export("ses_diag_redact", { format: "json" });
+  const exported = await service.export("ses_diag_redact", { format: "json", generator: GENERATOR });
   const payload = JSON.parse(exported.content) as { analysis: Analysis };
 
   assert.equal(payload.analysis.redacted, true);

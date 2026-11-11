@@ -14,14 +14,14 @@ import {
   DatabaseBusyError,
   UnsupportedSchemaError,
 } from "../core/adapters/sqlite.ts";
-import { readPackageVersion } from "./package-root.ts";
+import { PACKAGE_VERSION } from "../version.ts";
 
 /**
- * The version is read from the package.json resolved by walking up from this
- * module, so it stays correct in both the `src/server` and `dist/server`
- * layouts (in the checkout or installed from npm).
+ * The version is read from the package.json resolved by walking up from the
+ * shared version module, so it stays correct in both the `src/server` and
+ * `dist/server` layouts (in the checkout or installed from npm).
  */
-const VERSION = readPackageVersion();
+const VERSION = PACKAGE_VERSION;
 
 const HELP = `opencode-session-observability ${VERSION}
 

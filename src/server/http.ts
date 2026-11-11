@@ -7,7 +7,7 @@ import { DatabaseBusyError, UnsupportedSchemaError } from "../core/adapters/sqli
 import { openWorkerSqliteSource } from "../core/adapters/sqlite-worker-source.ts";
 import type { ObservabilitySource } from "../core/types.ts";
 import { isAuthorized } from "./auth.ts";
-import { PACKAGE_ROOT, readPackageVersion } from "./package-root.ts";
+import { GENERATOR, PACKAGE_ROOT, PACKAGE_VERSION } from "../version.ts";
 import { readOpenCodeTheme } from "./opencode-theme.ts";
 import {
   EpisodeNotFoundError,
@@ -21,7 +21,7 @@ import type { EventFilter, EventKind, ExportOptions } from "../core/types.ts";
 // emitted into `dist`, so resolve it from the package root instead of from
 // this module's directory; that keeps both the src and dist layouts correct.
 const UI_ROOT = join(PACKAGE_ROOT, "src", "ui");
-const VERSION = readPackageVersion();
+const VERSION = PACKAGE_VERSION;
 
 /**
  * `/api/sessions/{id}/diagnostics`. Exported so tests build requests from the
@@ -481,6 +481,7 @@ export async function createObservabilityServer(
           format: formatRaw,
           reveal,
           includeEvents: search.get("includeEvents") !== "0",
+          generator: GENERATOR,
         };
         const result = await service.export(sessionID, options);
         sendText(req, res, 200, result.content, result.mime, {
