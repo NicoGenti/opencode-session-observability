@@ -46,7 +46,7 @@
     "@opentui/core": "0.8.3",
     "@opentui/solid": "0.8.3",
     "@types/node": "^24.10.0",
-    "solid-js": "1.9.17",
+    "solid-js": "1.9.18",
     "typescript": "^5.9.3",
     "vite": "7.3.7",
     "vite-plugin-solid": "2.11.10"
