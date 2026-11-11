@@ -2,7 +2,7 @@
 
 Every OpenCode 2 session leaves behind a rich event ledger — prompts, tool calls, retries, errors, compactions, tokens and cost — that is painful to reconstruct by hand. This tool opens that ledger locally and read-only: no telemetry, no writes to your data.
 
-[![CI](https://github.com/NicoGenti/opencode-statistics/actions/workflows/ci.yml/badge.svg)](https://github.com/NicoGenti/opencode-statistics/actions/workflows/ci.yml)
+[![CI](https://github.com/NicoGenti/opencode-session-observability/actions/workflows/ci.yml/badge.svg)](https://github.com/NicoGenti/opencode-session-observability/actions/workflows/ci.yml)
 
 A local-first, read-only observability layer for **OpenCode 2** sessions. It adds two views:
 

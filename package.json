@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "Local-first, read-only Trajectory and Statistics views for OpenCode 2 sessions.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NicoGenti/opencode-session-observability.git"
+  },
   "type": "module",
   "engines": {
     "node": ">=22.18"
@@ -46,10 +50,10 @@
     "@opentui/core": "0.8.3",
     "@opentui/solid": "0.8.3",
     "@types/node": "^24.10.0",
-    "solid-js": "1.9.17",
-    "typescript": "^7.0.2",
+    "solid-js": "1.9.18",
+    "typescript": "^5.9.3",
     "vite": "7.3.7",
-    "vite-plugin-solid": "2.11.10"
+    "vite-plugin-solid": "2.11.15"
   },
   "peerDependencies": {
     "@opentui/core": ">=0.8.1",
