@@ -47,7 +47,9 @@
     "build:server": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json",
     "prepack": "npm run build:server",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
-    "lint:package": "publint"
+    "lint:package": "publint",
+    "pack:check": "node scripts/check-pack.mjs",
+    "release:gate": "npm run check && npm run build:tui && npm run build:server && npm run lint:package && npm run pack:check"
   },
   "devDependencies": {
     "@opencode/client": "2.2.6",
