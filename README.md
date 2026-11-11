@@ -98,7 +98,8 @@ Other flags:
 --no-auth       Disable the access token (loopback only)
 --allow-remote  Allow a non-loopback --host; authentication stays required
 --open          Open the browser after starting
---help, -v      Help / version
+--help, -h      Show this help
+--version, -v   Print the version
 ```
 
 `--token` and `--no-auth` are mutually exclusive. A non-loopback bind is refused when authentication is disabled.
@@ -109,6 +110,17 @@ Run the checks:
 npm run check       # typecheck + 305 tests (node:test)
 npm run audit:prod  # production dependency audit (0 advisories)
 ```
+
+---
+
+## Install from npm
+
+```bash
+npm install opencode-session-observability
+npx opencode-observability --help
+```
+
+Node.js 22.18+ is required, and the published server ships compiled JavaScript, so no extra runtime flags are needed. For the plugin registration snippet, see [OpenCode 2 plugin integration](#opencode-2-plugin-integration).
 
 ---
 
