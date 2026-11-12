@@ -2436,11 +2436,14 @@ var init_tui = __esmMin((() => {
 				trajectory: trajectoryKeyboard
 			};
 			const activeKeyboard = () => activePanelKeyboard(context.ui.panel.current()?.name, keymapBridges);
-			context.keymap.layer(() => ({ commands: tuiCommandDefinitions(openView, (browserFallback) => {
-				openPanelOrFallback("statistics", openStatisticsPanel, (options) => context.ui.toast.show(options), browserFallback);
-			}, (browserFallback) => {
-				openPanelOrFallback("trajectory", openTrajectoryPanel, (options) => context.ui.toast.show(options), browserFallback);
-			}) }));
+			context.keymap.layer(() => ({
+				mode: "global",
+				commands: tuiCommandDefinitions(openView, (browserFallback) => {
+					openPanelOrFallback("statistics", openStatisticsPanel, (options) => context.ui.toast.show(options), browserFallback);
+				}, (browserFallback) => {
+					openPanelOrFallback("trajectory", openTrajectoryPanel, (options) => context.ui.toast.show(options), browserFallback);
+				})
+			}));
 			/**
 			* Panel-scoped navigation shared by both native panels. The layer is
 			* permanently registered but gated on `ui.panel.current()`, so it only

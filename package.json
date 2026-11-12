@@ -15,7 +15,9 @@
     ".": "./src/plugin/index.ts",
     "./tui": {
       "import": "./dist-tui/tui.mjs",
-      "types": "./src/plugin/tui.ts"
+      "types": "./src/plugin/tui.ts",
+      "require": "./dist-tui/tui.mjs",
+      "default": "./dist-tui/tui.mjs"
     },
     "./core": "./src/core/index.ts",
     "./rpc": "./src/plugin/rpc.ts"
@@ -44,9 +46,9 @@
     "audit:prod": "npm audit --omit=dev --audit-level=high"
   },
   "devDependencies": {
-    "@opencode/client": "2.2.6",
-    "@opencode/plugin": "2.2.6",
-    "@opencode/theme": "2.2.6",
+    "@opencode/client": "2.2.7",
+    "@opencode/plugin": "2.2.7",
+    "@opencode/theme": "2.2.7",
     "@opentui/core": "0.8.3",
     "@opentui/solid": "0.8.3",
     "@types/node": "^26.6.6",
