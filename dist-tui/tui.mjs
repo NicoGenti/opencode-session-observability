@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { createComponent, createElement, createTextNode, effect, insert, insertNode, memo, setProp } from "@opentui/solid";
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js";
 import { PluginContextProvider, usePlugin } from "@opencode/plugin/tui";
@@ -109,6 +111,340 @@ var init_tui_net = __esmMin((() => {
 		"[::1]",
 		"::1"
 	]);
+}));
+// src/plugin/tui-warmup.ts
+function envFlag(value) {
+	const normalized = value.trim().toLowerCase();
+	if (FALSE_VALUES.has(normalized)) return false;
+	if (TRUE_VALUES.has(normalized)) return true;
+}
+/**
+* Whether the local UI should be started on demand.
+*
+* A recognized env value wins over the plugin option in both directions; an
+* unrecognized or blank env value defers to the option, and the default is on
+* (`option !== false`).
+*/
+function autoStartEnabled(option, envValue) {
+	return (typeof envValue === "string" ? envFlag(envValue) : void 0) ?? option !== false;
+}
+/** What the warm-up launcher should do for a given reachability probe. */
+function decideWarmup(status, autoStart) {
+	if (status === "ok" || status === "auth") return "already-running";
+	return autoStart ? "spawn" : "disabled";
+}
+/** Port of a configured base URL, falling back to the default local UI port. */
+function basePort(base) {
+	try {
+		const url = new URL(base);
+		if (url.port.length === 0) return DEFAULT_PORT;
+		const port = Number(url.port);
+		return Number.isInteger(port) && port > 0 && port <= 65535 ? port : DEFAULT_PORT;
+	} catch {
+		return DEFAULT_PORT;
+	}
+}
+/**
+* Package root, found by walking up from this module until a directory that
+* contains `src/server/index.ts` is reached. Serves both the dev layout and the
+* installed layout, and fails with the probed chain rather than inventing one.
+*/
+function resolvePackageRoot() {
+	const probed = [];
+	let current = MODULE_DIR;
+	for (let depth = 0; depth <= MAX_ANCESTOR_DEPTH; depth += 1) {
+		probed.push(current);
+		if (existsSync(join(current, ...SERVER_ENTRY_SEGMENTS))) return current;
+		const parent = dirname(current);
+		if (parent === current) break;
+		current = parent;
+	}
+	throw new Error(`tui-warmup: package root not found (looked for ${SERVER_ENTRY_SEGMENTS.join("/")}); probed: ${probed.join(" -> ")}`);
+}
+/**
+* Absolute path of the server entry point inside `root` (defaults to the
+* package root). The prebuilt bundle wins when it exists: that is the single
+* layout that runs under `node_modules/`, where Node will not type-strip `.ts`.
+* Without it the dev layout falls back to the TypeScript source.
+*/
+function resolveServerEntry(root = resolvePackageRoot()) {
+	const bundled = resolve(root, ...BUNDLED_ENTRY_SEGMENTS);
+	if (existsSync(bundled)) return bundled;
+	return resolve(root, ...SERVER_ENTRY_SEGMENTS);
+}
+/**
+* Liveness probe via signal 0. `EPERM` means the process exists but belongs to
+* someone else (or is unsignalable on Windows), so it still counts as alive.
+*/
+function isProcessAlive(pid) {
+	if (!Number.isInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return error.code === "EPERM";
+	}
+}
+/**
+* Whether a claim can be replaced. A lock whose `createdAt` is older than
+* `LOCK_STALE_MS` is stale regardless of pid liveness, because a recycled pid
+* can otherwise keep a dead server's claim alive indefinitely. A record with
+* no parseable timestamp falls back to the pid probe alone.
+*/
+function isLockStale(record, now = Date.now()) {
+	const createdAt = Date.parse(record.createdAt);
+	if (Number.isFinite(createdAt) && now - createdAt > LOCK_STALE_MS) return true;
+	return !isProcessAlive(record.pid);
+}
+/** Reads a lock record; a missing or malformed file reads as `null`. */
+function readLock(file) {
+	try {
+		const parsed = JSON.parse(readFileSync(file, "utf8"));
+		if (parsed.version !== LOCK_VERSION || typeof parsed.pid !== "number" || !Number.isInteger(parsed.pid) || parsed.pid <= 0) return null;
+		return {
+			version: LOCK_VERSION,
+			pid: parsed.pid,
+			createdAt: typeof parsed.createdAt === "string" ? parsed.createdAt : ""
+		};
+	} catch {
+		return null;
+	}
+}
+/**
+* Claims the lock with an exclusive create. Returns `false` when the file
+* already exists or cannot be created; the caller then treats the port as
+* claimed rather than risk starting a second server.
+*/
+function writeLock(file, pid) {
+	const record = {
+		version: LOCK_VERSION,
+		pid,
+		createdAt: (/* @__PURE__ */ new Date()).toISOString()
+	};
+	try {
+		mkdirSync(dirname(file), {
+			recursive: true,
+			mode: 448
+		});
+		writeFileSync(file, `${JSON.stringify(record)}\n`, {
+			encoding: "utf8",
+			mode: 384,
+			flag: "wx"
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+/**
+* Removes the lock only when its `pid` is the one this caller claimed, so a
+* slower starter never deletes a newer starter's claim.
+*/
+function removeLockIfOwned(file, pid) {
+	const record = readLock(file);
+	if (!record || record.pid !== pid) return;
+	try {
+		rmSync(file, { force: true });
+	} catch {}
+}
+/** Rewrites the claim with the child pid once the process exists. */
+function adoptLock(file, pid) {
+	const record = {
+		version: LOCK_VERSION,
+		pid,
+		createdAt: (/* @__PURE__ */ new Date()).toISOString()
+	};
+	try {
+		writeFileSync(file, `${JSON.stringify(record)}\n`, {
+			encoding: "utf8",
+			mode: 384
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+/**
+* Claims the lock for `port`, clearing a lock whose pid is gone. A live foreign
+* pid (another starter is spawning or has already spawned) means "do not
+* spawn"; the caller polls health instead.
+*/
+function claimLock(file) {
+	if (writeLock(file, process.pid)) return "owned";
+	const existing = readLock(file);
+	if (existing && !isLockStale(existing)) return "busy";
+	try {
+		rmSync(file, { force: true });
+	} catch {}
+	const raced = readLock(file);
+	if (raced && !isLockStale(raced)) return "busy";
+	if (writeLock(file, process.pid)) return "owned";
+	return "busy";
+}
+/**
+* Starts the local UI detached so it outlives the TUI, and resolves with the
+* child pid. A missing entry rejects immediately; the child's own "error"
+* event is awaited briefly so an unspawnable runtime rejects too.
+*/
+function spawnServer(entry, port) {
+	return new Promise((resolvePromise, rejectPromise) => {
+		if (!existsSync(entry)) {
+			rejectPromise(/* @__PURE__ */ new Error(`tui-warmup: server entry not found: ${entry}`));
+			return;
+		}
+		const child = spawn(process.execPath, [
+			entry,
+			"--host",
+			SPAWN_HOST,
+			"--port",
+			String(port)
+		], {
+			detached: true,
+			stdio: "ignore",
+			windowsHide: true
+		});
+		let settled = false;
+		const timer = setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			child.unref();
+			const pid = child.pid;
+			if (typeof pid === "number" && pid > 0) resolvePromise(pid);
+			else rejectPromise(/* @__PURE__ */ new Error("tui-warmup: spawned server has no pid"));
+		}, SPAWN_SETTLE_MS);
+		timer.unref?.();
+		child.once("error", (error) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			rejectPromise(error);
+		});
+		child.once("spawn", () => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			child.unref();
+			const pid = child.pid;
+			if (typeof pid === "number" && pid > 0) resolvePromise(pid);
+			else rejectPromise(/* @__PURE__ */ new Error("tui-warmup: spawned server has no pid"));
+		});
+	});
+}
+function delay(ms) {
+	return new Promise((resolvePromise) => {
+		setTimeout(resolvePromise, ms).unref?.();
+	});
+}
+/**
+* Polls the health endpoint until the UI answers or the budget expires.
+* Returns "down" past the budget; callers treat "ok" and "auth" as ready.
+*/
+async function waitForHealth(base, timeoutMs, probe = reachable, pollIntervalMs = POLL_INTERVAL_MS) {
+	const budget = Number.isFinite(timeoutMs) ? Math.max(0, timeoutMs) : 0;
+	const deadline = Date.now() + budget;
+	for (;;) {
+		const status = await probe(base);
+		if (status === "ok" || status === "auth") return status;
+		const remaining = deadline - Date.now();
+		if (remaining <= 0) return "down";
+		await delay(Math.min(Math.max(0, pollIntervalMs), remaining));
+	}
+}
+/**
+* Waits for the spawned server's token file. The health endpoint can answer
+* "auth" a moment before the record is renamed into place; a short bounded poll
+* closes that window. The outcome is advisory only: the caller returns "auth"
+* either way, and `openView` reads the token itself afterwards.
+*/
+async function awaitTokenRecord(base, readToken, timeoutMs = TOKEN_POLL_TIMEOUT_MS, pollIntervalMs = POLL_INTERVAL_MS) {
+	const budget = Number.isFinite(timeoutMs) ? Math.max(0, timeoutMs) : 0;
+	const deadline = Date.now() + budget;
+	for (;;) {
+		if (await readToken(base) !== null) return true;
+		const remaining = deadline - Date.now();
+		if (remaining <= 0) return false;
+		await delay(Math.min(Math.max(0, pollIntervalMs), remaining));
+	}
+}
+/**
+* Makes sure the local UI answers at `base`, spawning it once when the knob
+* allows. Resolves "ok"/"auth" when it is or became reachable and "down" when
+* the budget expires; a spawn failure rejects with the spawn error.
+*/
+function ensureServer(base, options = {}) {
+	const key = base.replace(/\/+$/, "");
+	const existing = inFlight.get(key);
+	if (existing) return existing;
+	const promise = runEnsureServer(key, options).finally(() => {
+		inFlight.delete(key);
+	});
+	inFlight.set(key, promise);
+	return promise;
+}
+async function runEnsureServer(base, options) {
+	const probe = options.probe ?? reachable;
+	const spawnFn = options.spawn ?? spawnServer;
+	const readToken = options.readToken ?? tokenFromFile;
+	const lockDirectory = options.lockDirectory ?? tokenDirectory();
+	const pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS;
+	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+	const autoStart = options.autoStart ?? true;
+	const initial = await probe(base);
+	const decision = decideWarmup(initial, autoStart);
+	if (decision === "already-running") return initial;
+	if (decision === "disabled") return "down";
+	const port = basePort(base);
+	const lockFile = join(lockDirectory, `server-${port}.lock`);
+	if (claimLock(lockFile) === "busy") return waitForHealth(base, timeoutMs, probe, pollIntervalMs);
+	let ownerPid = process.pid;
+	try {
+		const childPid = await spawnFn(options.entry ?? resolveServerEntry(), port);
+		if (adoptLock(lockFile, childPid)) ownerPid = childPid;
+		const status = await waitForHealth(base, timeoutMs, probe, pollIntervalMs);
+		if (status === "auth") {
+			await awaitTokenRecord(base, readToken, TOKEN_POLL_TIMEOUT_MS, TOKEN_POLL_INTERVAL_MS);
+			return status;
+		}
+		if (status !== "down") return status;
+		return probe(base);
+	} finally {
+		removeLockIfOwned(lockFile, ownerPid);
+	}
+}
+var DEFAULT_PORT, SERVER_ENTRY_SEGMENTS, BUNDLED_ENTRY_SEGMENTS, MAX_ANCESTOR_DEPTH, TRUE_VALUES, FALSE_VALUES, POLL_INTERVAL_MS, DEFAULT_TIMEOUT_MS, TOKEN_POLL_TIMEOUT_MS, TOKEN_POLL_INTERVAL_MS, LOCK_STALE_MS, SPAWN_SETTLE_MS, SPAWN_HOST, LOCK_VERSION, MODULE_DIR, inFlight;
+var init_tui_warmup = __esmMin((() => {
+	init_token_file();
+	init_tui_net();
+	DEFAULT_PORT = 4517;
+	SERVER_ENTRY_SEGMENTS = [
+		"src",
+		"server",
+		"index.ts"
+	];
+	BUNDLED_ENTRY_SEGMENTS = ["dist-server", "server.mjs"];
+	MAX_ANCESTOR_DEPTH = 8;
+	TRUE_VALUES = /* @__PURE__ */ new Set([
+		"1",
+		"true",
+		"yes",
+		"on"
+	]);
+	FALSE_VALUES = /* @__PURE__ */ new Set([
+		"0",
+		"false",
+		"no",
+		"off"
+	]);
+	POLL_INTERVAL_MS = 100;
+	DEFAULT_TIMEOUT_MS = 1e4;
+	TOKEN_POLL_TIMEOUT_MS = 1e3;
+	TOKEN_POLL_INTERVAL_MS = 100;
+	LOCK_STALE_MS = 864e5;
+	SPAWN_SETTLE_MS = 250;
+	SPAWN_HOST = "127.0.0.1";
+	LOCK_VERSION = 1;
+	MODULE_DIR = dirname(fileURLToPath(import.meta.url));
+	inFlight = /* @__PURE__ */ new Map();
 }));
 // src/plugin/tui-native.ts
 function isValidName(name) {
@@ -2322,6 +2658,7 @@ var STATISTICS_PANEL, TRAJECTORY_PANEL, PANEL_FALLBACK, WEB_FLAGS, tui_default;
 var init_tui = __esmMin((() => {
 	init_define();
 	init_tui_net();
+	init_tui_warmup();
 	init_tui_native();
 	init_tui_status();
 	STATISTICS_PANEL = "statistics";
@@ -2345,6 +2682,11 @@ var init_tui = __esmMin((() => {
 		id: TUI_PLUGIN_ID,
 		async setup(context) {
 			const base = baseUrl(context.options.url);
+			const autoStart = autoStartEnabled(context.options.autoStart, process.env.OPENCODE_OBSERVABILITY_AUTO_START);
+			ensureServer(base, {
+				autoStart,
+				timeoutMs: 1e4
+			}).catch(() => "down");
 			const { statisticsPanelElement } = await Promise.resolve().then(() => (init_StatisticsView(), StatisticsView_exports));
 			const { trajectoryPanelElement } = await Promise.resolve().then(() => (init_TrajectoryView(), TrajectoryView_exports));
 			const { statusBadgeElement } = await Promise.resolve().then(() => (init_statusBadge(), statusBadge_exports));
@@ -2395,7 +2737,10 @@ var init_tui = __esmMin((() => {
 			});
 			const openView = async (view) => {
 				const configured = pluginToken(context.options.token);
-				const status = await reachable(base);
+				const status = await ensureServer(base, {
+					autoStart,
+					timeoutMs: 1e4
+				}).catch(() => "down");
 				const token = status === "auth" ? configured ?? await tokenFromFile(base) : null;
 				if (status === "down") {
 					context.ui.toast.show({

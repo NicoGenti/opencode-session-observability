@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { defineTuiPlugin } from "./define.ts";
-import { baseUrl, pluginToken, reachable, tokenFromFile } from "./tui-net.ts";
+import { baseUrl, pluginToken, tokenFromFile } from "./tui-net.ts";
+import { autoStartEnabled, ensureServer } from "./tui-warmup.ts";
 import type { StatisticsKeyboardBridge } from "./tui/statistics/state.ts";
 import type { TrajectoryKeyboardBridge } from "./tui/trajectory/state.ts";
 import {
@@ -445,6 +446,17 @@ export default defineTuiPlugin({
   async setup(context) {
     const base = baseUrl(context.options.url);
 
+    // Fire-and-forget warm-up so the host's panel and keymap wiring below is
+    // never delayed by a spawn or a health wait. `ensureServer` deduplicates by
+    // base URL, so a quick `/statistics:web` joins this same attempt.
+    const autoStart = autoStartEnabled(
+      context.options.autoStart,
+      process.env.OPENCODE_OBSERVABILITY_AUTO_START,
+    );
+    void ensureServer(base, { autoStart, timeoutMs: 10_000 }).catch(
+      () => "down",
+    );
+
     // Loaded lazily: the raw sources are `.tsx` modules for JSX-capable hosts,
     // while Node-hosted tests import this module without a JSX loader.
     const { statisticsPanelElement } = await import(
@@ -516,7 +528,13 @@ export default defineTuiPlugin({
 
     const openView = async (view: "trajectory" | "statistics"): Promise<void> => {
       const configured = pluginToken(context.options.token);
-      const status = await reachable(base);
+      // Blocking warm-up: when the UI is down and auto-start is allowed, the
+      // spawn plus health wait happens before the branches below. Its result is
+      // the reachability status, so nothing probes twice around the attempt.
+      const status = await ensureServer(base, {
+        autoStart,
+        timeoutMs: 10_000,
+      }).catch(() => "down");
       const token =
         status === "auth"
           ? (configured ?? (await tokenFromFile(base)))

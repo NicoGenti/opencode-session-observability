@@ -6,6 +6,12 @@
       "options": {
         "url": "http://127.0.0.1:4517",
         "allowReveal": false,
+        // Optional. Start the local UI server automatically when a command
+        // needs it (default true). Set false, or set
+        // OPENCODE_OBSERVABILITY_AUTO_START=0, to keep the manual `npm start`;
+        // recognized values in that env var (0/false/no/off, 1/true/yes/on)
+        // override this option in both directions.
+        "autoStart": true,
         // Optional. Seeds the browser UI theme on first open. Use any OpenCode 2
         // built-in theme name (for example "tokyonight"), or "auto". The TUI
         // already forwards the running theme and its resolved palette; this
