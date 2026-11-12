@@ -20,3 +20,7 @@ jobs:
         run: |
           npm run build:tui
           git diff --exit-code -- dist-tui/tui.mjs
+      - name: Verify server artifact fresh
+        run: |
+          npm run build:server
+          git diff --exit-code -- dist-server/server.mjs
