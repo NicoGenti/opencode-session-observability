@@ -573,6 +573,7 @@ export default defineTuiPlugin({
       activePanelKeyboard(context.ui.panel.current()?.name, keymapBridges);
 
     context.keymap.layer(() => ({
+      mode: "global",
       commands: tuiCommandDefinitions(
         openView,
         (browserFallback) => {

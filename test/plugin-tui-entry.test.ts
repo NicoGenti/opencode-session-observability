@@ -2,7 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-type ExportTarget = string | { import?: string; types?: string };
+type ExportTarget = string | {
+  import?: string;
+  types?: string;
+  require?: string;
+  default?: string;
+};
 
 type PackageJson = {
   exports?: Record<string, ExportTarget>;
@@ -23,6 +28,8 @@ test("the ./tui export points at the prebuilt bundle typed by the ts sidecar", a
   assert.deepEqual(pkg.exports?.["./tui"], {
     import: "./dist-tui/tui.mjs",
     types: "./src/plugin/tui.ts",
+    require: "./dist-tui/tui.mjs",
+    default: "./dist-tui/tui.mjs",
   });
 });
 
