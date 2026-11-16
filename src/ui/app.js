@@ -22,6 +22,20 @@ import {
   turnModelParts,
 } from "./format.js";
 import {
+  buildContextGrowthSeries,
+  buildCostSeries,
+  buildDurationSeries,
+  buildTokenSeries,
+  chartWindowCaption,
+} from "./charts-data.js";
+import {
+  chartSectionHtml,
+  contextGrowthChartHtml,
+  costChartHtml,
+  durationChartHtml,
+  tokenChartHtml,
+} from "./charts.js";
+import {
   authHeaders,
   consumeTokenFromLocation,
   storeToken,
@@ -100,6 +114,9 @@ const state = {
   showEventRows: get("showEventRows") === true,
   expandedTurns: new Set(),
   expandedSteps: new Set(),
+  // Statistics sub-tab is renderer state, like the expand sets: not persisted
+  // and not a route, so the hash keeps shape `#/s/:session/:view`.
+  statsTab: "table",
   selectedEventID: null,
   // Event IDs in the currently opened incident's failing-event sequence.
   // Renderer state only: rebuilt from the stored diagnostics DTO, never
@@ -1901,6 +1918,41 @@ function bindBasicStatistics() {
   }
 }
 
+function chartsPaneHtml(analysis) {
+  // One analysis, four projections: every chart consumes the same payload the
+  // Statistics tables render (no fetch, no re-paging). The caption restates
+  // that scope because filters refine the Trajectory ledger only.
+  const caption = chartWindowCaption(analysis);
+  return `<div class="charts-pane">
+      ${chartSectionHtml({
+        id: "context",
+        title: "Context growth",
+        caption,
+        inner: contextGrowthChartHtml(
+          buildContextGrowthSeries(analysis, state.contextBasis),
+        ),
+      })}
+      ${chartSectionHtml({
+        id: "tokens",
+        title: "Token usage",
+        caption,
+        inner: tokenChartHtml(buildTokenSeries(analysis)),
+      })}
+      ${chartSectionHtml({
+        id: "cost",
+        title: "Cost",
+        caption,
+        inner: costChartHtml(buildCostSeries(analysis)),
+      })}
+      ${chartSectionHtml({
+        id: "duration",
+        title: "Step duration",
+        caption,
+        inner: durationChartHtml(buildDurationSeries(analysis)),
+      })}
+    </div>`;
+}
+
 function renderStatistics() {
   if (!dom.view) return;
   dom.view.className = "view";
@@ -1952,6 +2004,10 @@ function renderStatistics() {
         formatDuration,
       )} · wall ${metricHtml(totals.wallClockTime, formatDuration)}</span>
       <span class="grow"></span>
+      <div class="segmented" role="group" aria-label="Statistics view">
+        <button type="button" data-stats-tab="table" aria-pressed="${state.statsTab === "table"}">Table</button>
+        <button type="button" data-stats-tab="charts" aria-pressed="${state.statsTab === "charts"}">Charts</button>
+      </div>
       <label class="field" style="flex-direction:row;align-items:center;gap:6px">Context basis
         <select id="context-basis">
           <option value="latest"${
@@ -1962,9 +2018,11 @@ function renderStatistics() {
           }>Cumulative</option>
         </select>
       </label>
-      <label class="switch"><input type="checkbox" id="show-event-rows"${
-        state.showEventRows ? " checked" : ""
-      }> Show event rows</label>
+      ${
+        state.statsTab === "table"
+          ? `<label class="switch"><input type="checkbox" id="show-event-rows"${
+              state.showEventRows ? " checked" : ""
+            }> Show event rows</label>
       <label class="field" style="flex-direction:row;align-items:center;gap:6px">Response limit
         <select id="response-limit">
           ${[4_000, 12_000, 20_000, 50_000, 80_000]
@@ -1981,11 +2039,16 @@ function renderStatistics() {
         analysis.turns.every((turn) => state.expandedTurns.has(turn.id))
           ? "Collapse all"
           : "Expand all"
-      }</button>
+      }</button>`
+          : ""
+      }
       <button type="button" class="btn ghost" id="copy-review-prompt">Copy LLM review prompt</button>
       <button type="button" class="btn ghost" id="copy-digest">Copy raw session digest</button>
     </div>
-    <div class="table-wrap">
+    ${
+      state.statsTab === "charts"
+        ? chartsPaneHtml(analysis)
+        : `<div class="table-wrap">
       <table class="stats-table advanced-stats">
         <thead><tr>
           <th class="col-index">#</th><th class="col-trigger">Trigger</th><th>Start</th><th>Duration</th><th>Model</th><th>Steps</th>
@@ -1997,7 +2060,8 @@ function renderStatistics() {
         ${turnBlocks.join("")}
         <tbody>${totalsRowHtml()}</tbody>
       </table>
-    </div>
+    </div>`
+    }
     <div class="basis-legend">
       <span>${badge("M", "neutral")} measured</span>
       <span>${badge("D", "neutral")} derived</span>
@@ -2043,6 +2107,12 @@ function renderStatistics() {
 }
 
 function bindStatistics() {
+  for (const button of dom.view.querySelectorAll("[data-stats-tab]")) {
+    button.addEventListener("click", () => {
+      state.statsTab = button.dataset.statsTab === "charts" ? "charts" : "table";
+      renderStatistics();
+    });
+  }
   const contextBasis = $("#context-basis");
   contextBasis?.addEventListener("change", () => {
     state.contextBasis = contextBasis.value === "cumulative" ? "cumulative" : "latest";
