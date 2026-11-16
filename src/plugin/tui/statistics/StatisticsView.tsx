@@ -7,6 +7,7 @@ import {
   Show,
   type Accessor,
 } from "solid-js";
+import { tmpdir } from "node:os";
 import {
   PluginContextProvider,
   usePlugin,
@@ -21,6 +22,10 @@ import {
   formatPercent,
 } from "../../../core/format.ts";
 import { bridgeFocus, themePalette } from "../../tui.ts";
+import {
+  reviewPromptFilePath,
+  writeReviewPromptFile,
+} from "../digestFile.ts";
 import {
   formatHeader,
   formatRow,
@@ -267,7 +272,37 @@ function StatisticsPanel(props: {
       const turn = state.turns()[state.selectedIndex()];
       if (turn) state.toggleTurnExpand(turn.id);
     },
+    reviewPrompt: () => {
+      void writeReviewPrompt();
+    },
   };
+
+  /**
+   * Always redacted by construction: `fetchReviewPrompt` never sends `reveal`.
+   * The TUI host has no clipboard, so the prompt is delivered as one
+   * deterministic temp file and the toast carries its path.
+   */
+  async function writeReviewPrompt(): Promise<void> {
+    const outcome = await state.fetchReviewPrompt();
+    if (!outcome.ok) {
+      context.ui.toast.show({ message: outcome.error, variant: "error" });
+      return;
+    }
+    const path = reviewPromptFilePath(tmpdir(), outcome.sessionID);
+    try {
+      await writeReviewPromptFile(path, outcome.content);
+    } catch {
+      context.ui.toast.show({
+        message: "The review prompt file could not be written.",
+        variant: "error",
+      });
+      return;
+    }
+    context.ui.toast.show({
+      message: `Review prompt written to ${path}`,
+      variant: "success",
+    });
+  }
 
   onMount(() => {
     props.keyboard.handlers = keyboardHandlers;

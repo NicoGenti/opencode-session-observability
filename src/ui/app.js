@@ -26,6 +26,11 @@ import {
   consumeTokenFromLocation,
   storeToken,
 } from "./auth.js";
+import {
+  REVEAL_COPY_WARNING,
+  digestExportUrl,
+  digestToastMessage,
+} from "./digestCopy.js";
 import { renderMarkdown } from "./markdown.js";
 import { mergePages } from "./paging.js";
 import {
@@ -1977,6 +1982,8 @@ function renderStatistics() {
           ? "Collapse all"
           : "Expand all"
       }</button>
+      <button type="button" class="btn ghost" id="copy-review-prompt">Copy LLM review prompt</button>
+      <button type="button" class="btn ghost" id="copy-digest">Copy raw session digest</button>
     </div>
     <div class="table-wrap">
       <table class="stats-table advanced-stats">
@@ -2065,6 +2072,14 @@ function bindStatistics() {
       for (const turn of turns) state.expandedTurns.add(turn.id);
     }
     renderStatistics();
+  });
+  const copyReviewPrompt = $("#copy-review-prompt");
+  copyReviewPrompt?.addEventListener("click", () => {
+    void copyDigest({ prompt: true });
+  });
+  const copyDigestButton = $("#copy-digest");
+  copyDigestButton?.addEventListener("click", () => {
+    void copyDigest({ prompt: false });
   });
   for (const row of dom.view.querySelectorAll("tr.turn-row")) {
     row.addEventListener("click", (event) => {
@@ -2480,6 +2495,48 @@ async function exportCurrent(format) {
       state.reveal
         ? "Exported with raw secrets"
         : "Exported (credentials redacted)",
+    );
+  } catch (error) {
+    showError(error);
+  }
+}
+
+/**
+ * Copies the Markdown digest (or the full review prompt) to the clipboard.
+ *
+ * The digest is produced by the same local API the export buttons use, so the
+ * caller's redaction state flows through unchanged. With reveal active the
+ * user must confirm first: the clipboard will then hold raw secrets.
+ */
+async function copyDigest({ prompt }) {
+  if (!state.sessionID) return;
+  const reveal = state.reveal;
+  try {
+    if (reveal) {
+      const confirmed = await askConfirm(REVEAL_COPY_WARNING);
+      if (!confirmed) return;
+    }
+    const url = digestExportUrl(location.origin, state.sessionID, {
+      prompt,
+      reveal,
+    });
+    const response = await fetch(url, {
+      cache: "no-store",
+      headers: authHeaders(state.token),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      throw new ApiError(
+        response.status,
+        body?.error ?? "copy_failed",
+        body?.message ?? `Copy failed (${response.status})`,
+      );
+    }
+    const copied = await copyText(await response.text());
+    toast(
+      copied
+        ? digestToastMessage(prompt, reveal)
+        : "Copy failed — the browser blocked the clipboard",
     );
   } catch (error) {
     showError(error);

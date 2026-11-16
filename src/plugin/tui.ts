@@ -125,6 +125,11 @@ export type PanelKeyboardBridge = {
   handlers: {
     moveSelection(delta: number): void;
     toggleExpand(): void;
+    /**
+     * Statistics only: writes the redacted LLM review prompt to a temp file.
+     * The trajectory bridge omits it, so `d` is a no-op there.
+     */
+    reviewPrompt?(): void;
   } | null;
   /** Host-reported focus: `false` blocks keys, `null` means unreported. */
   focused: boolean | null;
@@ -203,6 +208,15 @@ export function panelKeymapCommands(
       bind: "return",
       run: () => {
         active()?.handlers?.toggleExpand();
+      },
+    },
+    {
+      id: "panel.reviewPrompt",
+      title: "Session panel: write the LLM review prompt to a file",
+      group: "Session panel",
+      bind: "d",
+      run: () => {
+        active()?.handlers?.reviewPrompt?.();
       },
     },
     {

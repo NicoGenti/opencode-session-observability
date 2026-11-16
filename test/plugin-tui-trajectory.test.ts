@@ -270,6 +270,43 @@ test("the panel close key re-checks the gate at dispatch (F1)", () => {
   assert.equal(closes.length, 1);
 });
 
+test("the review prompt key is inert without a mounted statistics handler", () => {
+  const calls: string[] = [];
+  let active: PanelKeyboardBridge | null = null;
+  const commands = panelKeymapCommands(
+    () => active,
+    () => {},
+  );
+  const command = commands.find((item) => item.id === "panel.reviewPrompt");
+  assert.ok(command);
+  assert.equal(command.bind, "d");
+
+  // No panel open: the key is a no-op.
+  command.run();
+  assert.equal(calls.length, 0);
+
+  // The trajectory bridge omits `reviewPrompt`, so `d` stays inert there.
+  active = {
+    handlers: { moveSelection() {}, toggleExpand() {} },
+    focused: true,
+  };
+  command.run();
+  assert.equal(calls.length, 0);
+
+  active = {
+    handlers: {
+      moveSelection() {},
+      toggleExpand() {},
+      reviewPrompt() {
+        calls.push("statistics:review");
+      },
+    },
+    focused: true,
+  };
+  command.run();
+  assert.deepEqual(calls, ["statistics:review"]);
+});
+
 test("both panels claim session.panel without colliding", async () => {
   const source = await readFile(
     new URL("../src/plugin/tui.ts", import.meta.url),

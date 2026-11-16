@@ -27,6 +27,20 @@ test("RPC contract exposes the expected methods", () => {
     "sessions",
   ]);
   assert.equal("events" in Observability.methods, false, "events is reserved");
+
+  const exportInput = Observability.methods.export.input as {
+    properties: {
+      format: { enum: readonly string[] };
+      prompt: { type: string };
+    };
+  };
+  assert.deepEqual(exportInput.properties.format.enum, [
+    "json",
+    "markdown",
+    "html",
+    "digest",
+  ]);
+  assert.deepEqual(exportInput.properties.prompt, { type: "boolean" });
 });
 
 test("RPC health reports the read-only source", async () => {
@@ -88,4 +102,40 @@ test("RPC event detail and export honor the reveal policy", async () => {
   });
   assert.equal(exported.redacted, true);
   assert.doesNotMatch(exported.content, /sk-supersecretvalue/);
+});
+
+test("RPC export serves the digest and review prompt under the reveal policy", async () => {
+  const restricted = handlersFor(secretsFixture(), false);
+  const digest = await restricted.export({
+    sessionID: "ses_secrets",
+    format: "digest",
+  });
+  assert.match(digest.filename, /-digest\.md$/);
+  assert.equal(digest.mime, "text/markdown; charset=utf-8");
+  assert.equal(digest.redacted, true);
+  assert.doesNotMatch(digest.content, /sk-supersecretvalue/);
+  assert.match(digest.content, /\[REDACTED/);
+
+  const prompt = await restricted.export({
+    sessionID: "ses_secrets",
+    format: "digest",
+    prompt: true,
+  });
+  assert.match(prompt.filename, /-review-prompt\.md$/);
+  assert.ok(
+    prompt.content.startsWith(
+      "You are reviewing an OpenCode coding-agent session",
+    ),
+  );
+  assert.doesNotMatch(prompt.content, /sk-supersecretvalue/);
+  assert.doesNotMatch(prompt.content, /UNREDACTED/);
+
+  const revealed = await handlersFor(secretsFixture(), true).export({
+    sessionID: "ses_secrets",
+    format: "digest",
+    reveal: true,
+  });
+  assert.equal(revealed.redacted, false);
+  assert.match(revealed.content, /^> UNREDACTED: /m);
+  assert.match(revealed.content, /sk-testvalue1234567890/);
 });

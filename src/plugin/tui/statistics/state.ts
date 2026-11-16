@@ -3,7 +3,7 @@ import type { OpenCodeClient } from "@opencode/client";
 
 import type { Analysis, Metric, Turn } from "../../../core/types.ts";
 import { Observability } from "../../rpc.ts";
-import { parseAnalysisResponse } from "../analysisResponse.ts";
+import { isRecord, parseAnalysisResponse } from "../analysisResponse.ts";
 
 /**
  * Reactive state for the native statistics panel.
@@ -22,6 +22,17 @@ export interface StatisticsTotals {
   readonly turns: number;
 }
 
+/** Outcome of one review-prompt request; the file body or a short error. */
+export type ReviewPromptOutcome =
+  | {
+      readonly ok: true;
+      /** Session the prompt was rendered for, so the caller names the file right. */
+      readonly sessionID: string;
+      readonly filename: string;
+      readonly content: string;
+    }
+  | { readonly ok: false; readonly error: string };
+
 export interface StatisticsState {
   readonly analysis: Accessor<Analysis | null>;
   readonly loading: Accessor<boolean>;
@@ -36,6 +47,11 @@ export interface StatisticsState {
   toggleTurnExpand(turnID: string): void;
   isSelected(turn: Turn): boolean;
   fetchAnalysis(sessionID: string): Promise<void>;
+  /**
+   * Asks the RPC for the redacted LLM review prompt of the current session.
+   * No `reveal` flag is ever sent, so the result is redacted by construction.
+   */
+  fetchReviewPrompt(): Promise<ReviewPromptOutcome>;
 }
 
 /**
@@ -45,6 +61,8 @@ export interface StatisticsState {
 export interface StatisticsKeyboardHandlers {
   readonly moveSelection: (delta: number) => void;
   readonly toggleExpand: () => void;
+  /** Writes the redacted LLM review prompt to a temp file and toasts the path. */
+  readonly reviewPrompt?: () => void;
 }
 
 /**
@@ -90,6 +108,50 @@ const UNAVAILABLE: Metric = { value: null, basis: "unavailable" };
 
 function asMetric(value: Metric | undefined): Metric {
   return value ?? UNAVAILABLE;
+}
+
+/**
+ * Validates an export response the same way `parseAnalysisResponse` validates
+ * the analysis: the payload crosses the RPC boundary, so it can arrive as the
+ * raw envelope (`{ output: … }`), the handler result (`{ filename, content, … }`)
+ * or something unexpected. Messages stay short and never echo payload text.
+ * The requested `sessionID` rides along so the caller can name the file after
+ * the session the prompt was actually rendered for.
+ */
+export function parseReviewPromptResponse(
+  response: unknown,
+  sessionID: string,
+): ReviewPromptOutcome {
+  let current: unknown = response;
+  for (let depth = 0; depth < 4; depth++) {
+    if (!isRecord(current)) break;
+    if (
+      typeof current.filename === "string" &&
+      typeof current.content === "string"
+    ) {
+      return {
+        ok: true,
+        sessionID,
+        filename: current.filename,
+        content: current.content,
+      };
+    }
+    if ("output" in current) {
+      current = current.output;
+      continue;
+    }
+    if ("error" in current) {
+      return {
+        ok: false,
+        error: "The review prompt request returned an error.",
+      };
+    }
+    break;
+  }
+  return {
+    ok: false,
+    error: "The review prompt response was not recognized.",
+  };
 }
 
 export function createStatisticsState(client: RpcCapable): StatisticsState {
@@ -212,6 +274,26 @@ export function createStatisticsState(client: RpcCapable): StatisticsState {
     }
   }
 
+  async function fetchReviewPrompt(): Promise<ReviewPromptOutcome> {
+    const target = sessionID().trim();
+    if (target.length === 0) {
+      return { ok: false, error: "No session is selected." };
+    }
+    try {
+      const response = await rpc.export({
+        sessionID: target,
+        format: "digest",
+        prompt: true,
+      });
+      return parseReviewPromptResponse(response, target);
+    } catch {
+      return {
+        ok: false,
+        error: "The review prompt could not be generated.",
+      };
+    }
+  }
+
   return {
     analysis,
     loading,
@@ -226,5 +308,6 @@ export function createStatisticsState(client: RpcCapable): StatisticsState {
     toggleTurnExpand,
     isSelected,
     fetchAnalysis,
+    fetchReviewPrompt,
   };
 }

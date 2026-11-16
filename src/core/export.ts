@@ -13,6 +13,7 @@ import {
   timestampForFilename,
 } from "./format.ts";
 import { escapeHtml, safeStringify } from "./util.ts";
+import { buildReviewPrompt, buildSessionDigest } from "./digest.ts";
 import type {
   Analysis,
   EventIndexEntry,
@@ -29,9 +30,10 @@ export interface ExportInput {
   session: SessionMeta;
   analysis: Analysis;
   events: NormalizedEvent[];
-  format: "json" | "markdown" | "html";
+  format: "json" | "markdown" | "html" | "digest";
   includeEvents: boolean;
   redacted: boolean;
+  prompt?: boolean;
 }
 
 const GENERATOR = "opencode-session-observability/0.1.0";
@@ -55,6 +57,21 @@ export function exportSession(input: ExportInput): ExportResult {
       filename: `${base}.md`,
       mime: "text/markdown; charset=utf-8",
       content: exportMarkdown(input),
+      redacted: input.redacted,
+    };
+  }
+  if (input.format === "digest") {
+    const unredacted = !input.redacted;
+    const digest = buildSessionDigest({
+      session: input.session,
+      analysis: input.analysis,
+      unredacted,
+    });
+    const prompt = input.prompt === true;
+    return {
+      filename: `${base}-${prompt ? "review-prompt" : "digest"}.md`,
+      mime: "text/markdown; charset=utf-8",
+      content: prompt ? buildReviewPrompt(digest, { unredacted }) : digest,
       redacted: input.redacted,
     };
   }
