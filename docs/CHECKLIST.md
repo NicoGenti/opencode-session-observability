@@ -57,7 +57,7 @@ This checklist separates what is implemented, what is available from OpenCode 2,
 - [x] Recorded-by-OpenCode totals comparison.
 - [x] Keyboard shortcuts.
 - [x] Deep links (`#/s/<id>/<view>?event=…`).
-- [x] Export JSON/Markdown/HTML (redacted by default).
+- [x] Export JSON/Markdown/HTML (redacted by default), plus the deterministic LLM-review digest (`format=digest`, capped at 16,000 chars; the `prompt=true` variant adds ~1.2 KB of instructions) and the Advanced-mode copy actions.
 - [x] Secret redaction with explicit reveal.
 - [x] Responsive layout, dark/light, reduced-motion support.
 - [x] Virtualized event ledger, incremental paging, scroll preservation.
@@ -70,7 +70,7 @@ This checklist separates what is implemented, what is available from OpenCode 2,
 - [x] Local HTTP API + static UI; GET/HEAD only; strict CSP; loopback bind.
 - [x] Default-on access token with constant-time comparison and a per-port token file for the TUI.
 - [x] `--no-auth` loopback opt-out; non-loopback binds always require authentication.
-- [x] 305 automated tests across 34 files (current package).
+- [x] 368 automated tests across 37 files (current package).
 - [x] Read-only file hash test and write-rejection test.
 - [x] OpenCode SDK kept as a type-only devDependency; production and full audits clean (overrides pin patched `glob` and `minimatch`). Optional `@opentui/core`, `@opentui/solid` and `solid-js` are peer + dev only (no production deps), so `npm run audit:prod` stays at zero.
 - [x] Fixtures: simple, tools, subagents, retry/error, compaction, long paging, incomplete, out-of-order, secrets, empty.
@@ -134,6 +134,8 @@ This checklist separates what is implemented, what is available from OpenCode 2,
 | SQLite adapter, schema detection, read-only hash and write rejection | `test/adapter.test.ts` |
 | API source, filters, search, detail, list DTO, windows | `test/service.test.ts` |
 | Export formats and escaping | `test/export.test.ts` |
+| Digest and review prompt (determinism, truncation, sections, redaction) | `test/digest.test.ts` |
+| Digest copy helpers (URL, reveal warning, toast copy) | `test/ui-digest.test.ts` |
 | RPC contract and handlers | `test/plugin.test.ts` |
 | HTTP server endpoints/headers/redaction/export/errors | `test/server.test.ts` |
 | Access token, non-loopback guard, constant-time comparison | `test/auth.test.ts` |

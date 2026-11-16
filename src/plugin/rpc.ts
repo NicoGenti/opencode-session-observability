@@ -175,8 +175,9 @@ export const Observability = defineRpc({
         type: "object",
         properties: {
           sessionID: { type: "string" },
-          format: { type: "string", enum: ["json", "markdown", "html"] },
+          format: { type: "string", enum: ["json", "markdown", "html", "digest"] },
           includeEvents: { type: "boolean" },
+          prompt: { type: "boolean" },
           reveal: { type: "boolean" },
         },
         required: ["sessionID", "format"],

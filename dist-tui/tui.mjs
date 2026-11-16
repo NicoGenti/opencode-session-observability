@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -723,9 +723,31 @@ function basisMark(basis) {
 	if (basis === "estimated") return "E";
 	return "—";
 }
+function slugify(value, max = 60) {
+	return value.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, max).replace(/-+$/g, "") || "session";
+}
 var numberFormat;
 var init_format = __esmMin((() => {
 	numberFormat = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
+}));
+// src/plugin/tui/digestFile.ts
+/** Deterministic, sanitized path for one session's review prompt file. */
+function reviewPromptFilePath(tmpDir, sessionID) {
+	return join(tmpDir, `${FILE_PREFIX}-${slugify(sessionID)}${FILE_EXTENSION}`);
+}
+/** Writes (or overwrites) the prompt file through an injectable writer. */
+async function writeReviewPromptFile(path, content, write = writeUtf8) {
+	await write(path, content);
+}
+var FILE_PREFIX, FILE_EXTENSION, writeUtf8;
+var init_digestFile = __esmMin((() => {
+	init_format();
+	FILE_PREFIX = "opencode-observability-review";
+	FILE_EXTENSION = ".md";
+	writeUtf8 = (path, content) => writeFile(path, content, {
+		encoding: "utf8",
+		mode: 384
+	});
 }));
 // src/plugin/tui/statistics/status.ts
 function statusMark(status) {
@@ -1302,10 +1324,12 @@ var init_rpc = __esmMin((() => {
 							enum: [
 								"json",
 								"markdown",
-								"html"
+								"html",
+								"digest"
 							]
 						},
 						includeEvents: { type: "boolean" },
+						prompt: { type: "boolean" },
 						reveal: { type: "boolean" }
 					},
 					required: ["sessionID", "format"],
@@ -1333,6 +1357,10 @@ var init_rpc = __esmMin((() => {
 	});
 }));
 // src/plugin/tui/analysisResponse.ts
+/**
+* Whether a value is a plain object: the shared shape guard for payloads that
+* cross the RPC boundary.
+*/
 function isRecord(value) {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -1396,6 +1424,39 @@ function moveSelection(current, delta, count) {
 }
 function asMetric(value) {
 	return value ?? UNAVAILABLE;
+}
+/**
+* Validates an export response the same way `parseAnalysisResponse` validates
+* the analysis: the payload crosses the RPC boundary, so it can arrive as the
+* raw envelope (`{ output: … }`), the handler result (`{ filename, content, … }`)
+* or something unexpected. Messages stay short and never echo payload text.
+* The requested `sessionID` rides along so the caller can name the file after
+* the session the prompt was actually rendered for.
+*/
+function parseReviewPromptResponse(response, sessionID) {
+	let current = response;
+	for (let depth = 0; depth < 4; depth++) {
+		if (!isRecord(current)) break;
+		if (typeof current.filename === "string" && typeof current.content === "string") return {
+			ok: true,
+			sessionID,
+			filename: current.filename,
+			content: current.content
+		};
+		if ("output" in current) {
+			current = current.output;
+			continue;
+		}
+		if ("error" in current) return {
+			ok: false,
+			error: "The review prompt request returned an error."
+		};
+		break;
+	}
+	return {
+		ok: false,
+		error: "The review prompt response was not recognized."
+	};
 }
 function createStatisticsState(client) {
 	const rpc = client.rpc(Observability);
@@ -1488,6 +1549,25 @@ function createStatisticsState(client) {
 			if (ticket === request) setLoading(false);
 		}
 	}
+	async function fetchReviewPrompt() {
+		const target = sessionID().trim();
+		if (target.length === 0) return {
+			ok: false,
+			error: "No session is selected."
+		};
+		try {
+			return parseReviewPromptResponse(await rpc.export({
+				sessionID: target,
+				format: "digest",
+				prompt: true
+			}), target);
+		} catch {
+			return {
+				ok: false,
+				error: "The review prompt could not be generated."
+			};
+		}
+	}
 	return {
 		analysis,
 		loading,
@@ -1501,7 +1581,8 @@ function createStatisticsState(client) {
 		moveSelection: moveSelectionBy,
 		toggleTurnExpand,
 		isSelected,
-		fetchAnalysis
+		fetchAnalysis,
+		fetchReviewPrompt
 	};
 }
 var UNAVAILABLE;
@@ -1756,8 +1837,40 @@ function StatisticsPanel(props) {
 		toggleExpand: () => {
 			const turn = state.turns()[state.selectedIndex()];
 			if (turn) state.toggleTurnExpand(turn.id);
+		},
+		reviewPrompt: () => {
+			writeReviewPrompt();
 		}
 	};
+	/**
+	* Always redacted by construction: `fetchReviewPrompt` never sends `reveal`.
+	* The TUI host has no clipboard, so the prompt is delivered as one
+	* deterministic temp file and the toast carries its path.
+	*/
+	async function writeReviewPrompt() {
+		const outcome = await state.fetchReviewPrompt();
+		if (!outcome.ok) {
+			context.ui.toast.show({
+				message: outcome.error,
+				variant: "error"
+			});
+			return;
+		}
+		const path = reviewPromptFilePath(tmpdir(), outcome.sessionID);
+		try {
+			await writeReviewPromptFile(path, outcome.content);
+		} catch {
+			context.ui.toast.show({
+				message: "The review prompt file could not be written.",
+				variant: "error"
+			});
+			return;
+		}
+		context.ui.toast.show({
+			message: `Review prompt written to ${path}`,
+			variant: "success"
+		});
+	}
 	onMount(() => {
 		props.keyboard.handlers = keyboardHandlers;
 	});
@@ -1882,6 +1995,7 @@ var FALLBACK_FOREGROUND$1, FALLBACK_BACKGROUND$1;
 var init_StatisticsView = __esmMin((() => {
 	init_format();
 	init_tui();
+	init_digestFile();
 	init_columns();
 	init_status();
 	init_stepRows();
@@ -2446,6 +2560,15 @@ function panelKeymapCommands(active, close) {
 			bind: "return",
 			run: () => {
 				active()?.handlers?.toggleExpand();
+			}
+		},
+		{
+			id: "panel.reviewPrompt",
+			title: "Session panel: write the LLM review prompt to a file",
+			group: "Session panel",
+			bind: "d",
+			run: () => {
+				active()?.handlers?.reviewPrompt?.();
 			}
 		},
 		{

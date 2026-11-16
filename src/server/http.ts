@@ -467,10 +467,15 @@ export async function createObservabilityServer(
       if (match) {
         const sessionID = match[1]!;
         const formatRaw = (search.get("format") ?? "json").toLowerCase();
-        if (formatRaw !== "json" && formatRaw !== "markdown" && formatRaw !== "html") {
+        if (
+          formatRaw !== "json" &&
+          formatRaw !== "markdown" &&
+          formatRaw !== "html" &&
+          formatRaw !== "digest"
+        ) {
           sendJson(req, res, 400, {
             error: "invalid_format",
-            message: "format must be json, markdown or html",
+            message: "format must be json, markdown, html or digest",
           });
           return;
         }
@@ -478,6 +483,7 @@ export async function createObservabilityServer(
           format: formatRaw,
           reveal,
           includeEvents: search.get("includeEvents") !== "0",
+          prompt: bool(search, "prompt"),
         };
         const result = await service.export(sessionID, options);
         sendText(req, res, 200, result.content, result.mime, {

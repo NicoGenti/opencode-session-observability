@@ -486,9 +486,11 @@ export interface EventQuery extends EventFilter {
 }
 
 export interface ExportOptions {
-  format: "json" | "markdown" | "html";
+  format: "json" | "markdown" | "html" | "digest";
   reveal?: boolean;
   includeEvents?: boolean;
+  /** Prefix the digest with the LLM review instructions (`format: "digest"` only). */
+  prompt?: boolean;
 }
 
 export interface ExportResult {

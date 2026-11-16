@@ -1,11 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { join } from "node:path";
 
 import {
   clampIndex,
   createStatisticsState,
   moveSelection,
 } from "../src/plugin/tui/statistics/state.ts";
+import {
+  reviewPromptFilePath,
+  writeReviewPromptFile,
+} from "../src/plugin/tui/digestFile.ts";
 
 const SESSION = "ses_statistics";
 
@@ -13,21 +18,32 @@ type StatisticsRpcClient = Parameters<typeof createStatisticsState>[0];
 
 type Responder = (sessionID: string) => unknown;
 
-/** A fake SDK client whose RPC only answers `analysis`. */
-function fakeClient(respond: Responder): {
+type ExportResponder = (input: unknown) => unknown;
+
+/** A fake SDK client whose RPC answers `analysis` and `export`. */
+function fakeClient(
+  respond: Responder,
+  respondExport: ExportResponder = () => ({ output: {} }),
+): {
   readonly client: StatisticsRpcClient;
   readonly calls: string[];
+  readonly exports: unknown[];
 } {
   const calls: string[] = [];
+  const exports: unknown[] = [];
   const client = {
     rpc: () => ({
       analysis: async ({ sessionID }: { sessionID: string }) => {
         calls.push(sessionID);
         return respond(sessionID);
       },
+      export: async (input: unknown) => {
+        exports.push(input);
+        return respondExport(input);
+      },
     }),
   } as unknown as StatisticsRpcClient;
-  return { client, calls };
+  return { client, calls, exports };
 }
 
 /**
@@ -285,4 +301,109 @@ test("a stale response cannot overwrite a newer session (request ticket, F2)", a
     },
     settled,
   );
+});
+
+test("fetchReviewPrompt asks for a redacted digest prompt and returns its file surface", async () => {
+  const content =
+    "You are reviewing an OpenCode coding-agent session\n\n# Session digest — x";
+  const { client, exports } = fakeClient(
+    () => analysisBody(["t1"]),
+    () => ({
+      output: {
+        filename: "ses-statistics-review-prompt.md",
+        mime: "text/markdown; charset=utf-8",
+        content,
+        redacted: true,
+      },
+    }),
+  );
+  const state = createStatisticsState(client);
+  await state.fetchAnalysis(SESSION);
+
+  const outcome = await state.fetchReviewPrompt();
+
+  assert.deepEqual(outcome, {
+    ok: true,
+    sessionID: SESSION,
+    filename: "ses-statistics-review-prompt.md",
+    content,
+  });
+  assert.deepEqual(exports, [
+    { sessionID: SESSION, format: "digest", prompt: true },
+  ]);
+  assert.equal("reveal" in (exports[0] as object), false);
+});
+
+test("fetchReviewPrompt reports malformed and failed responses without throwing", async () => {
+  for (const response of [
+    { output: { nope: true } },
+    { error: { message: "boom" } },
+    "not an object",
+  ]) {
+    const { client } = fakeClient(
+      () => analysisBody(["t1"]),
+      () => response,
+    );
+    const state = createStatisticsState(client);
+    await state.fetchAnalysis(SESSION);
+
+    const outcome = await state.fetchReviewPrompt();
+
+    assert.equal(outcome.ok, false);
+    if (!outcome.ok) assert.ok(outcome.error.length > 0);
+  }
+
+  const { client } = fakeClient(
+    () => analysisBody(["t1"]),
+    () => {
+      throw new Error("rpc down");
+    },
+  );
+  const state = createStatisticsState(client);
+  await state.fetchAnalysis(SESSION);
+
+  const outcome = await state.fetchReviewPrompt();
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: "The review prompt could not be generated.",
+  });
+});
+
+test("fetchReviewPrompt refuses an unset session without reaching the RPC", async () => {
+  const { client, exports } = fakeClient(() => analysisBody(["t1"]));
+  const state = createStatisticsState(client);
+
+  const outcome = await state.fetchReviewPrompt();
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: "No session is selected.",
+  });
+  assert.deepEqual(exports, []);
+});
+
+test("reviewPromptFilePath is deterministic and sanitized", () => {
+  const path = reviewPromptFilePath("C:/tmp", "ses/../../Evil Session?!");
+  assert.equal(
+    path,
+    join("C:/tmp", "opencode-observability-review-ses-evil-session.md"),
+  );
+  assert.ok(!path.includes(".."));
+
+  const first = reviewPromptFilePath("C:/tmp", "ses_statistics");
+  const second = reviewPromptFilePath("C:/tmp", "ses_statistics");
+  assert.equal(first, second);
+  assert.equal(
+    first,
+    join("C:/tmp", "opencode-observability-review-ses-statistics.md"),
+  );
+});
+
+test("writeReviewPromptFile hands the path and content to the injected writer", async () => {
+  const writes: Array<readonly [string, string]> = [];
+  await writeReviewPromptFile("C:/tmp/prompt.md", "body", async (path, content) => {
+    writes.push([path, content]);
+  });
+  assert.deepEqual(writes, [["C:/tmp/prompt.md", "body"]]);
 });

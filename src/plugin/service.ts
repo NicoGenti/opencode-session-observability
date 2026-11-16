@@ -113,6 +113,7 @@ export function createRpcHandlers(
       service.export(input.sessionID, {
         format: input.format,
         includeEvents: input.includeEvents !== false,
+        prompt: input.prompt === true,
         reveal: revealOf(input),
       }),
   };

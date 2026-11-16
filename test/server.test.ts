@@ -276,12 +276,13 @@ test("HTTP redacts by default, reveals explicitly and can forbid reveal", async 
   );
 });
 
-test("HTTP exports JSON, Markdown and HTML as attachments", async () => {
+test("HTTP exports JSON, Markdown, HTML and digest as attachments", async () => {
   await withServer(simpleFixture(), async (base) => {
     for (const [format, mime] of [
       ["json", "application/json"],
       ["markdown", "text/markdown"],
       ["html", "text/html"],
+      ["digest", "text/markdown"],
     ]) {
       const response = await fetch(
         `${base}/api/sessions/ses_simple/export?format=${format}`,
@@ -292,13 +293,80 @@ test("HTTP exports JSON, Markdown and HTML as attachments", async () => {
         response.headers.get("content-disposition") ?? "",
         /attachment; filename=/,
       );
+      assert.equal(
+        response.headers.get("x-observability-redacted"),
+        "true",
+        `${format} must report redaction`,
+      );
       const body = await response.text();
       assert.ok(body.length > 100);
       if (format === "json") {
         assert.equal(JSON.parse(body).session.id, "ses_simple");
       }
+      if (format === "digest") {
+        assert.match(body, /^# Session digest — /);
+      }
     }
   });
+});
+
+test("HTTP serves the digest and review prompt with reveal parity", async () => {
+  await withServer(simpleFixture(), async (base) => {
+    const digest = await fetch(
+      `${base}/api/sessions/ses_simple/export?format=digest`,
+    );
+    assert.equal(digest.status, 200);
+    assert.match(digest.headers.get("content-type") ?? "", /^text\/markdown/);
+    assert.match(
+      digest.headers.get("content-disposition") ?? "",
+      /-digest\.md"$/,
+    );
+    const digestBody = await digest.text();
+    assert.match(digestBody, /^# Session digest — /);
+    assert.doesNotMatch(
+      digestBody,
+      /You are reviewing an OpenCode coding-agent session/,
+    );
+
+    const prompt = await fetch(
+      `${base}/api/sessions/ses_simple/export?format=digest&prompt=1`,
+    );
+    assert.equal(prompt.status, 200);
+    assert.match(prompt.headers.get("content-type") ?? "", /^text\/markdown/);
+    assert.match(
+      prompt.headers.get("content-disposition") ?? "",
+      /-review-prompt\.md"$/,
+    );
+    const promptBody = await prompt.text();
+    assert.match(
+      promptBody,
+      /^You are reviewing an OpenCode coding-agent session from its observability data\./,
+    );
+    assert.ok(promptBody.includes(`SESSION DIGEST:\n${digestBody}`));
+  });
+
+  await withServer(secretsFixture(), async (base) => {
+    const revealed = await fetch(
+      `${base}/api/sessions/ses_secrets/export?format=digest&reveal=1`,
+    );
+    assert.equal(revealed.status, 200);
+    assert.equal(revealed.headers.get("x-observability-redacted"), "false");
+    const body = await revealed.text();
+    assert.match(body, /^> UNREDACTED: /m);
+    assert.match(body, /sk-testvalue1234567890/);
+  });
+
+  await withServer(
+    secretsFixture(),
+    async (base) => {
+      const response = await fetch(
+        `${base}/api/sessions/ses_secrets/export?format=digest&reveal=1`,
+      );
+      assert.equal(response.status, 403);
+      assert.equal((await response.json() as any).error, "reveal_disabled");
+    },
+    false,
+  );
 });
 
 test("HTTP handles errors, HEAD and static assets", async () => {
@@ -311,6 +379,12 @@ test("HTTP handles errors, HEAD and static assets", async () => {
       `${base}/api/sessions/ses_simple/export?format=pdf`,
     );
     assert.equal(badFormat.status, 400);
+    const badFormatBody = (await badFormat.json()) as any;
+    assert.equal(badFormatBody.error, "invalid_format");
+    assert.equal(
+      badFormatBody.message,
+      "format must be json, markdown, html or digest",
+    );
 
     const post = await fetch(`${base}/api/health`, methods());
     assert.equal(post.status, 405);

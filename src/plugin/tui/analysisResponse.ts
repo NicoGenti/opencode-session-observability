@@ -13,7 +13,11 @@ export type AnalysisParseOutcome =
   | { readonly ok: true; readonly analysis: Analysis }
   | { readonly ok: false; readonly message: string };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+/**
+ * Whether a value is a plain object: the shared shape guard for payloads that
+ * cross the RPC boundary.
+ */
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 

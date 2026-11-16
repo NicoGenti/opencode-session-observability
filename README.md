@@ -23,10 +23,10 @@ The implementation is original and targets OpenCode 2.2.x. It was built against 
 | Normalization | Typed `NormalizedEvent` stream for every persisted message type and assistant content block |
 | Projection | Turns, steps, tool calls, subagents, compactions, non-step events, unattached events |
 | Metrics | Prompt/context tokens, cache hit rate, model/tool/residual/total time, output speed, cost, context deltas |
-| UI | Local browser app: Trajectory + Statistics, Basic/Advanced modes, OpenCode themes, project-grouped session tree, settings, filters, full-text search, detail drawer, copy, export |
-| Integration | OpenCode 2 server plugin with read-only RPC + TUI commands: native `/statistics` (alias `/stats`) and native `/trajectory`/`/observability` fullscreen panels, with `--web`/`-w`/`web` opening the browser, plus `/statistics:web` (alias `/stats:web`) |
-| Export | Self-contained HTML, Markdown and JSON |
-| Tests | 305 tests: parsing, projection, metrics, paging, scroll preservation, redaction, authentication, adapters, HTTP API, RPC, exports, settings/theme persistence, TUI routing seams, native panels, TUI columns/status helpers, plugin entry shape, read-only guarantees |
+| UI | Local browser app: Trajectory + Statistics, Basic/Advanced modes, OpenCode themes, project-grouped session tree, settings, filters, full-text search, detail drawer, copy, export, and Advanced-mode “Copy LLM review prompt” / “Copy raw session digest” actions |
+| Integration | OpenCode 2 server plugin with read-only RPC + TUI commands: native `/statistics` (alias `/stats`) and native `/trajectory`/`/observability` fullscreen panels, with `--web`/`-w`/`web` opening the browser, plus `/statistics:web` (alias `/stats:web`); the native Statistics panel’s `d` key writes the always-redacted LLM review prompt to a temp file and toasts its path |
+| Export | Self-contained HTML, Markdown and JSON, plus the deterministic LLM-review digest (`format=digest`, capped at 16,000 chars; `prompt=true` prepends about 1.2 KB of review instructions on top of that cap) |
+| Tests | 368 tests: parsing, projection, metrics, paging, scroll preservation, redaction, authentication, adapters, HTTP API, RPC, exports, the review digest, settings/theme persistence, TUI routing seams, native panels, TUI columns/status helpers, plugin entry shape, read-only guarantees |
 
 Screenshots of both views in dark and light mode (1440×900):
 
@@ -106,7 +106,7 @@ Other flags:
 Run the checks:
 
 ```bash
-npm run check       # typecheck + 305 tests (node:test)
+npm run check       # typecheck + 368 tests (node:test)
 npm run audit:prod  # production dependency audit (0 advisories)
 ```
 
@@ -219,6 +219,8 @@ Then in the OpenCode 2 TUI:
 
 The native panel ships precompiled: `npm run build:tui` produces the committed `dist-tui/tui.mjs`, which is the `import` target of `exports["./tui"]`. Node hosts load that ESM artifact, so the raw `.tsx` sources are never required at runtime (Bun-only raw-TypeScript loading is not relied on). Rebuild the artifact after any change under `src/plugin/tui/`; CI verifies it is fresh. `@opentui/*`, `solid-js` and `vite` are dev dependencies only — the package keeps zero runtime dependencies, as shown by the `exports` map in `package.json`.
 
+In the native Statistics panel, `d` writes the redacted LLM review prompt to a deterministic file under the system temp directory and toasts the path. The TUI exposes no clipboard API, so nothing is copied and no reveal plumbing exists there: the file is always redacted.
+
 ### RPC namespace
 
 `session-observability` exposes these methods (read-only):
@@ -231,7 +233,7 @@ The native panel ships precompiled: `npm run build:tui` produces the committed `
 | `analysis` | turns, steps, compactions, totals, event index |
 | `eventPage` | filtered/keyset-paged event rows |
 | `event` | one full event payload |
-| `export` | JSON / Markdown / HTML report |
+| `export` | JSON / Markdown / HTML report, plus the deterministic LLM-review digest (`format: "digest"`, `prompt: true` for the instructions + digest) |
 
 `reveal` defaults to `false`. The plugin option `allowReveal` also defaults to `false`; set it to `true` to permit reveal for RPC callers.
 
@@ -258,6 +260,7 @@ The native panel ships precompiled: `npm run build:tui` produces the committed `
 - Compactions are shown as distinct transactions with before/after context, removed tokens, summary size, compaction usage and cost. Duration is marked unavailable because OpenCode records only a compaction timestamp.
 - Click “Open in Trajectory” on a compaction or “Open step in Trajectory” on a step to jump to the exact event.
 - `Recorded by OpenCode` compares computed totals with the session-row totals.
+- Advanced mode adds two copy actions for review in an LLM of your choice: **Copy LLM review prompt** (review instructions plus the session digest) and **Copy raw session digest**. Both copy redacted text by default; with reveal active a confirmation is required first because the clipboard will then hold raw secrets. The app never calls an LLM provider — the text goes to your clipboard and nowhere else.
 
 ### Keyboard shortcuts
 
@@ -289,6 +292,8 @@ The Export menu downloads:
 - **HTML** — one self-contained report with no external assets.
 
 Exports are **redacted by default**. Turn on `Reveal secrets` (with confirmation) to export raw payloads. Reveal is disabled on the server unless it was started with `--reveal`.
+
+The same API also serves the deterministic LLM-review digest: `GET /api/sessions/{id}/export?format=digest` returns a Markdown digest capped at 16,000 characters, built from the normalized projection; `&prompt=1` prepends about 1.2 KB of review instructions on top of that cap. It contacts no LLM provider; the text is meant to be pasted into the tool of your choice. Determinism applies to the digest content — the same session and redaction settings render byte-identical text — not to the download filename, which carries the export timestamp.
 
 ---
 
@@ -387,7 +392,7 @@ src/
     tui.tsx             typed OpenTUI JSX sidecar (provide-only)
 test/
   fixtures/build.ts     synthetic OpenCode 2 fixtures
-  *.test.ts             305 tests
+  *.test.ts             368 tests
 docs/
   DATA-SOURCES.md
   ARCHITECTURE.md
@@ -401,11 +406,11 @@ docs/
 ## Testing
 
 ```bash
-npm run check       # typecheck + 305 tests
+npm run check       # typecheck + 368 tests
 npm run audit:prod  # production dependency audit
 ```
 
-The suite is at **305 tests** across **34 files** and grows with each new suite.
+The suite is at **368 tests** across **37 files** and grows with each new suite.
 
 The fixtures cover: a simple session, multiple tool calls (including parallel and error), subagents, retry + error, compaction, a long paging session, an incomplete/interrupted run, out-of-order timestamps, secrets, and an empty session. The HTTP tests start the real server on an ephemeral port against a synthetic SQLite database.
 
