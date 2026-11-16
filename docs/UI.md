@@ -120,6 +120,17 @@ The session total row always shows both final context and cumulative prompt, so 
 
 Adds non-step rows for expanded turns and an **Unattached events** section. These rows are visually muted and explicitly marked “not included in turn/step totals”. They include system/context notices, agent/model/location switches, retries, errors, compactions, synthetic/skill/shell events.
 
+### Charts
+
+Advanced statistics also offers a **Table / Charts** sub-tab; Basic has no chart control, and the sub-tab is renderer state rather than a route. Charts draws four sections over the same `state.analysis` the table renders, with no extra fetch and no re-paging, so every section caption repeats the analysis scope (**Session total** or **Window total** plus the `coverage` sequence range). Filters refine the Trajectory ledger only; Statistics and Charts always show the loaded session analysis, and the caption says which.
+
+- **Context growth** — one point per turn, following the **Context basis** selector (Latest or Cumulative). A missing context metric leaves a gap in the line, never a zero dip, and is drawn as a dashed unavailable tick; the section counts the gaps. Each compaction is a dashed vertical marker labelled `Compaction N`, placed on its recorded turn, or on the last turn that started before it when no turn was recorded; a compaction whose recorded turn is not in the loaded analysis cannot be placed and is counted in the section instead of being drawn onto a turn.
+- **Token usage** — one stacked bar per turn with five segments: input, cache read, cache write, reasoning, output. A turn with `tokensComplete: false` is drawn with a dashed outline and says "partial: recorded subset only"; the recorded values are never padded. A turn whose steps recorded no usage at all is a dashed "Not recorded" slot, never a zero bar marked measured.
+- **Cost** — one bar per turn, grouped and coloured by the model derived from that turn's steps (provider only where a step recorded one), with the axis labelled in USD. The highest available cost carries the text mark **Highest cost**, and tied turns are all marked, so colour never carries the ranking alone; an all-zero session marks nothing.
+- **Step duration** — one stacked bar per step (`<turn>.<step>`) with model, tool and residual time. A segment that was not recorded is omitted rather than zero-filled; a step with none of the three draws a dashed "Not recorded" slot.
+
+The chart is one `role="img"` graphic with a single chart-level label, so its datums are mouse targets: each carries a `<title>` and a label with its value and provenance mark (`M`, `D`, `E`, `—`), and clicking one opens the matching turn, step or compaction event in Trajectory through the existing event-jump path. A datum without a recorded anchor is not clickable and its label says "no event to open". The keyboard path is each section's **Chart data** `<details>` list: its buttons carry the same values and drill targets, so a screen reader user never depends on the graphic. The basis legend, **Diagnostics** and **Compactions** sections stay below the charts pane.
+
 ### Diagnostics
 
 Both statistics renderers place a **Diagnostics** section above **Compactions**, using the same card body as the Trajectory strip. Basic and Advanced render byte-identical cards because they share one renderer and one `analysis.diagnostics` source.

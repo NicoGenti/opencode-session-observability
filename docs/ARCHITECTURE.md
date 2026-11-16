@@ -166,6 +166,9 @@ Redaction parity: diagnostics are plain DTO fields, so `redactValue(analysis).di
 - `ui/auth.js` consumes the fragment token, stores it per tab and adds the request header.
 - `ui/virtual.js` is a variable-height virtual list. Only visible rows (plus overscan) are in the DOM.
 - Statistics uses one `<tbody>` per turn with `content-visibility: auto` and an expandable step detail row.
+- Advanced Statistics adds a Table / Charts sub-tab. The sub-tab is renderer state, not a route; the charts project the same `state.analysis` the table renders, with no extra fetch and no re-paging.
+- `ui/charts-data.js` turns that analysis into chart series: per-turn context (latest or cumulative), five-segment token stacks, cost grouped by the model derived from steps, per-step duration segments, compaction placement, and the window-scope caption. It is pure, has no DOM, and imports only `ui/format.js`.
+- `ui/charts.js` holds the DOM-free SVG string builders for the four charts: token-only paint, a `<title>` and accessible label per datum, optional drill attributes, and the "Chart data" button list that the existing statistics binding loops route to `jumpToEvent`. It imports only `ui/format.js`; both modules are plain browser ESM with no `src/core` import and no build step.
 - `ui/markdown.js` renders a safe Markdown subset (raw HTML is escaped first).
 - Scroll preservation is a pure helper (`core/paging.ts`, mirrored in `ui/paging.js`) and is tested.
 

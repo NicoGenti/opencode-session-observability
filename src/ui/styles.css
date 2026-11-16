@@ -753,3 +753,47 @@ body[data-view-mode="basic"] .advanced-only { display: none !important; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
 }
+
+/* ---------------------------------------------------------------- charts */
+
+.charts-pane { display: flex; flex-direction: column; gap: 18px; }
+.chart-section {
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+  padding: 12px 14px 10px;
+}
+.chart-section-head {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; margin-bottom: 8px;
+}
+.chart-title { margin: 0; font-size: 13px; font-weight: 650; }
+.chart-caption { color: var(--muted); font-size: 11.5px; }
+.chart-scroll { overflow-x: auto; }
+.chart-svg { display: block; width: 100%; min-width: 560px; height: auto; }
+.chart-grid { stroke-width: 1; }
+.chart-axis-label { font-size: 10px; font-variant-numeric: tabular-nums; }
+.chart-marker line { stroke-dasharray: 4 4; }
+.chart-marker-label { font-size: 10px; }
+.chart-highest { font-size: 10px; font-weight: 600; }
+.chart-unavailable-label { font-size: 9px; }
+.chart-datum-link { cursor: pointer; }
+.chart-datum-link:hover { opacity: 0.82; }
+.chart-legend {
+  display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px;
+  color: var(--muted); font-size: 11px;
+}
+.chart-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.chart-swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+.chart-note { margin: 8px 0 0; color: var(--text-2); font-size: 11.5px; }
+.chart-empty { margin: 0; padding: 10px 2px; color: var(--muted); font-size: 12px; }
+.chart-data { margin-top: 10px; color: var(--text-2); font-size: 11.5px; }
+.chart-data summary { cursor: pointer; color: var(--muted); }
+.chart-data ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.chart-data-row {
+  display: flex; gap: 10px; width: 100%; text-align: left; border: 0; background: transparent;
+  padding: 3px 4px; border-radius: 4px; color: inherit;
+}
+.chart-data-row:hover { background: var(--surface-2); }
+.chart-data-label { flex: none; min-width: 90px; color: var(--text-2); }
+.chart-data-value { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .chart-data-label { min-width: 64px; }
+}
