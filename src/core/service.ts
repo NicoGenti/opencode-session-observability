@@ -2,6 +2,7 @@ import { eventSearchCorpus, normalizeMessages } from "./normalize.ts";
 import { projectSession } from "./project.ts";
 import { promptTokensMetric } from "./metrics.ts";
 import { evaluateDiagnostics } from "./diagnostics.ts";
+import { evaluateSessionHealth } from "./health.ts";
 import { redactValue, truncate } from "./util.ts";
 import { exportSession } from "./export.ts";
 import { listDiagnosticEpisodes } from "./episodes.ts";
@@ -239,6 +240,10 @@ export class ObservabilityService {
     if (diagnostics.incidents.length > 0) {
       analysis.diagnostics = diagnostics;
     }
+    // Session health is attached unconditionally, immediately after
+    // diagnostics because the tool-failure rule reads them. Computing it here
+    // means every downstream path reads one cached, redaction-safe object.
+    analysis.health = evaluateSessionHealth(analysis);
     const dataset: Dataset = {
       session,
       family,

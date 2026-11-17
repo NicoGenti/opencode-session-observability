@@ -8,6 +8,7 @@
  */
 
 import type { Diagnostics } from "./diagnostics.ts";
+import type { SessionHealth } from "./health.ts";
 
 export type Basis = "measured" | "derived" | "estimated" | "unavailable";
 
@@ -437,6 +438,11 @@ export interface Analysis {
    * analysis payloads produced before diagnostics existed stay valid.
    */
   diagnostics?: Diagnostics;
+  /**
+   * Deterministic session health over the same analysis. Optional so
+   * payloads produced before the evaluator existed stay valid.
+   */
+  health?: SessionHealth;
 }
 
 export interface EventPage {

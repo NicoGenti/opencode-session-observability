@@ -2164,7 +2164,7 @@ function compareInputs(left, right) {
 		overlap
 	};
 }
-function formatRatio(value) {
+function formatRatio$1(value) {
 	return Number.isFinite(value) ? value.toFixed(2) : "0.00";
 }
 function comparabilityReason(state, source) {
@@ -2238,10 +2238,10 @@ function buildIncident(run, success, events, turnByEventId) {
 		why = `${prefix}; ${comparabilityReason(badState, badFailure !== null ? "failure" : "success")}; input comparison is undetermined`;
 	} else if (successTool && (similarity === "identical" || similarity === "related")) {
 		recovery = "recovered";
-		why = similarity === "identical" ? `${prefix}; a later ${run.tool} call succeeded with identical input (canonical JSON equality)` : `${prefix}; a later ${run.tool} call succeeded with related input (key-shape overlap ${formatRatio(overlap ?? 0)} >= 0.50)`;
+		why = similarity === "identical" ? `${prefix}; a later ${run.tool} call succeeded with identical input (canonical JSON equality)` : `${prefix}; a later ${run.tool} call succeeded with related input (key-shape overlap ${formatRatio$1(overlap ?? 0)} >= 0.50)`;
 	} else if (after.success || after.assistantStep) {
 		recovery = "possible-recovery";
-		why = successTool !== null && similarity === "different" ? `${prefix}; a later ${run.tool} call succeeded but with a different input shape (key-shape overlap ${formatRatio(overlap ?? 0)} < 0.50)` : after.success ? `${prefix}; no matching ${run.tool} success, but a later successful tool call${after.successTool ? ` (${after.successTool})` : ""} followed` : `${prefix}; no matching ${run.tool} success, but the turn continued with a subsequent assistant step`;
+		why = successTool !== null && similarity === "different" ? `${prefix}; a later ${run.tool} call succeeded but with a different input shape (key-shape overlap ${formatRatio$1(overlap ?? 0)} < 0.50)` : after.success ? `${prefix}; no matching ${run.tool} success, but a later successful tool call${after.successTool ? ` (${after.successTool})` : ""} followed` : `${prefix}; no matching ${run.tool} success, but the turn continued with a subsequent assistant step`;
 	} else {
 		recovery = "no-recovery-evidence";
 		why = `${prefix}; no same-tool success and no later successful call or subsequent step before the turn ended`;
@@ -2398,6 +2398,238 @@ function evaluateDiagnostics(events, analysis) {
 	return {
 		incidents,
 		summary: summarize(incidents, excludedTurnlessToolEvents)
+	};
+}
+/**
+* The user-approved thresholds of 2026-11-17. Frozen so tests, the UI and the
+* documentation all assert against the same source.
+*/
+var HEALTH_RULES = Object.freeze({
+	errorRate: Object.freeze({
+		watchRate: .25,
+		watchErrors: 4,
+		strongRate: .6,
+		strongErrors: 6
+	}),
+	retryCount: Object.freeze({
+		watch: 8,
+		strong: 15
+	}),
+	toolFailureRecurrence: Object.freeze({
+		watchIncidents: 4,
+		strongIncidents: 7,
+		watchMaxAttempts: 5,
+		strongMaxAttempts: 9
+	}),
+	contextGrowth: Object.freeze({
+		watchRun: 5,
+		strongRun: 8,
+		watchFinalContext: 15e4,
+		strongFinalContext: 25e4
+	}),
+	costPerTurn: Object.freeze({
+		watch: 2,
+		strong: 10
+	}),
+	lowCacheHit: Object.freeze({
+		lowBelow: .2,
+		watchLowTurns: 5,
+		strongLowTurns: 9,
+		watchShare: .6,
+		strongShare: .8
+	}),
+	maxEventLinks: 10,
+	maxTurnLinks: 6
+});
+function formatRatio(value) {
+	return Number.isFinite(value) ? value.toFixed(2) : "0.00";
+}
+function levelFor(watch, strong) {
+	if (strong) return "strong";
+	if (watch) return "watch";
+	return null;
+}
+function rule(id, label, level, evaluable, note, eventIDs = [], turnIDs = []) {
+	return {
+		id,
+		label,
+		triggered: level !== null,
+		level,
+		evaluable,
+		note,
+		eventIDs: capIDs(eventIDs, 10),
+		turnIDs: capIDs(turnIDs, 6)
+	};
+}
+/** Deduplicates, drops empty ids and caps the list in recorded order. */
+function capIDs(ids, limit) {
+	const out = [];
+	const seen = /* @__PURE__ */ new Set();
+	for (const id of ids) {
+		if (typeof id !== "string" || id.length === 0 || seen.has(id)) continue;
+		seen.add(id);
+		out.push(id);
+		if (out.length >= limit) break;
+	}
+	return out;
+}
+/** `totals.errors.total / totals.steps`; steps are the work denominator. */
+function errorRateRule(analysis) {
+	const { errors, steps } = analysis.totals;
+	const threshold = HEALTH_RULES.errorRate;
+	if (steps === 0) return rule("error-rate", "Error rate", null, false, "no steps were recorded");
+	const rate = errors.total / steps;
+	const level = levelFor(rate >= threshold.watchRate && errors.total >= threshold.watchErrors, rate >= threshold.strongRate && errors.total >= threshold.strongErrors);
+	const eventIDs = analysis.events.filter((event) => event.flags.error).map((event) => event.id);
+	return rule("error-rate", "Error rate", level, true, `${errors.total} error(s) across ${steps} step(s); rate ${formatRatio(rate)}`, eventIDs);
+}
+function retryCountRule(analysis) {
+	const threshold = HEALTH_RULES.retryCount;
+	const retries = analysis.totals.retries;
+	const level = levelFor(retries >= threshold.watch, retries >= threshold.strong);
+	const eventIDs = analysis.events.filter((event) => event.kind === "retry").map((event) => event.id);
+	return rule("retry-count", "Retry count", level, true, `${retries} retry event(s) recorded`, eventIDs);
+}
+/** Reads the diagnostics attached to the same analysis. */
+function toolFailureRecurrenceRule(analysis) {
+	const threshold = HEALTH_RULES.toolFailureRecurrence;
+	const incidents = analysis.diagnostics?.incidents ?? [];
+	let maxAttempts = 0;
+	for (const incident of incidents) if (incident.attempts > maxAttempts) maxAttempts = incident.attempts;
+	const level = levelFor(incidents.length >= threshold.watchIncidents || maxAttempts >= threshold.watchMaxAttempts, incidents.length >= threshold.strongIncidents || maxAttempts >= threshold.strongMaxAttempts);
+	const eventIDs = incidents.map((incident) => incident.firstFailureEventID);
+	return rule("tool-failure-recurrence", "Tool-failure recurrence", level, true, `${incidents.length} incident(s) recorded; max ${maxAttempts} attempt(s) in one run`, eventIDs);
+}
+/**
+* A compaction recorded inside the run's span ends the run. A turn that owns
+* the compaction is included in the run that it terminates; a compaction
+* recorded between two turns ends the run at the preceding turn.
+*/
+function compactionBreaks(previous, next, compactions) {
+	const previousEnd = previous.endTime ?? previous.startTime;
+	const nextEnd = next.endTime ?? next.startTime;
+	return compactions.some((item) => {
+		if (item.turnID === previous.id || item.turnID === next.id) return true;
+		return item.timestamp > previousEnd && item.timestamp <= nextEnd;
+	});
+}
+/** Longest run of consecutive turns whose context delta is positive. */
+function longestGrowthRun(analysis) {
+	const runs = [];
+	let current = [];
+	const flush = () => {
+		if (current.length > 0) runs.push(current);
+		current = [];
+	};
+	for (const turn of analysis.turns) {
+		const delta = turn.contextDelta.value;
+		if (delta === null || delta <= 0) {
+			flush();
+			continue;
+		}
+		if (current.length > 0) {
+			const previous = current[current.length - 1];
+			if (compactionBreaks(previous, turn, analysis.compactions)) flush();
+		}
+		current.push(turn);
+		if (analysis.compactions.some((item) => item.turnID === turn.id)) flush();
+	}
+	flush();
+	let best = null;
+	for (const run of runs) if (best === null || run.length > best.length) best = run;
+	if (best === null) return null;
+	return {
+		first: best[0],
+		last: best[best.length - 1],
+		length: best.length
+	};
+}
+function contextGrowthRule(analysis) {
+	const threshold = HEALTH_RULES.contextGrowth;
+	const available = analysis.turns.filter((turn) => turn.contextDelta.value !== null).length;
+	if (available < 2) return rule("context-growth", "Context growth", null, false, `${available} turn(s) recorded a context delta; at least 2 are required`);
+	const finalContext = analysis.totals.finalContext.value;
+	if (finalContext === null) return rule("context-growth", "Context growth", null, false, "final context size was not recorded");
+	const run = longestGrowthRun(analysis);
+	const length = run?.length ?? 0;
+	const level = levelFor(length >= threshold.watchRun && finalContext >= threshold.watchFinalContext, length >= threshold.strongRun && finalContext >= threshold.strongFinalContext);
+	const turnIDs = run ? [run.first.id, run.last.id] : [];
+	return rule("context-growth", "Context growth", level, true, `longest growth run ${length} turn(s); final context ${finalContext}`, [], turnIDs);
+}
+/** Highest-cost turns, descending, ties resolved by recorded order. */
+function costliestTurns(turns, limit) {
+	return [...turns].filter((turn) => turn.cost.value !== null).sort((left, right) => (right.cost.value ?? 0) - (left.cost.value ?? 0) || left.index - right.index).slice(0, limit).map((turn) => turn.id);
+}
+function costPerTurnRule(analysis) {
+	const threshold = HEALTH_RULES.costPerTurn;
+	const cost = analysis.totals.cost;
+	const turns = analysis.totals.turns;
+	if (cost.value === null) return rule("cost-per-turn", "Cost per turn", null, false, "cost was not recorded");
+	if (turns < 2) return rule("cost-per-turn", "Cost per turn", null, false, `${turns} turn(s) recorded; at least 2 are required`);
+	const perTurn = cost.value / turns;
+	return rule("cost-per-turn", "Cost per turn", levelFor(perTurn >= threshold.watch, perTurn >= threshold.strong), true, `$${perTurn.toFixed(2)} per turn across ${turns} turn(s)`, [], costliestTurns(analysis.turns, 3));
+}
+function lowCacheHitRule(analysis) {
+	const threshold = HEALTH_RULES.lowCacheHit;
+	const available = analysis.turns.filter((turn) => turn.cacheHitRate.value !== null);
+	if (available.length === 0) return rule("low-cache-hit", "Low cache hit rate", null, false, "no turn recorded a cache hit rate");
+	const low = available.filter((turn) => (turn.cacheHitRate.value ?? 0) < threshold.lowBelow);
+	const share = low.length / available.length;
+	return rule("low-cache-hit", "Low cache hit rate", levelFor(low.length >= threshold.watchLowTurns && share >= threshold.watchShare, low.length >= threshold.strongLowTurns && share >= threshold.strongShare), true, `${low.length} of ${available.length} turn(s) below a ${threshold.lowBelow.toFixed(2)} cache hit rate`, [], low.map((turn) => turn.id));
+}
+/**
+* `running` is explicitly not a trigger: an in-flight session is not
+* unhealthy. Only a recorded interrupt, failure or incomplete tail counts.
+*/
+function unfinishedOutcomeRule(analysis) {
+	const last = analysis.turns[analysis.turns.length - 1] ?? null;
+	const outcome = analysis.session.outcome ?? null;
+	const lastStatus = last?.status ?? null;
+	const level = levelFor(outcome === "interrupted" || lastStatus === "interrupted" || lastStatus === "incomplete", outcome === "failed" || lastStatus === "error");
+	const anchor = last ? last.trigger.eventID ?? last.eventIDs[0] ?? null : null;
+	const idleFailures = analysis.events.filter((event) => event.kind === "idle" && (event.status === "failed" || event.status === "interrupted")).map((event) => event.id);
+	const eventIDs = anchor === null ? idleFailures : [anchor, ...idleFailures];
+	return rule("unfinished-outcome", "Unfinished outcome", level, true, `session outcome: ${outcome ?? "not recorded"}; last turn status: ${lastStatus ?? "no turns"}`, eventIDs);
+}
+/** The sufficiency gate: none of these may claim a healthy session. */
+function insufficiencyReasons(analysis) {
+	const reasons = [];
+	if (analysis.totals.turns === 0) reasons.push("no turns were recorded");
+	if (!analysis.coverage.complete) reasons.push("the analysis covers a window, not the full session");
+	if (!analysis.capabilities.tokenUsage && !analysis.capabilities.cost) reasons.push("neither token usage nor cost was recorded");
+	return reasons;
+}
+/**
+* Primary entry point. Pure, deterministic and local.
+*
+* State mapping (one documented rule): insufficiency forces `watch` (never
+* `healthy`); otherwise any strong trigger or at least two watch triggers is
+* `degraded`; exactly one watch trigger is `watch`; nothing is `healthy`.
+* Recorded evidence may escalate an insufficient session to `degraded` — only
+* the `healthy` claim is blocked.
+*/
+function evaluateSessionHealth(analysis) {
+	const rules = [
+		errorRateRule(analysis),
+		retryCountRule(analysis),
+		toolFailureRecurrenceRule(analysis),
+		contextGrowthRule(analysis),
+		costPerTurnRule(analysis),
+		lowCacheHitRule(analysis),
+		unfinishedOutcomeRule(analysis)
+	];
+	let watch = 0;
+	let strong = 0;
+	for (const item of rules) if (item.level === "strong") strong += 1;
+	else if (item.level === "watch") watch += 1;
+	const insufficientReasons = insufficiencyReasons(analysis);
+	const insufficient = insufficientReasons.length > 0;
+	return {
+		state: strong > 0 || watch >= 2 ? "degraded" : insufficient || watch === 1 ? "watch" : "healthy",
+		insufficient,
+		insufficientReasons,
+		rules,
+		triggeredCount: watch + strong
 	};
 }
 // src/core/format.ts
@@ -4221,6 +4453,7 @@ var ObservabilityService = class {
 		}));
 		const diagnostics = evaluateDiagnostics(assignedEvents, analysis);
 		if (diagnostics.incidents.length > 0) analysis.diagnostics = diagnostics;
+		analysis.health = evaluateSessionHealth(analysis);
 		const dataset = {
 			session,
 			family,
