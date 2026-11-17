@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn as spawnProcess } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -28,6 +28,22 @@ import {
 
 const FALSY_ENV = ["0", "false", "no", "off"] as const;
 const TRUTHY_ENV = ["1", "true", "yes", "on"] as const;
+
+/**
+ * Node 22's `node --test` cancels a test whose awaited promise is settled only
+ * by an unref'd timer — "Promise resolution is still pending but the event loop
+ * has already resolved" — and the cancellation takes the rest of the file with
+ * it. `delay()` in `tui-warmup.ts` unrefs its warm-up timers on purpose, so a
+ * wait never holds the host process open; in the TUI the host's own handles
+ * keep the loop alive, while this file would have none. Hold one ref'd timer
+ * for the duration of the file (cleared when it finishes, and self-expiring so
+ * a broken run can still exit) instead of changing that production behavior.
+ * Node 24 keeps the loop alive for pending tests by itself, so this is inert
+ * there.
+ */
+const keepAlive = setTimeout(() => {}, 120_000);
+after(() => clearTimeout(keepAlive));
+
 
 test("autoStartEnabled: default is on when neither knob nor env says otherwise", () => {
   assert.equal(autoStartEnabled(undefined, undefined), true);
