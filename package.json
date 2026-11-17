@@ -36,6 +36,9 @@
     "opencode.jsonc.example",
     "cli.json.example"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "start": "node src/server/index.ts",
     "serve": "node src/server/index.ts",
@@ -45,6 +48,7 @@
     "check": "npm run typecheck && npm run typecheck:tui && npm test",
     "build:tui": "vite build --config vite.tui.config.ts",
     "build:server": "vite build --config vite.server.config.ts",
+    "prepublishOnly": "npm run check && npm run build:tui && npm run build:server",
     "audit:prod": "npm audit --omit=dev --audit-level=high"
   },
   "devDependencies": {
