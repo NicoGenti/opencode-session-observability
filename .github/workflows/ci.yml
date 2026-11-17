@@ -8,19 +8,33 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['22', '24']
+    name: "check (Node ${{ matrix.node-version }})"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
-      - run: npm run check
+      # node:sqlite needs no flag from Node 22.13.0; the 22 leg sets it anyway
+      # and the 24 leg gets an empty NODE_OPTIONS.
+      - name: Check (typecheck + tests)
+        run: npm run check
+        env:
+          NODE_OPTIONS: "${{ matrix.node-version == '22' && '--experimental-sqlite' || '' }}"
       - name: Verify TUI artifact fresh
         run: |
           npm run build:tui
           git diff --exit-code -- dist-tui/tui.mjs
+        env:
+          NODE_OPTIONS: "${{ matrix.node-version == '22' && '--experimental-sqlite' || '' }}"
       - name: Verify server artifact fresh
         run: |
           npm run build:server
           git diff --exit-code -- dist-server/server.mjs
+        env:
+          NODE_OPTIONS: "${{ matrix.node-version == '22' && '--experimental-sqlite' || '' }}"
