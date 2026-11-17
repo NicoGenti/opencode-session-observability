@@ -14,8 +14,8 @@
   "exports": {
     ".": "./src/plugin/index.ts",
     "./tui": {
-      "import": "./dist-tui/tui.mjs",
       "types": "./src/plugin/tui.ts",
+      "import": "./dist-tui/tui.mjs",
       "require": "./dist-tui/tui.mjs",
       "default": "./dist-tui/tui.mjs"
     },
@@ -30,7 +30,12 @@
     "src",
     "dist-tui",
     "dist-server",
-    "docs",
+    "docs/ARCHITECTURE.md",
+    "docs/CHECKLIST.md",
+    "docs/DATA-SOURCES.md",
+    "docs/HEALTH.md",
+    "docs/METRICS.md",
+    "docs/UI.md",
     "README.md",
     "LICENSE",
     "opencode.jsonc.example",
@@ -49,6 +54,9 @@
     "build:tui": "vite build --config vite.tui.config.ts",
     "build:server": "vite build --config vite.server.config.ts",
     "prepublishOnly": "npm run check && npm run build:tui && npm run build:server",
+    "pack:check": "node scripts/check-pack.mjs",
+    "release:gate": "npm run check && npm run build:tui && npm run build:server && npm run pack:check",
+    "lint:package": "publint",
     "audit:prod": "npm audit --omit=dev --audit-level=high"
   },
   "devDependencies": {
@@ -58,6 +66,7 @@
     "@opentui/core": "0.8.3",
     "@opentui/solid": "0.8.3",
     "@types/node": "^26.6.6",
+    "publint": "0.3.25",
     "solid-js": "1.9.18",
     "typescript": "^7.0.2",
     "vite": "8.3.6",
