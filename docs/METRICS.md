@@ -195,6 +195,47 @@ A `compaction` message is a transaction, not a step.
 
 Compaction tokens are included in **session** totals and shown as a separate breakdown. They are excluded from turn/step totals. The transaction card labels this explicitly.
 
+## Advanced chart series (web, Advanced mode only)
+
+Charts are projected from the already-loaded `Analysis`: no extra fetch and no re-paging. Missing metrics stay `null` and are never zero-filled (`src/ui/charts-data.js`); the series below state which are measured, derived, estimated or unavailable.
+
+### Context growth chart — `D`
+
+- Series: per turn, `turn.promptTokensLatest` (Context basis **Latest**) or `turn.promptTokensCumulative` (Context basis **Cumulative**). Basis mark copied from the underlying metric (`derived`), or `unavailable` when null.
+- Missing context leaves a gap in the polyline (a null point), never a zero dip; the section counts the gaps as `unavailableCount`.
+- `Compaction N` markers: one dashed vertical marker per compaction, placed on the turn index resolved from `compaction.turnID` (authoritative; a recorded id that does not resolve to a loaded turn makes the marker unplaceable). Only a compaction with no recorded turn id falls back to the last turn whose start time is at or before the compaction timestamp. `removedTokens` is carried as a metric point. Unplaceable compactions are counted in `unplaced` and never synthesized onto a turn.
+
+### Token usage chart — `M` (stacked, five segments)
+
+- Segments per turn, all taken from `turn.tokens`: input, cache read, cache write, reasoning, output. Each is a recorded counter (`M`), not a derived value; totals stay aggregations (`D`).
+- Recorded counts are never padded into a measured record: a missing counter is coerced to `0` only for layout, while the turn's `basis` stays `unavailable` whenever any segment is incomplete or absent, so an incomplete or missing record is never painted as a zero bar marked measured.
+- A turn with `tokensComplete === false` keeps its recorded subset with `partial: true` (dashed outline, "partial: recorded subset only"); its basis becomes `unavailable` unless every step recorded usage.
+- A turn whose steps recorded no usage at all is an unavailable point (dashed "Not recorded" slot), never a zero bar marked measured. A recorded count of `0` is a valid value and is kept.
+
+### Cost chart — `D`
+
+- One bar per turn from `turn.cost.value` (`null` when unavailable), with the derived model key from the last step that recorded a model; the provider label is reported only when that step recorded one — no model-to-provider inference.
+- Highest-cost emphasis: the maximum available cost strictly above zero, with every tied turn index listed, so colour never carries the ranking alone. An all-zero session marks nothing.
+
+### Step duration chart — `D`
+
+- One stacked bar per step (`<turn>.<step>`) from `step.modelTime`, `step.toolTime` and `step.residualTime`. A missing segment is omitted rather than zero-filled.
+- A step with none of the three recorded is unavailable (dashed "Not recorded" slot).
+- Chart values keep the same provenance marks as the table (M measured, D derived, E estimated, — unavailable).
+
+### Availability summary
+
+| Chart series | Basis | Unavailable handling |
+|---|---|---|
+| Context growth point | derived | null → gap plus dashed unavailable tick; counted |
+| Token usage segment | measured (recorded counter) | incomplete turn → dashed outline, recorded subset only; no usage → "Not recorded" slot |
+| Cost bar | derived | null → counted unavailable; all-zero marks nothing |
+| Step duration segment | derived | missing segment omitted; none recorded → "Not recorded" slot |
+
+### Session health
+
+Health is a derived signal computed from the already-produced `Analysis`; it carries no numeric score. Its state is one of `healthy` / `watch` / `degraded`, with a sufficiency gate that prevents a `healthy` claim when data is missing or the analysis is windowed. All seven rules, thresholds, caps, drill targets and the tuning policy are documented in [HEALTH.md](HEALTH.md) (linked, not duplicated here).
+
 ## Session vs window totals
 
 - `Session total` — coverage includes the full message range (`fromSeq <= minSeq && toSeq >= maxSeq`).

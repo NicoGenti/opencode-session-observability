@@ -96,6 +96,8 @@ Each card shows the tool, a recovery badge, `Turn N`, the projected trigger, **O
 
 One row per turn. The first click expands steps; clicking a step expands its detail row. Expanded step rows use the same column meanings as turns; nested step counts and per-step context delta are unavailable and marked `—`.
 
+Advanced-only (web app, Advanced view): the **Table / Charts** segmented control and all four charts, the **Session health** badge and rules breakdown, and the **Copy LLM review prompt** / **Copy raw session digest** buttons. Basic mode renders the turn table, headline filters and diagnostics but none of those surfaces; `renderStatisticsBasic()` carries no health markup. Charts and health live in the browser Statistics view only; the native TUI panel stays at the dense turn table.
+
 ### Turn columns
 
 `#`, trigger, start → end, duration, model, provider (sublabel), steps, input/output/reasoning tokens, cache read/write, hit rate, context (latest or cumulative), Δ context, model time, tool time, residual, output speed, cost, status.
@@ -138,6 +140,17 @@ Advanced Statistics only: a **Session health** badge sits in the statistics tool
 Insufficient sessions show their sufficiency reasons at the top of the breakdown (`no turns were recorded`, windowed coverage, or neither token usage nor cost recorded). The badge `title`/`aria-label` and the breakdown header carry the standing copy "Derived signal from recorded observability data — not a quality judgment." and the footer repeats it. No numeric score is computed, stored or displayed, and the word "score" never appears. The Basic renderer and `renderStatisticsBasic()` contain no health markup.
 
 Rules, thresholds, the sufficiency gate and the state mapping are documented in full in [HEALTH.md](HEALTH.md); the UI mirrors the same rule ids and thresholds.
+
+### Advanced copy actions (LLM review handoff)
+
+Advanced Statistics only, web app. Two buttons sit in the statistics toolbar:
+
+- **Copy LLM review prompt** — same-origin `GET /api/sessions/{id}/export?format=digest&prompt=1` (the digest plus ~1.2 KB of review instructions), written to the clipboard.
+- **Copy raw session digest** — the same endpoint without `prompt`.
+
+Both follow the current reveal state: redacted by default, and while reveal is active a themed confirmation dialog precedes the copy because the clipboard would then hold raw secrets (`REVEAL_COPY_WARNING`). The actual write is `navigator.clipboard.writeText` (with a hidden-textarea fallback). The server only renders text; it never calls an LLM provider and transmits nothing off the local machine.
+
+In the OpenCode TUI, where no clipboard API exists, the native Statistics panel's **`d`** key writes the always-redacted review prompt to one deterministic file under the system temp directory (`opencode-observability-review-<session>.md`, mode `0o600`) and toasts its path; there is no reveal or redaction option there.
 
 ### Diagnostics
 

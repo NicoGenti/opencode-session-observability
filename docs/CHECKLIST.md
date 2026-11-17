@@ -48,6 +48,10 @@ This checklist separates what is implemented, what is available from OpenCode 2,
 - [x] Parent/child session navigation.
 - [x] Badges: error, retry, compaction, context, subagent, uncertain.
 - [x] Statistics table with turn rows and expandable step details.
+- [x] Basic/Advanced view mode toggle (persisted per browser; topbar or Settings), with Advanced-only surfaces (full 19-column table, Table/Charts control, session-health badge + breakdown, Advanced filters, copy actions).
+- [x] Advanced-mode Charts sub-tab (4 charts: context growth, token usage, cost, step duration) over the loaded analysis; unavailable values render as gaps/`Not recorded`, never as zero.
+- [x] Session-health badge + 7 rules + sufficiency gate (Advanced Statistics) with breakdown drill-down; insufficient sessions render `watch` + "insufficient data".
+- [x] Advanced-mode copy actions in the web Statistics toolbar and the TUI `d` key writing an always-redacted review prompt to a temp file.
 - [x] Configurable Markdown response limit (4k–80k characters, persisted per browser).
 - [x] Context basis selector (Latest/Cumulative) with selection-independent session totals.
 - [x] Show event rows toggle (non-step rows, excluded from totals).
@@ -136,6 +140,10 @@ This checklist separates what is implemented, what is available from OpenCode 2,
 | Export formats and escaping | `test/export.test.ts` |
 | Digest and review prompt (determinism, truncation, sections, redaction) | `test/digest.test.ts` |
 | Digest copy helpers (URL, reveal warning, toast copy) | `test/ui-digest.test.ts` |
+| Charts data preparation (context growth, tokens, cost, duration) | `test/charts-data.test.ts` |
+| Charts rendering and UI contracts | `test/charts-ui.test.ts` |
+| Session health rules | `test/health.test.ts` |
+| Session health UI | `test/health-ui.test.ts` |
 | RPC contract and handlers | `test/plugin.test.ts` |
 | HTTP server endpoints/headers/redaction/export/errors | `test/server.test.ts` |
 | Access token, non-loopback guard, constant-time comparison | `test/auth.test.ts` |
@@ -159,3 +167,10 @@ The `/family-recovery` endpoint itself is covered in `test/server.test.ts`; a pl
 6. **Stale token files.** A hard kill can leave a per-port token file behind. The next run on that port overwrites or clears it; the file is user-scoped and contains a token that is no longer valid after the server exits.
 7. **Redaction coverage.** Redaction is heuristic: known prefixes, credential-shaped keys and assignments are covered, but unknown formats and very short values are not. Reveal remains opt-in and disabled by default.
 8. **Delegation recovery surfaces.** `familyRecovery` is reachable only over HTTP (`GET /api/sessions/{id}/family-recovery`). A plugin RPC method and a UI view are deferred; the DTO already carries `basis`, `redacted`, `patternCounts` and uncertainty notes, so an RPC view and a UI panel can render it without new analysis.
+
+## Advanced analysis limitations
+
+- **Charts and session health are web-only (Advanced mode).** The native TUI Statistics panel renders the dense turn table; it never renders charts, the health badge or the web copy buttons. TUI review-prompt delivery uses the `d` file handoff instead of a clipboard.
+- **Insufficient data never claims healthy.** A session with no turns, a windowed analysis, or neither token usage nor cost reads as `watch` with an "insufficient data" sub-label and cannot read `healthy`; it may still escalate to `degraded` on real triggered evidence.
+- **Unavailable metrics are never rendered as zero.** Missing context leaves a gap; turns with no recorded usage are dashed "Not recorded" slots; steps lacking timing data omit that segment; an all-zero cost session marks nothing.
+- **LLM handoff is copy-only.** The app never calls an LLM provider and transmits no session data. Web copies write through the browser clipboard (redacted by default; confirmation while reveal is active). The TUI `d` path is always redacted and has no clipboard or reveal plumbing.
