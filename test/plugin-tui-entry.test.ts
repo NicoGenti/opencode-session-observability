@@ -10,6 +10,7 @@ type ExportTarget = string | {
 };
 
 type PackageJson = {
+  version?: string;
   exports?: Record<string, ExportTarget>;
   peerDependenciesMeta?: Record<string, { optional?: boolean }>;
 };
@@ -38,6 +39,17 @@ test("OpenTUI and solid-js peers are declared optional", async () => {
   assert.equal(pkg.peerDependenciesMeta?.["@opentui/core"]?.optional, true);
   assert.equal(pkg.peerDependenciesMeta?.["@opentui/solid"]?.optional, true);
   assert.equal(pkg.peerDependenciesMeta?.["solid-js"]?.optional, true);
+});
+
+test("the CLI version literal stays in sync with the package version", async () => {
+  const pkg = await readJson<PackageJson>("../package.json");
+  const source = await readFile(
+    new URL("../src/server/index.ts", import.meta.url),
+    "utf8",
+  );
+  const declared = /^const VERSION = "([^"]+)";$/m.exec(source);
+  assert.ok(declared, "src/server/index.ts declares `const VERSION = \"...\"`");
+  assert.equal(declared[1], pkg.version);
 });
 
 test("tsconfig.tui.json type-checks the sidecar with Solid JSX", async () => {

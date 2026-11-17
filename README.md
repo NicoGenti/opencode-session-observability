@@ -54,6 +54,7 @@ Inside OpenCode 2 the plugin adds native fullscreen panels: `/statistics` (alias
 
 - **Node.js 22.18+ or 24.x.** CI runs the full gate on both Node 22 and Node 24 (`ubuntu-latest`); development was verified on 24.18, which ships `node:sqlite` built in. `node:sqlite` is unflagged from Node 22.13.0, so the 22.18 floor needs no `--experimental-sqlite`; the Node 22 CI leg sets that flag regardless.
 - **OpenCode 2.2.x** session data. The tested database was produced by `@opencode/cli` **2.2.5**; the plugin types were checked against `@opencode/plugin` **2.2.6**.
+- An **OpenCode 2.x host** for the plugin and TUI commands. The packed package was validated in a real OpenCode 2.3.0 host; this repository pins `@opencode/*` 2.2.7.
 - A local browser and/or the OpenCode 2 TUI.
 
 The app does **not** support the OpenCode 1 schema (`session`/`message` tables). It detects that schema and reports it clearly instead of reading incompatible data.
@@ -152,11 +153,33 @@ exports: "."            -> server plugin (RPC)
 
 The `./tui` entry resolves to the prebuilt `dist-tui/tui.mjs` bundle and is typed by the `src/plugin/tui.ts` sidecar, which also re-exports the slash-command helpers. `src/plugin/tui.tsx` is a typechecked-only OpenTUI scaffold that exposes `NativeObservabilityView` without mounting it; it is not bundled. The browser UI stays the primary surface.
 
+The `.` entry is **host-only**: it resolves to the TypeScript source `src/plugin/index.ts`, which is loaded by the OpenCode 2 host. That host is Bun-based and type-strips TypeScript at import time, so the source entry works there. A plain-Node consumer cannot import `.` from `node_modules/`, because Node refuses to type-strip TypeScript inside `node_modules/` — the same restriction that makes `bin/opencode-observability.mjs` prefer the prebuilt `dist-server/server.mjs` (see the comment at the top of that file). Loading the packed package in a real host is the empirical gate for this entry; if that validation ever fails, compiling the `.` entry becomes a follow-up issue.
+
 Why this shape? OpenCode 2.2.x plugins can add tools, hooks, RPC methods, commands, agents, TUI routes/slots and experimental GUI panels. They do **not** expose arbitrary HTTP routes for a third-party web page. The supported integration path is therefore:
 
 1. the **server part** registers a read-only RPC namespace over the OpenCode client;
 2. the **TUI part** registers `/observability` and `/trajectory` (browser deep links) plus `/statistics` (native fullscreen panel; `--web` for the browser) and `/statistics:web` (the browser Statistics deep link);
 3. the **web UI** runs as a separate local read-only server, so it works from the TUI, a browser, or any local client.
+
+### Install
+
+The package has **no runtime dependencies** and ships both bundles prebuilt (`dist-tui/tui.mjs`, `dist-server/server.mjs`), so the install needs no build step:
+
+```bash
+npm install opencode-session-observability
+npx opencode-observability --version
+```
+
+Or put the CLI on your `PATH`:
+
+```bash
+npm install -g opencode-session-observability
+opencode-observability --version
+```
+
+Requirements: Node.js **>= 22.18** (22.x and 24.x are tested) and an **OpenCode 2.x** host. The npm listing, the npm badge at the top of this file and the package page only exist after the first publish; until then use a local checkout (below) or the tarball attached to a GitHub Release — `npm install <release-asset-tarball-url>`.
+
+Release process, artifact reuse, prerelease and rollback/deprecation policy: [docs/RELEASE.md](docs/RELEASE.md).
 
 ### Configure
 

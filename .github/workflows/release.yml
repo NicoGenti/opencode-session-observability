@@ -1,0 +1,381 @@
+# Release pipeline: pack once, test the artifact, ship that exact artifact.
+#
+# Triggers
+#   push of a `v*` tag  -> verify -> pack -> consumer -> { github-release, npm-publish }
+#   workflow_dispatch   -> verify -> pack -> consumer (dry run). The release and publish
+#                          jobs are `if: github.ref_type == 'tag'`, so a manual run can
+#                          never publish or release from a branch.
+#
+# TRUSTED PUBLISHING — bootstrap (chicken-and-egg), read before the first release
+#   * `npm-publish` authenticates with OIDC trusted publishing only: `id-token: write`
+#     plus the `environment: npm` approval gate. There is no `NPM_TOKEN` secret and no
+#     registry credential anywhere in this repository, by design.
+#   * npm only accepts a trusted-publisher registration for a package that already
+#     exists. Until the package is published once AND
+#         npmjs.com -> package -> Settings -> Trusted publishing
+#     is registered for repository NicoGenti/opencode-session-observability,
+#     workflow release.yml, environment npm, this job fails closed at the publish
+#     step. That failure is the intended state, not a bug.
+#   * The FIRST publish is therefore the manual, maintainer-approved step in the
+#     gated checklist in docs/RELEASE.md: an authenticated publish of the tarball
+#     produced by this workflow, with the maintainer's 2FA OTP. Register trusted
+#     publishing immediately afterwards so later releases are OIDC-only.
+#   * `npm publish <tarball>` runs no lifecycle scripts, so `prepublishOnly` cannot
+#     rebuild here: the tarball the `consumer` job tested is byte-for-byte the one
+#     attached to the GitHub Release and published to npm. Never run `npm publish`
+#     from the repository directory on release day — that would pack an untested
+#     tree.
+#
+# THE APPROVAL GATE
+#   `npm-publish` declares `environment: npm`. A required-reviewer environment of
+#   that name MUST be configured in repository settings
+#   (Settings -> Environments -> npm -> Required reviewers); a workflow cannot
+#   create it, and without it the publish job would run unattended. Configure it
+#   before registering the trusted publisher.
+#
+# ARTIFACT IDENTITY
+#   `pack` is the only job that packs. It records the tarball's sha256, uploads
+#   `package-tarball` (tarball + `<tarball>.sha256`), and hands the hash to
+#   `consumer` and `npm-publish` through job outputs. Both re-verify with
+#   `sha256sum -c` before use. Nothing rebuilds, repacks or renames the artifact.
+#
+# CONCURRENCY
+#   One run per ref and `cancel-in-progress: false`, so a publish is never torn in
+#   half by a newer run on the same tag.
+#
+# Runners: Linux (ubuntu-latest) only; every `run:` step is bash.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      expected_version:
+        description: "Optional version this ref should build, e.g. 0.1.0 or v0.1.0 (tag pushes are checked against the git tag instead)"
+        required: false
+        type: string
+
+# Least privilege by default; the two publishing jobs opt into more.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: "verify (Node ${{ matrix.node-version }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['22', '24']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - run: npm ci
+      # node:sqlite needs no flag from Node 22.13.0; the 22 leg sets it anyway
+      # and the 24 leg gets an empty NODE_OPTIONS (same as ci.yml).
+      - name: Check (typecheck + tests)
+        run: npm run check
+        env:
+          NODE_OPTIONS: "${{ matrix.node-version == '22' && '--experimental-sqlite' || '' }}"
+      - name: Verify TUI artifact fresh
+        run: |
+          npm run build:tui
+          git diff --exit-code -- dist-tui/tui.mjs
+        env:
+          NODE_OPTIONS: "${{ matrix.node-version == '22' && '--experimental-sqlite' || '' }}"
+      - name: Verify server artifact fresh
+        run: |
+          npm run build:server
+          git diff --exit-code -- dist-server/server.mjs
+        env:
+          NODE_OPTIONS: "${{ matrix.node-version == '22' && '--experimental-sqlite' || '' }}"
+      - name: Production dependency audit
+        run: npm run audit:prod
+        env:
+          NODE_OPTIONS: "${{ matrix.node-version == '22' && '--experimental-sqlite' || '' }}"
+      - name: Lint package metadata
+        run: npm run lint:package
+        env:
+          NODE_OPTIONS: "${{ matrix.node-version == '22' && '--experimental-sqlite' || '' }}"
+      - name: Verify packed contents
+        run: npm run pack:check
+        env:
+          NODE_OPTIONS: "${{ matrix.node-version == '22' && '--experimental-sqlite' || '' }}"
+
+  pack:
+    name: pack (the single tested artifact)
+    needs: verify
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      filename: ${{ steps.pack.outputs.filename }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+    steps:
+      # fetch-depth: 0 so `git describe --exact-match --tags HEAD` can see the tag.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      # No `npm ci` and no build step on purpose: this package has no runtime
+      # dependencies, no `prepack` hook, and `npm pack` must capture the committed
+      # bundles exactly as verified above.
+      - name: Version / tag / CLI consistency
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          EXPECTED_VERSION_INPUT: ${{ inputs.expected_version }}
+        run: |
+          set -euo pipefail
+
+          pkg_version="$(node -p "require('./package.json').version")"
+          cli_version="$(node bin/opencode-observability.mjs --version)"
+          echo "package.json version: ${pkg_version}"
+          echo "CLI --version:        ${cli_version}"
+
+          # Catches a stale `VERSION` literal in src/server/index.ts (the CLI) and,
+          # through the consumer health check, src/server/http.ts (the API).
+          if [ "${cli_version}" != "${pkg_version}" ]; then
+            echo "::error::CLI --version (${cli_version}) does not match package.json (${pkg_version}). Bump src/server/index.ts VERSION together with the package version."
+            exit 1
+          fi
+
+          if [ "${REF_TYPE}" = "tag" ]; then
+            tag="$(git describe --exact-match --tags HEAD 2>/dev/null || true)"
+            if [ -z "${tag}" ]; then
+              echo "::error::No tag points at HEAD (build ref ${REF_NAME}); a tag ref without a reachable tag means fetch-depth: 0 was not honoured."
+              exit 1
+            fi
+            if [ "${tag}" != "v${pkg_version}" ]; then
+              echo "::error::Git tag ${tag} does not match v${pkg_version} from package.json. Fix the version or retag; never release a tag whose name disagrees with the package."
+              exit 1
+            fi
+            echo "git tag:              ${tag}"
+          elif [ -n "${EXPECTED_VERSION_INPUT}" ]; then
+            expected="${EXPECTED_VERSION_INPUT#v}"
+            if [ "${expected}" != "${pkg_version}" ]; then
+              echo "::error::workflow_dispatch expected_version ${EXPECTED_VERSION_INPUT} does not match package.json ${pkg_version}."
+              exit 1
+            fi
+            echo "workflow_dispatch expected version: ${expected} (dry run: no release, no publish)"
+          else
+            echo "::notice::workflow_dispatch without expected_version: tag consistency unchecked (dry run)."
+          fi
+
+          echo "version=${pkg_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Pack once and record the checksum
+        id: pack
+        run: |
+          set -euo pipefail
+
+          mkdir -p artifacts
+          filename="$(npm pack --silent | tail -n 1)"
+          case "${filename}" in
+            *.tgz) ;;
+            *)
+              echo "::error::npm pack did not report a .tgz filename (got '${filename}')."
+              exit 1
+              ;;
+          esac
+
+          mv "${filename}" artifacts/
+          cd artifacts
+          sha256sum "${filename}" > "${filename}.sha256"
+          sha256sum -c "${filename}.sha256"
+          sha256="$(cut -d' ' -f1 < "${filename}.sha256")"
+
+          {
+            echo "filename=${filename}"
+            echo "sha256=${sha256}"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Packed artifact (packed once, never rebuilt)"
+            echo ""
+            echo '```'
+            echo "${filename}"
+            echo "sha256 ${sha256}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-tarball
+          path: artifacts/
+          retention-days: 30
+          if-no-files-found: error
+
+  consumer:
+    name: "consumer smoke (Node ${{ matrix.node-version }})"
+    needs: pack
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['22', '24']
+    steps:
+      # The repository is needed only for scripts/consumer-smoke.mjs and the DB
+      # fixtures it builds; the package under test always comes from the artifact.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: package-tarball
+          path: tarball
+      - name: Verify the downloaded artifact is the packed one
+        working-directory: tarball
+        env:
+          TARBALL_NAME: ${{ needs.pack.outputs.filename }}
+          EXPECTED_SHA256: ${{ needs.pack.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          sha256sum -c "${TARBALL_NAME}.sha256"
+          actual="$(sha256sum "${TARBALL_NAME}" | cut -d' ' -f1)"
+          if [ "${actual}" != "${EXPECTED_SHA256}" ]; then
+            echo "::error::Downloaded tarball sha256 ${actual} does not match the pack job checksum ${EXPECTED_SHA256}."
+            exit 1
+          fi
+      - name: Install the tarball into a temp prefix and drive it
+        env:
+          TARBALL: tarball/${{ needs.pack.outputs.filename }}
+          NODE_OPTIONS: "${{ matrix.node-version == '22' && '--experimental-sqlite' || '' }}"
+        run: node scripts/consumer-smoke.mjs --tarball "${TARBALL}"
+
+  github-release:
+    name: GitHub Release (GitHub-only fallback)
+    needs: consumer
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: package-tarball
+          path: release
+      - name: Verify the downloaded artifact is the packed one
+        working-directory: release
+        env:
+          TARBALL_NAME: ${{ needs.pack.outputs.filename }}
+          EXPECTED_SHA256: ${{ needs.pack.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          sha256sum -c "${TARBALL_NAME}.sha256"
+          actual="$(sha256sum "${TARBALL_NAME}" | cut -d' ' -f1)"
+          if [ "${actual}" != "${EXPECTED_SHA256}" ]; then
+            echo "::error::Downloaded tarball sha256 ${actual} does not match the pack job checksum ${EXPECTED_SHA256}."
+            exit 1
+          fi
+      - name: Create the release from the tested artifact
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.tgz
+            release/*.sha256
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          body: |
+            ## opencode-session-observability ${{ needs.pack.outputs.version }}
+
+            Local-first, read-only Trajectory and Statistics views for OpenCode 2 sessions.
+
+            - **Asset:** `${{ needs.pack.outputs.filename }}`
+            - **SHA-256:** `${{ needs.pack.outputs.sha256 }}`
+
+            ### Requirements
+
+            - Node.js **>= 22.18** (22.x and 24.x are tested in CI).
+            - OpenCode **2.x** host, which loads the plugin and type-strips its TypeScript entry (`@opencode/*` 2.2.7 is pinned in this repository; validated locally against OpenCode 2.3.0).
+
+            ### Install
+
+            From this release's tarball:
+
+            ```bash
+            npm install -g ./${{ needs.pack.outputs.filename }}
+            opencode-observability --version
+            ```
+
+            Once the package is on the registry:
+
+            ```bash
+            npm install -g opencode-session-observability
+            npx opencode-observability --version
+            npx -y opencode-session-observability@${{ needs.pack.outputs.version }} --version
+            ```
+
+            Then reference it from the OpenCode config as
+            `plugins: ["opencode-session-observability"]` (see `cli.json.example`).
+
+            ### Known limitations
+
+            - **Pre-1.0:** minor versions may break compatibility; pin the exact version you validated.
+            - **Host-only `exports["."]`:** the package entry ships TypeScript source for the Bun-based OpenCode host. Plain-Node consumers cannot import `.` from `node_modules`; use the `opencode-observability` CLI / `dist-server` bundle instead.
+            - **Read-only by design:** sessions, messages and configuration are never written; no telemetry; the server binds loopback only, and payload reveal stays opt-in.
+
+            Release process, artifact-reuse policy and the gated first-release checklist:
+            https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/docs/RELEASE.md
+
+  npm-publish:
+    name: npm publish (trusted publishing, approval gated)
+    needs: consumer
+    # Sibling of `github-release`, not a dependent: a failed or skipped GitHub
+    # Release must neither block nor silently skip the publish, and vice versa.
+    # Both still require the shared `consumer` gate.
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    # The explicit approval gate. A required-reviewer environment named `npm`
+    # must exist in repository settings; this workflow cannot create it.
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          name: package-tarball
+          path: release
+      - name: Verify the artifact is the one that was tested
+        working-directory: release
+        env:
+          TARBALL_NAME: ${{ needs.pack.outputs.filename }}
+          EXPECTED_SHA256: ${{ needs.pack.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          sha256sum -c "${TARBALL_NAME}.sha256"
+          actual="$(sha256sum "${TARBALL_NAME}" | cut -d' ' -f1)"
+          if [ "${actual}" != "${EXPECTED_SHA256}" ]; then
+            echo "::error::Downloaded tarball sha256 ${actual} does not match the pack job checksum ${EXPECTED_SHA256}."
+            exit 1
+          fi
+      - name: Publish the tested tarball via OIDC
+        env:
+          TARBALL_NAME: ${{ needs.pack.outputs.filename }}
+        run: |
+          set -euo pipefail
+          # No registry token is configured anywhere: `id-token: write` plus the
+          # `environment: npm` approval gate is the whole auth story (npm exchanges
+          # the OIDC token for a short-lived publish token, provenance included).
+          # Until the trusted publisher is registered on npmjs.com this step fails
+          # closed; the first publish is the manual, gated step in docs/RELEASE.md.
+          # Publishing a tarball runs no lifecycle scripts, so the tested bytes ship.
+          npm publish "release/${TARBALL_NAME}" --access public --provenance
