@@ -36,6 +36,11 @@ import {
   tokenChartHtml,
 } from "./charts.js";
 import {
+  healthBadgeHtml,
+  healthBreakdownHtml,
+  missingHealth,
+} from "./health.js";
+import {
   authHeaders,
   consumeTokenFromLocation,
   storeToken,
@@ -117,6 +122,9 @@ const state = {
   // Statistics sub-tab is renderer state, like the expand sets: not persisted
   // and not a route, so the hash keeps shape `#/s/:session/:view`.
   statsTab: "table",
+  // Session health rules panel inside Advanced Statistics: renderer state only,
+  // never persisted and never part of the route (the badge consumes the DTO).
+  healthPanelOpen: false,
   selectedEventID: null,
   // Event IDs in the currently opened incident's failing-event sequence.
   // Renderer state only: rebuilt from the stored diagnostics DTO, never
@@ -1997,6 +2005,7 @@ function renderStatistics() {
 
   dom.view.innerHTML = `<div class="stats-toolbar">
       <h2 class="stats-title">${totals.scope === "session" ? "Session total" : "Window total"}</h2>
+      ${healthBadgeHtml(analysis.health ?? missingHealth(), state.healthPanelOpen)}
       <span class="muted small">${formatNumber(totals.turns)} turns · ${formatNumber(
         totals.steps,
       )} steps · ${formatNumber(totals.toolCalls)} tool calls · active ${metricHtml(
@@ -2045,6 +2054,7 @@ function renderStatistics() {
       <button type="button" class="btn ghost" id="copy-review-prompt">Copy LLM review prompt</button>
       <button type="button" class="btn ghost" id="copy-digest">Copy raw session digest</button>
     </div>
+    ${state.healthPanelOpen ? healthBreakdownHtml(analysis.health ?? missingHealth(), analysis.turns) : ""}
     ${
       state.statsTab === "charts"
         ? chartsPaneHtml(analysis)
@@ -2110,6 +2120,16 @@ function bindStatistics() {
   for (const button of dom.view.querySelectorAll("[data-stats-tab]")) {
     button.addEventListener("click", () => {
       state.statsTab = button.dataset.statsTab === "charts" ? "charts" : "table";
+      renderStatistics();
+    });
+  }
+  // The badge toggles the rules breakdown; the rule links themselves need no
+  // binding here — they render before this function runs and the existing
+  // `[data-event-id]` loop below routes them through `jumpToEvent()`.
+  for (const toggle of dom.view.querySelectorAll("[data-health-toggle]")) {
+    toggle.addEventListener("click", () => {
+      state.healthPanelOpen = !state.healthPanelOpen;
+      toggle.setAttribute("aria-expanded", String(state.healthPanelOpen));
       renderStatistics();
     });
   }
