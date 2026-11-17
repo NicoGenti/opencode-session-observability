@@ -709,7 +709,7 @@ test("the statistics drill wiring keeps exactly the existing selectors", async (
   );
   assert.deepEqual(
     selectors.filter((selector) => selector.startsWith("[data-")),
-    ["[data-stats-tab]", "[data-jump-step]", "[data-event-id]:not([data-open-incident])", "[data-session-id]"],
+    ["[data-stats-tab]", "[data-health-toggle]", "[data-jump-step]", "[data-event-id]:not([data-open-incident])", "[data-session-id]"],
   );
 });
 

@@ -495,6 +495,79 @@ code, pre, .mono { font-family: var(--mono); }
 .tool-mini .tool-mini-head { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .tool-mini pre { margin: 4px 0 0; max-height: 140px; }
 
+/* -------------------------------------------------------- session health */
+
+/* The badge is a control (6 px), not a pill: it opens the rules panel. State is
+   always carried by text; warning is a border and a tint, never text. */
+.health-badge {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--text-2); font-size: 12px;
+}
+.health-badge:hover { border-color: var(--border-strong); color: var(--text); }
+.health-badge-healthy {
+  border-color: color-mix(in srgb, var(--good) 45%, transparent);
+  color: var(--good); background: color-mix(in srgb, var(--good) 8%, var(--surface));
+}
+.health-badge-watch {
+  border-color: color-mix(in srgb, var(--warning) 70%, transparent);
+  color: var(--text); background: color-mix(in srgb, var(--warning) 16%, var(--surface));
+}
+.health-badge-degraded {
+  border-color: color-mix(in srgb, var(--critical) 55%, transparent);
+  color: var(--critical); background: color-mix(in srgb, var(--critical) 8%, var(--surface));
+}
+.health-badge-insufficient { border-style: dashed; }
+.health-badge-state { font-weight: 600; }
+.health-badge-sub { color: var(--text-2); font-size: 11px; }
+
+.health-breakdown {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); padding: 10px 12px; margin-bottom: 10px;
+}
+.health-breakdown-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.health-insufficient {
+  border-left: 3px solid var(--warning); background: var(--surface-2);
+  border-radius: var(--radius-sm); padding: 8px 10px; margin-top: 8px;
+}
+.health-insufficient p { margin: 0; color: var(--text-2); }
+.health-reasons {
+  margin: 4px 0 0; padding-left: 18px; color: var(--text-2); font-size: 11.5px;
+}
+.health-rules {
+  list-style: none; margin: 8px 0 0; padding: 0;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.health-rule {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); padding: 8px 10px;
+}
+.health-rule-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.health-rule-head .grow { flex: 1; }
+.health-rule-label { font-size: 12.5px; font-weight: 600; }
+.health-rule-status { color: var(--text-2); font-size: 11px; }
+.health-rule-note { margin: 4px 0 0; }
+.health-rule-links { display: flex; flex-wrap: wrap; gap: 8px; }
+.health-rule-link { font-size: 11px; }
+.health-level {
+  display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface-2);
+  color: var(--text-2); font-size: 11px; line-height: 1.55; white-space: nowrap;
+}
+.health-level-healthy {
+  border-color: color-mix(in srgb, var(--good) 45%, transparent);
+  color: var(--good); background: color-mix(in srgb, var(--good) 8%, var(--surface));
+}
+.health-level-watch {
+  border-color: color-mix(in srgb, var(--warning) 70%, transparent);
+  color: var(--text); background: color-mix(in srgb, var(--warning) 16%, var(--surface));
+}
+.health-level-strong, .health-level-degraded {
+  border-color: color-mix(in srgb, var(--critical) 55%, transparent);
+  color: var(--critical); background: color-mix(in srgb, var(--critical) 8%, var(--surface));
+}
+.health-disclaimer { margin: 8px 0 0; }
+
 /* --------------------------------------------------------------- drawer */
 
 .backdrop {
