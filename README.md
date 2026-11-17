@@ -262,6 +262,26 @@ In the native Statistics panel, `d` writes the redacted LLM review prompt to a d
 - `Recorded by OpenCode` compares computed totals with the session-row totals.
 - Advanced mode adds two copy actions for review in an LLM of your choice: **Copy LLM review prompt** (review instructions plus the session digest) and **Copy raw session digest**. Both copy redacted text by default; with reveal active a confirmation is required first because the clipboard will then hold raw secrets. The app never calls an LLM provider — the text goes to your clipboard and nowhere else.
 
+### Advanced analysis
+
+Advanced mode (the topbar toggle, persisted per browser) unlocks surfaces that stay hidden in Basic mode:
+
+- **Charts sub-tab** — a **Table / Charts** segmented control inside Statistics draws four sections over the same already-loaded `Analysis` (no extra fetch, no re-paging). Captions repeat the analysis scope (**Session total** or **Window total** plus the sequence range).
+  - **Context growth** — one point per turn, following the **Context basis** selector (Latest or Cumulative). Missing context leaves a gap rather than a zero dip (drawn as a dashed unavailable tick; gaps are counted). Each compaction is a dashed vertical marker labelled `Compaction N`, placed on its recorded turn or the last turn that started before it; a compaction that cannot be placed is counted instead of being drawn onto a turn.
+  - **Token usage** — one stacked bar per turn with five segments (input, cache read, cache write, reasoning, output). A turn with `tokensComplete: false` keeps its recorded subset with a dashed outline ("partial: recorded subset only") and is never padded. A turn that recorded no usage at all is a dashed "Not recorded" slot, never a zero bar marked measured.
+  - **Cost** — one bar per turn, grouped and coloured by the model derived from that turn's steps (provider only where a step recorded one). The axis is in USD. Every turn tied for the highest *available* cost above zero is marked **Highest cost**; an all-zero session marks nothing.
+  - **Step duration** — one stacked bar per step (`<turn>.<step>`) with model, tool and residual time. A segment that was not recorded is omitted rather than zero-filled; a step with none of the three draws a dashed "Not recorded" slot.
+
+- **Session health badge** — a **Session health: Healthy / Watch / Degraded** button in the Statistics toolbar (both Table and Charts sub-tabs), plus a rules breakdown listing all seven rules (error rate, retry count, tool-failure recurrence, context growth, cost per turn, low cache hit rate, unfinished outcome) with level, status, deterministic observed values and capped drill links. A session with insufficient data renders as **Watch** with an **insufficient data** sub-label and can never claim **Healthy**; the Basic renderer carries no health markup. No numeric score is computed, stored or displayed. Rules, thresholds, the sufficiency gate and state mapping are documented and reproducible in [docs/HEALTH.md](docs/HEALTH.md).
+
+- **Advanced-mode copy actions** — **Copy LLM review prompt** (review instructions plus the session digest) and **Copy raw session digest** (see above).
+
+**Privacy (Advanced, and everywhere else).** The app **never calls an LLM provider and never transmits session data anywhere.** The review text is built from the normalized projection by your local server and handed to the browser clipboard through the same-origin local API (`http://127.0.0.1:<port>/api/…`): the copy itself is `navigator.clipboard.writeText`, there is no upload, no telemetry and no third-party request. In the OpenCode TUI, where no clipboard API exists, the native Statistics panel's **`d`** key writes the **always-redacted** LLM review prompt to one deterministic file under the system temp directory (`opencode-observability-review-<session>.md`) and toasts its path; no reveal or redaction plumbing exists there.
+
+**Advanced-only surfaces:** the Table/Charts segmented control and all four charts; the session-health badge and breakdown; the full 19-column turn/step table and all Statistics filters (per the view-modes table); and both copy buttons. Basic mode keeps the turn table, headline filters and diagnostics.
+
+A missing or partial metric is never rendered as zero: missing context leaves a gap, turns with no recorded usage are dashed "Not recorded" slots, and steps lacking timing data omit that segment. Chart and health-series derivation: [docs/METRICS.md](docs/METRICS.md). Coverage and known limitations: [docs/CHECKLIST.md](docs/CHECKLIST.md).
+
 ### Keyboard shortcuts
 
 | Key | Action |
