@@ -166,6 +166,8 @@ The **session total row is independent**: it always shows the final context and 
 
 **Awaiting approval** is not available for historical data: OpenCode 2 does not persist permission asks/replies in the session message stream. The UI never fabricates an awaiting-approval state.
 
+Session health rules and thresholds: see [HEALTH.md](HEALTH.md).
+
 ## Errors, retries and tool calls
 
 - `tool calls`: count of `tool` content blocks.

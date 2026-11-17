@@ -131,6 +131,14 @@ Advanced statistics also offers a **Table / Charts** sub-tab; Basic has no chart
 
 The chart is one `role="img"` graphic with a single chart-level label, so its datums are mouse targets: each carries a `<title>` and a label with its value and provenance mark (`M`, `D`, `E`, `—`), and clicking one opens the matching turn, step or compaction event in Trajectory through the existing event-jump path. A datum without a recorded anchor is not clickable and its label says "no event to open". The keyboard path is each section's **Chart data** `<details>` list: its buttons carry the same values and drill targets, so a screen reader user never depends on the graphic. The basis legend, **Diagnostics** and **Compactions** sections stay below the charts pane.
 
+### Session health
+
+Advanced Statistics only: a **Session health** badge sits in the statistics toolbar (`.stats-toolbar`), immediately after the `.stats-title` heading, in both the Table and Charts sub-tabs. It is a real `<button>` (`[data-health-toggle]`) carrying the state as text — `Session health: Healthy`, `Session health: Watch`, or `Session health: Degraded` — so colour is never the only signal; missing or insufficient data renders as `Watch` with an `insufficient data` sub-label and the dashed uncertain treatment. Clicking toggles a **rules breakdown** listing every rule with its level (`Watch`/`Strong`), status (triggered / not triggered / not evaluable), deterministic observed-values note, and capped drill links as `link-button`s carrying `data-event-id`, routed through the existing `bindStatistics()` loop and `jumpToEvent()` (no new wiring). Each rule's link count follows the event/turn caps (`MAX_EVENT_LINKS = 10`, `MAX_TURN_LINKS = 6`); turn links resolve to the turn's trigger event and are only rendered when an anchor exists.
+
+Insufficient sessions show their sufficiency reasons at the top of the breakdown (`no turns were recorded`, windowed coverage, or neither token usage nor cost recorded). The badge `title`/`aria-label` and the breakdown header carry the standing copy "Derived signal from recorded observability data — not a quality judgment." and the footer repeats it. No numeric score is computed, stored or displayed, and the word "score" never appears. The Basic renderer and `renderStatisticsBasic()` contain no health markup.
+
+Rules, thresholds, the sufficiency gate and the state mapping are documented in full in [HEALTH.md](HEALTH.md); the UI mirrors the same rule ids and thresholds.
+
 ### Diagnostics
 
 Both statistics renderers place a **Diagnostics** section above **Compactions**, using the same card body as the Trajectory strip. Basic and Advanced render byte-identical cards because they share one renderer and one `analysis.diagnostics` source.
