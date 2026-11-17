@@ -2,7 +2,7 @@
 
 Every OpenCode 2 session leaves behind a rich event ledger — prompts, tool calls, retries, errors, compactions, tokens and cost — that is painful to reconstruct by hand. This tool opens that ledger locally and read-only: no telemetry, no writes to your data.
 
-[![CI](https://github.com/NicoGenti/opencode-session-observability/actions/workflows/ci.yml/badge.svg)](https://github.com/NicoGenti/opencode-session-observability/actions/workflows/ci.yml)
+[![CI](https://github.com/NicoGenti/opencode-session-observability/actions/workflows/ci.yml/badge.svg)](https://github.com/NicoGenti/opencode-session-observability/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/NicoGenti/opencode-session-observability/blob/main/LICENSE) [![Node](https://img.shields.io/static/v1?label=node&message=22.18%2B%20%7C%2024.x&color=339933)](https://nodejs.org/en/about/previous-releases) [![TypeScript strict](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://github.com/NicoGenti/opencode-session-observability/blob/main/tsconfig.json) ![OpenCode 2.2.x](https://img.shields.io/static/v1?label=OpenCode&message=2.2.x&color=6E56CF) [![npm](https://img.shields.io/npm/v/opencode-session-observability)](https://www.npmjs.com/package/opencode-session-observability)
 
 A local-first, read-only observability layer for **OpenCode 2** sessions. It adds two views:
 
@@ -44,7 +44,7 @@ Screenshots of both views in dark and light mode (1440×900):
 
 ## Requirements
 
-- **Node.js 24.x** (tested with 24.18). `node:sqlite` is built in. Node 22.18+ may require `--experimental-sqlite` depending on the exact release.
+- **Node.js 22.18+ or 24.x.** CI runs the full gate on both Node 22 and Node 24 (`ubuntu-latest`); development was verified on 24.18, which ships `node:sqlite` built in. `node:sqlite` is unflagged from Node 22.13.0, so the 22.18 floor needs no `--experimental-sqlite`; the Node 22 CI leg sets that flag regardless.
 - **OpenCode 2.2.x** session data. The tested database was produced by `@opencode/cli` **2.2.5**; the plugin types were checked against `@opencode/plugin` **2.2.6**.
 - A local browser and/or the OpenCode 2 TUI.
 
