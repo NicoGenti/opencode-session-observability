@@ -40,6 +40,14 @@ Screenshots of both views in dark and light mode (1440×900):
   <img src="docs/screenshots/statistics-light.png" alt="Statistics view">
 </picture>
 
+The same views also render natively in the OpenCode 2 TUI, with no browser involved:
+
+<img src="docs/screenshots/tui-statistics-dark.png" alt="Native OpenCode TUI Statistics panel: session banner with status, context, cache-hit rate and cost above a dense per-turn table of steps, input/output and cached tokens, hit rate, model, tool and residual time, cost and status">
+
+<img src="docs/screenshots/tui-trajectory-dark.png" alt="Native OpenCode TUI Trajectory panel: session header and turn-ledger hint above the per-turn table, with a marker on every turn that expands into its steps">
+
+Inside OpenCode 2 the plugin adds native fullscreen panels: `/statistics` (alias `/stats`) and `/trajectory` (alias `/observability`) render the same analysis in the terminal. `/statistics:web` (alias `/stats:web`), or `--web` added to either command, opens the browser view instead.
+
 ---
 
 ## Requirements
