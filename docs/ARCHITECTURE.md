@@ -20,11 +20,13 @@ flowchart LR
   PROJ --> IDX[Event index]
   MET --> TOT[Totals + capabilities + coverage]
   PROJ --> DIAG[Diagnostics<br/>evaluateDiagnostics → incidents]
+   PROJ --> HEALTH[Health<br/>evaluateSessionHealth → analysis.health]
 
   PROJ --> SVC[ObservabilityService]
   IDX --> SVC
   TOT --> SVC
   DIAG --> SVC
+   HEALTH --> SVC
   SVC -->|redact / filter / page| HTTP[Local HTTP API]
   SVC -->|redact / filter / page| RPC[Plugin RPC]
   SVC -->|redact unless reveal| EXP[Export JSON / MD / HTML]
@@ -44,6 +46,7 @@ flowchart LR
 | Projection | `core/project.ts` | Group events into turns/steps, attach non-step events, identify unattached events, build compaction transactions and capabilities. |
 | Metrics | `core/metrics.ts` | Pure formulas for prompt tokens, cache hit rate, durations, residual, speed, context delta. |
 | Diagnostics | `core/diagnostics.ts` | Pure, deterministic recovery rules over the recorded event order; incident anchors and contextual footprint metrics. No I/O and no writes. |
+| Health | `core/health.ts` | Pure, deterministic session-health evaluator over an `Analysis`: seven rules plus the sufficiency gate and three-state mapping. Reads `Analysis.diagnostics` (so it attaches after diagnostics) and rides `analysis.health`. No I/O and no writes. |
 | Episodes | `core/episodes.ts` | Pure enumeration of addressable diagnostic episodes: one per incident, with a stable id plus the turn/tool identity and every diagnostic verdict copied verbatim. Never re-sorts and never compares. |
 | Episode comparison | `core/episodeCompare.ts` | Pure, descriptive alignment of two episodes by recorded ordinal (`left - right`); a missing attempt becomes a one-sided row and no DTO field names a winner, an optimum or a recommendation. |
 | Delegation recovery | `core/delegation.ts` | Pure assessment of a parent session and its direct children: recorded delegation links, child failure evidence, parent reaction classification and labelled recovery patterns. No I/O and no writes. |
@@ -116,6 +119,7 @@ See [METRICS.md](METRICS.md).
 - normalizes and projects;
 - mirrors turn ids onto the full event stream used by detail/list endpoints;
 - computes diagnostics once over that same event stream and attaches them to the analysis payload;
+- computes session health once over that same analysis (after diagnostics attach) and attaches it as `analysis.health`;
 - computes the delegation recovery family view on demand (`familyRecovery`): the parent and each direct child are loaded full-range, the direct children are assessed (cap 8) and the result is returned as its own DTO — it is part of neither `Analysis` nor the dataset payload — and served only by `GET /api/sessions/{id}/family-recovery`;
 - redacts (unless reveal is explicitly allowed);
 - applies filters and keyset pagination;
