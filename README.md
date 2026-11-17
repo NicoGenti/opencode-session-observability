@@ -280,6 +280,14 @@ Advanced mode (the topbar toggle, persisted per browser) unlocks surfaces that s
 
 **Advanced-only surfaces:** the Table/Charts segmented control and all four charts; the session-health badge and breakdown; the full 19-column turn/step table and all Statistics filters (per the view-modes table); and both copy buttons. Basic mode keeps the turn table, headline filters and diagnostics.
 
+<p>
+  <img src="docs/screenshots/statistics-advanced-dark.png" alt="Statistics view in Advanced mode, with the Session health badge in the toolbar" width="49%">
+  <img src="docs/screenshots/statistics-charts-dark.png" alt="Statistics Charts sub-tab: context growth, token usage, cost and step duration" width="49%">
+</p>
+<p>
+  <img src="docs/screenshots/health-breakdown-dark.png" alt="Session health breakdown expanded, listing each of the seven rules with level, status and drill links" width="98%">
+</p>
+
 A missing or partial metric is never rendered as zero: missing context leaves a gap, turns with no recorded usage are dashed "Not recorded" slots, and steps lacking timing data omit that segment. Chart and health-series derivation: [docs/METRICS.md](docs/METRICS.md). Coverage and known limitations: [docs/CHECKLIST.md](docs/CHECKLIST.md).
 
 ### Keyboard shortcuts

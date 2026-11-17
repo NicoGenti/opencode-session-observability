@@ -98,6 +98,11 @@ One row per turn. The first click expands steps; clicking a step expands its det
 
 Advanced-only (web app, Advanced view): the **Table / Charts** segmented control and all four charts, the **Session health** badge and rules breakdown, and the **Copy LLM review prompt** / **Copy raw session digest** buttons. Basic mode renders the turn table, headline filters and diagnostics but none of those surfaces; `renderStatisticsBasic()` carries no health markup. Charts and health live in the browser Statistics view only; the native TUI panel stays at the dense turn table.
 
+<p>
+  <img src="screenshots/statistics-advanced-dark.png" alt="Statistics view in Advanced mode with the Session health badge" width="48%">
+  <img src="screenshots/statistics-charts-dark.png" alt="Statistics Charts sub-tab" width="48%">
+</p>
+
 ### Turn columns
 
 `#`, trigger, start → end, duration, model, provider (sublabel), steps, input/output/reasoning tokens, cache read/write, hit rate, context (latest or cumulative), Δ context, model time, tool time, residual, output speed, cost, status.
