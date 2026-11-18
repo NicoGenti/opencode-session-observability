@@ -10,6 +10,7 @@
 import type { Attribution } from "./attribution.ts";
 import type { Diagnostics } from "./diagnostics.ts";
 import type { SessionHealth } from "./health.ts";
+import type { Recommendations } from "./recommendations.ts";
 
 export type Basis = "measured" | "derived" | "estimated" | "unavailable";
 
@@ -450,6 +451,13 @@ export interface Analysis {
    * produced before the evaluator existed stay valid.
    */
   attribution?: Attribution;
+  /**
+   * Local, deterministic recommendations over the same analysis: fact rows
+   * restate an existing finding, hypothesis rows suggest an action and always
+   * carry the fact they rest on. Optional and absent when no rule triggers, so
+   * payloads produced before the evaluator existed stay valid.
+   */
+  recommendations?: Recommendations;
 }
 
 export interface EventPage {
