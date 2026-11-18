@@ -18,6 +18,7 @@ import {
   dateInputToEpoch,
   epochToDateInput,
   parseBenchmarkFilters,
+  quantiseDateBound,
   serializeBenchmarkFilters,
   // @ts-expect-error - plain browser module without type declarations
 } from "../src/ui/benchmark.js";
@@ -83,10 +84,11 @@ function benchmark(overrides: Record<string, unknown> = {}): Record<string, unkn
     sessionsCapped: false,
     candidatesConsidered: 3,
     basisNotes: [
-      "Compared 3 of 3 candidate session(s).",
+      "Compared 3 of 3 loaded candidates (3 sessions matched the summary filters).",
       "Windowed sessions (coverage.complete = false) are counted in sums and completion counts and excluded from averages; 0 of 3 compared session(s) are windowed.",
       "Averages are derived: cost per session, duration per session and cache hit rate skip a session whose value was not recorded.",
       "Recurring patterns are deterministic group-bys: a health rule or a top failing tool recorded in at least 3 sessions. Nothing is ranked.",
+      "Candidates are the 1000 most recently updated sessions; older sessions were never listed.",
     ],
     ...overrides,
   };
@@ -101,6 +103,15 @@ function functionBody(source: string, header: string): string {
   assert.ok(start >= 0, `${header} not found`);
   const next = source.indexOf("\nfunction ", start + header.length);
   return source.slice(start, next === -1 ? source.length : next);
+}
+
+/** The declaration starting at `header` and ending at the next top-level function. */
+function declarationBody(source: string, header: string): string {
+  const start = source.indexOf(header);
+  assert.ok(start >= 0, `${header} not found`);
+  const rest = source.slice(start + header.length);
+  const next = rest.search(/\n(?:async )?function /);
+  return source.slice(start, next === -1 ? source.length : start + header.length + next);
 }
 
 // ---------------------------------------------------------------------------
@@ -238,19 +249,21 @@ test("provenance notes carry the cap and the windowed-exclusion note", () => {
   assert.match(plain, /class="benchmark-notes"/);
   assert.doesNotMatch(plain, /data-sessions-capped/);
   assert.match(plain, /excluded from averages/);
+  // The listing ceiling is always stated, capped or not.
+  assert.match(plain, /1000 most recently updated sessions; older sessions were never listed/);
 
   const capped = benchmarkNotesHtml(
     benchmark({
       sessionsCapped: true,
       candidatesConsidered: 120,
       basisNotes: [
-        "Compared the 50 most recently updated of 120 candidate session(s); older candidates were not loaded.",
+        "Compared 50 of 50 loaded candidates (120 sessions matched the summary filters; older candidates were not loaded).",
       ],
     }),
   );
   assert.match(capped, /data-sessions-capped="true"/);
   assert.match(capped, /benchmark-note benchmark-note-cap/);
-  assert.match(capped, /120 candidate session\(s\)/);
+  assert.match(capped, /120 sessions matched the summary filters/);
 });
 
 // ---------------------------------------------------------------------------
@@ -340,8 +353,6 @@ test("a criterion is required and groupBy never counts as one", () => {
   assert.equal(benchmarkHasFilters({ agent: "   " }), false);
   assert.equal(benchmarkHasFilters({ from: "0" }), true);
   for (const key of [
-    "from",
-    "to",
     "model",
     "provider",
     "agent",
@@ -353,6 +364,51 @@ test("a criterion is required and groupBy never counts as one", () => {
   }
 });
 
+test("a non-numeric date bound is dropped instead of forwarded", () => {
+  // Neither a criterion nor a query parameter: the view stays idle.
+  assert.equal(benchmarkHasFilters({ from: "yesterday" }), false);
+  assert.equal(benchmarkHasFilters({ to: "12e" }), false);
+  assert.equal(benchmarkApiPath({ from: "nope" }), "/api/benchmark");
+  assert.equal(
+    benchmarkApiPath({ from: "nope", agent: "build" }),
+    "/api/benchmark?agent=build",
+  );
+  assert.deepEqual(parseBenchmarkFilters("from=nope&agent=build"), {
+    agent: "build",
+  });
+  assert.deepEqual(parseBenchmarkFilters("to=12e"), {});
+  assert.equal(
+    serializeBenchmarkFilters({ to: "nope", model: "m" }),
+    "model=m",
+  );
+});
+
+test("hash date bounds quantise to UTC days so a re-submit is stable", () => {
+  const noon = Date.UTC(2026, 0, 2, 12, 34, 56, 789);
+  assert.equal(quantiseDateBound(noon), Date.UTC(2026, 0, 2));
+  assert.equal(quantiseDateBound(noon, true), Date.UTC(2026, 0, 3) - 1);
+  assert.equal(quantiseDateBound("", true), undefined);
+  assert.equal(quantiseDateBound("nope"), undefined);
+
+  const filters = parseBenchmarkFilters(`from=${noon}&to=${noon}&agent=build`);
+  assert.equal(filters.from, String(Date.UTC(2026, 0, 2)));
+  assert.equal(filters.to, String(Date.UTC(2026, 0, 3) - 1));
+
+  // Re-submitting a parsed hash reproduces the identical bounds.
+  const query = serializeBenchmarkFilters(filters);
+  assert.equal(query, `from=${Date.UTC(2026, 0, 2)}&to=${Date.UTC(2026, 0, 3) - 1}&agent=build`);
+  assert.deepEqual(parseBenchmarkFilters(query), filters);
+
+  // The form path lands on the very same bounds as the hash path.
+  assert.equal(
+    serializeBenchmarkFilters({
+      from: String(dateInputToEpoch("2026-01-02")),
+      to: String(dateInputToEpoch("2026-01-02", true)),
+    }),
+    query.replace("&agent=build", ""),
+  );
+});
+
 test("the API path carries exactly the set filters", () => {
   assert.equal(benchmarkApiPath({}), "/api/benchmark");
   assert.equal(
@@ -361,7 +417,7 @@ test("the API path carries exactly the set filters", () => {
   );
   assert.equal(
     benchmarkApiPath({ from: "1", to: "2" }),
-    "/api/benchmark?from=1&to=2",
+    "/api/benchmark?from=0&to=86399999",
   );
 });
 
@@ -459,6 +515,54 @@ test("the benchmark is a standalone hash route with a header nav link", async ()
   const link = html.indexOf('id="benchmark-link"');
   assert.ok(liveToggle >= 0 && link > liveToggle, "nav link sits beside the live toggle");
   assert.match(html, /href="#\/benchmark"/);
+  // Basic mode stays free of the benchmark: the CSS rule does the hiding.
+  assert.match(html, /id="benchmark-link" class="btn ghost advanced-only"/);
+  const css = await uiSource("styles.css");
+  assert.match(css, /body\[data-view-mode="basic"\] \.advanced-only \{ display: none !important; \}/);
+});
+
+test("a pending comparison cannot repaint a view it no longer owns", async () => {
+  const app = await uiSource("app.js");
+
+  // Leaving the benchmark for a session invalidates the request in flight.
+  const selection = declarationBody(app, "async function selectSession(");
+  assert.match(selection, /benchmarkRequestSeq \+= 1;/, "selectSession bumps the sequence");
+
+  // So does any other non-benchmark hash route.
+  const routing = declarationBody(app, "async function onHashChange()");
+  assert.match(routing, /benchmarkRequestSeq \+= 1;/, "onHashChange bumps the sequence");
+  assert.ok(
+    routing.indexOf('route.view === "benchmark"') <
+      routing.indexOf("benchmarkRequestSeq += 1;"),
+    "the bump sits on the non-benchmark branch",
+  );
+
+  // And the response is only applied while the route is still the benchmark.
+  const rendering = declarationBody(app, "async function renderBenchmark(");
+  assert.equal(
+    rendering.match(/if \(seq !== benchmarkRequestSeq\) return;/g)?.length,
+    2,
+    "the sequence guard stays on both paths",
+  );
+  assert.equal(
+    rendering.match(/if \(parseHash\(\)\.view !== "benchmark"\) return;/g)?.length,
+    2,
+    "both the success and the failure path re-check the route",
+  );
+  // Every route check follows its sequence check, never the other way round.
+  const sequenceChecks = [...rendering.matchAll(/if \(seq !== benchmarkRequestSeq\) return;/g)].map(
+    (match) => match.index ?? 0,
+  );
+  const routeChecks = [
+    ...rendering.matchAll(/if \(parseHash\(\)\.view !== "benchmark"\) return;/g),
+  ].map((match) => match.index ?? 0);
+  assert.equal(routeChecks.length, sequenceChecks.length);
+  for (let index = 0; index < routeChecks.length; index++) {
+    assert.ok(
+      sequenceChecks[index]! < routeChecks[index]!,
+      "the route check follows the sequence check",
+    );
+  }
 });
 
 test("the benchmark never leaks Basic-mode markup or a second table idiom", () => {

@@ -371,6 +371,9 @@ async function loadSessions(query = state.sessionQuery) {
 
 async function selectSession(sessionID, view = state.view, eventID = null) {
   dom.shell?.classList.remove("sidebar-open");
+  // A comparison in flight belongs to the benchmark route, which this call is
+  // leaving: bumping the sequence makes a late response a no-op.
+  benchmarkRequestSeq += 1;
   const changed = sessionID !== state.sessionID;
   state.sessionID = sessionID;
   // A session route only knows the two session views. The benchmark is a
@@ -3687,9 +3690,13 @@ async function renderBenchmark(filters = {}) {
   try {
     const data = await api(benchmarkApiPath(filters));
     if (seq !== benchmarkRequestSeq) return;
+    // The route is the destination, not just the sequence: a navigation that
+    // never touched the counter still cannot repaint another view.
+    if (parseHash().view !== "benchmark") return;
     dom.view.innerHTML = benchmarkViewHtml({ filters, benchmark: data.benchmark });
   } catch (error) {
     if (seq !== benchmarkRequestSeq) return;
+    if (parseHash().view !== "benchmark") return;
     dom.view.innerHTML = benchmarkViewHtml({ filters, error: error.message });
   }
 }
@@ -3782,6 +3789,8 @@ async function onHashChange() {
     await enterBenchmark(route.filters ?? {});
     return;
   }
+  // Any non-benchmark route invalidates a comparison still in flight.
+  benchmarkRequestSeq += 1;
   if (!route.sessionID) return;
   if (route.sessionID !== state.sessionID) {
     await selectSession(route.sessionID, route.view, route.eventID);
