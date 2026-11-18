@@ -26,6 +26,12 @@ import {
   isBenchmarkTaskType,
 } from "../core/benchmark.ts";
 import type { BenchmarkFilters } from "../core/benchmark.ts";
+import {
+  DEFAULT_GUARDRAILS,
+  MAX_ELAPSED_MINUTES,
+  evaluateGuardrails,
+} from "../core/guardrails.ts";
+import type { GuardrailThresholds } from "../core/guardrails.ts";
 
 const UI_ROOT = fileURLToPath(new URL("../ui/", import.meta.url));
 const VERSION = "0.1.0";
@@ -298,6 +304,60 @@ function numericParam(
   return { value, invalid: false };
 }
 
+/** The closed `gr.*` vocabulary: one bounded budget per query parameter. */
+const GUARDRAIL_PARAM_SPECS: ReadonlyArray<{
+  name: string;
+  key: keyof GuardrailThresholds;
+  max: number;
+}> = [
+  { name: "tokensTotal", key: "tokensTotal", max: 1e12 },
+  { name: "costTotal", key: "costTotal", max: 1e12 },
+  { name: "contextRun", key: "contextRun", max: 1e12 },
+  { name: "retries", key: "retries", max: 1e12 },
+  { name: "toolFailures", key: "toolFailures", max: 1e12 },
+  { name: "elapsedMinutes", key: "elapsedMinutes", max: MAX_ELAPSED_MINUTES },
+];
+
+/** The accepted budget parameters, exported so tests and docs stay in sync. */
+export const GUARDRAIL_PARAM_NAMES: readonly string[] = Object.freeze(
+  GUARDRAIL_PARAM_SPECS.map((spec) => `gr.${spec.name}`),
+);
+
+interface GuardrailQuery {
+  /** At least one known `gr.*` parameter was present. */
+  present: boolean;
+  /** A present parameter was empty, malformed, negative or out of bounds. */
+  invalid: boolean;
+  /** Present values over the defaults; absent keys keep the default. */
+  thresholds: GuardrailThresholds;
+}
+
+/**
+ * Reads the browser-owned guardrail budgets. The vocabulary is closed: an
+ * unknown `gr.*` key is invalid instead of silently ignored, and every present
+ * value must be a finite number inside its documented bound. Absent keys fall
+ * back to `DEFAULT_GUARDRAILS`, so the evaluator stays stateless and the route
+ * is still a pure function of the query.
+ */
+function guardrailQuery(search: URLSearchParams): GuardrailQuery {
+  const thresholds: GuardrailThresholds = { ...DEFAULT_GUARDRAILS };
+  let present = false;
+  for (const key of search.keys()) {
+    if (!key.startsWith("gr.")) continue;
+    present = true;
+    const name = key.slice("gr.".length);
+    const spec = GUARDRAIL_PARAM_SPECS.find((entry) => entry.name === name);
+    if (!spec) return { present, invalid: true, thresholds };
+    const raw = search.get(key) ?? "";
+    const value = raw.trim() === "" ? Number.NaN : Number(raw);
+    if (!Number.isFinite(value) || value < 0 || value > spec.max) {
+      return { present, invalid: true, thresholds };
+    }
+    thresholds[spec.key] = value;
+  }
+  return { present, invalid: false, thresholds };
+}
+
 interface CompareQuery {
   leftSessionID: string;
   leftEpisodeID: string;
@@ -468,12 +528,32 @@ export async function createObservabilityServer(
         const sessionID = match[1]!;
         const fromSeq = numberParam(search, "fromSeq");
         const toSeq = numberParam(search, "toSeq");
+        const guardrails = guardrailQuery(search);
+        if (guardrails.invalid) {
+          sendJson(req, res, 400, {
+            error: "invalid_guardrails",
+            message:
+              "Guardrail budgets must be finite, non-negative numbers inside their documented bounds, and only the documented gr.* keys are accepted.",
+          });
+          return;
+        }
         const { analysis } = await service.analyze(sessionID, {
           fromSeq,
           toSeq,
           reveal,
           windowed: fromSeq !== undefined || toSeq !== undefined,
         });
+        // A route-level sibling, never an `Analysis` field: exports and the
+        // plugin RPC keep their shape and `analysis.health` stays authoritative.
+        if (guardrails.present) {
+          const evaluated = evaluateGuardrails(analysis, guardrails.thresholds);
+          sendJson(req, res, 200, {
+            analysis,
+            guardrails: evaluated,
+            revealAllowed: allowReveal,
+          });
+          return;
+        }
         sendJson(req, res, 200, { analysis, revealAllowed: allowReveal });
         return;
       }

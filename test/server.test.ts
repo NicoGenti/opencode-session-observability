@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   BENCHMARK_PATH,
   EPISODE_COMPARE_PATH,
+  GUARDRAIL_PARAM_NAMES,
   SESSION_DIAGNOSTICS_PATTERN,
   SESSION_FAMILY_RECOVERY_PATTERN,
   SESSION_LIVE_PATTERN,
@@ -222,6 +223,121 @@ test("HTTP health, sessions, session and analysis endpoints", async () => {
     assert.equal(analysis.analysis.totals.toolCalls, 2);
     assert.equal(analysis.analysis.turns[0].steps[0].toolCalls[0].input, null);
   });
+});
+
+test("HTTP analysis keeps guardrails a route-level sibling", async () => {
+  await withServer(toolsFixture(), async (base) => {
+    const plain = (await fetch(
+      `${base}/api/sessions/ses_tools/analysis`,
+    ).then((res) => res.json())) as any;
+    assert.equal("guardrails" in plain, false);
+
+    const response = await fetch(
+      `${base}/api/sessions/ses_tools/analysis?gr.tokensTotal=1`,
+    );
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as any;
+    assert.ok(body.guardrails);
+    // A sibling of the analysis, never a rider inside it.
+    assert.equal(body.analysis.guardrails, undefined);
+    // The authoritative health verdict is byte-identical.
+    assert.deepEqual(body.analysis.health, plain.analysis.health);
+
+    assert.equal(body.guardrails.warnings.length, 1);
+    const warning = body.guardrails.warnings[0];
+    assert.equal(warning.id, "tokens-total");
+    assert.equal(warning.advisory, true);
+    assert.equal(warning.basis, "derived");
+    assert.equal(warning.threshold, 1);
+    assert.ok(Array.isArray(body.guardrails.skipped));
+    // Absent keys keep the default budgets, so a 0.05 cost stays quiet.
+    assert.equal(
+      body.guardrails.warnings.some((row: any) => row.id === "cost-total"),
+      false,
+    );
+  });
+});
+
+test("HTTP analysis validates the closed gr.* contract", async () => {
+  await withServer(toolsFixture(), async (base) => {
+    const invalid = [
+      ["gr.tokensTotal", "-1"],
+      ["gr.costTotal", "abc"],
+      ["gr.contextRun", ""],
+      ["gr.retries", "1e13"],
+      ["gr.toolFailures", "Infinity"],
+      ["gr.elapsedMinutes", "100001"],
+      ["gr.elapsedMinutes", "-0.1"],
+      ["gr.unknownBudget", "1"],
+      ["gr.", "1"],
+    ] as const;
+    for (const [key, value] of invalid) {
+      const response = await fetch(
+        `${base}/api/sessions/ses_tools/analysis?${key}=${encodeURIComponent(
+          value,
+        )}`,
+      );
+      assert.equal(response.status, 400, `${key}=${value}`);
+      const body = (await response.json()) as any;
+      assert.equal(body.error, "invalid_guardrails");
+    }
+
+    // The documented upper bounds are inclusive.
+    const bounds = await fetch(
+      `${base}/api/sessions/ses_tools/analysis?gr.tokensTotal=1000000000000&gr.elapsedMinutes=100000`,
+    );
+    assert.equal(bounds.status, 200);
+    const bounded = (await bounds.json()) as any;
+    assert.ok(bounded.guardrails);
+    assert.deepEqual(bounded.guardrails.warnings, []);
+
+    // Every documented parameter is accepted.
+    const url = `${base}/api/sessions/ses_tools/analysis?${GUARDRAIL_PARAM_NAMES.map(
+      (name) => `${name}=0`,
+    ).join("&")}`;
+    const all = await fetch(url);
+    assert.equal(all.status, 200);
+    assert.equal(GUARDRAIL_PARAM_NAMES.length, 6);
+  });
+});
+
+test("HTTP analysis gates the guardrail sibling behind reveal", async () => {
+  await withServer(secretsFixture(), async (base) => {
+    const redactedResponse = await fetch(
+      `${base}/api/sessions/ses_secrets/analysis?gr.tokensTotal=1`,
+    );
+    assert.equal(redactedResponse.status, 200);
+    const redactedText = await redactedResponse.text();
+    assert.doesNotMatch(redactedText, /sk-abcdefghijklmnopqrstuvwxyz/);
+    assert.doesNotMatch(
+      redactedText,
+      /ghp_abcdefghijklmnopqrstuvwxyz0123456789/,
+    );
+    const redacted = JSON.parse(redactedText) as any;
+    assert.ok(redacted.guardrails.warnings.length > 0);
+    assert.doesNotMatch(JSON.stringify(redacted.guardrails), /sk-|ghp_/);
+
+    const revealed = (await fetch(
+      `${base}/api/sessions/ses_secrets/analysis?gr.tokensTotal=1&reveal=1`,
+    ).then((res) => res.json())) as any;
+    assert.ok(revealed.guardrails.warnings.length > 0);
+    assert.match(
+      JSON.stringify(revealed),
+      /sk-abcdefghijklmnopqrstuvwxyz/,
+    );
+  });
+
+  await withServer(
+    secretsFixture(),
+    async (base) => {
+      const response = await fetch(
+        `${base}/api/sessions/ses_secrets/analysis?gr.tokensTotal=1&reveal=1`,
+      );
+      assert.equal(response.status, 403);
+      assert.equal(((await response.json()) as any).error, "reveal_disabled");
+    },
+    false,
+  );
 });
 
 test("HTTP event pages support filters, paging and detail", async () => {
