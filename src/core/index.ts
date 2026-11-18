@@ -10,6 +10,7 @@ export * from "./health.ts";
 export * from "./live.ts";
 export * from "./attribution.ts";
 export * from "./recommendations.ts";
+export * from "./benchmark.ts";
 export * from "./episodes.ts";
 export * from "./episodeCompare.ts";
 export * from "./delegation.ts";

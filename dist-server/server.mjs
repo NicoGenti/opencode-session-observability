@@ -3756,6 +3756,305 @@ function deriveLiveSnapshot(analysis, options = {}) {
 	};
 	return snapshot;
 }
+/** The dimension a comparison is grouped by. `none` yields only `overall`. */
+var BENCHMARK_GROUP_BYS = Object.freeze([
+	"none",
+	"model",
+	"provider",
+	"agent",
+	"outcome",
+	"taskType"
+]);
+Object.freeze([
+	"succeeded",
+	"failed",
+	"interrupted"
+]);
+/**
+* The task dimension is the turn trigger kind. Only a recorded user prompt and a
+* recorded delegated prompt name a task; `synthetic`, `retry`, `resume` and
+* `orphan` triggers do not.
+*/
+var BENCHMARK_TASK_TYPES = Object.freeze(["user", "delegation"]);
+/** Group key for a session that did not record the dimension's value. */
+var NOT_RECORDED = "not recorded";
+function isBenchmarkGroupBy(value) {
+	return typeof value === "string" && BENCHMARK_GROUP_BYS.includes(value);
+}
+function text(value) {
+	if (typeof value !== "string") return void 0;
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : void 0;
+}
+function equalsIgnoringCase(value, needle) {
+	return typeof value === "string" && value.toLowerCase() === needle.toLowerCase();
+}
+function includesIgnoringCase(value, needle) {
+	return typeof value === "string" && value.toLowerCase().includes(needle.toLowerCase());
+}
+/**
+* Summary-level filters: date range, model, provider, agent, directory and
+* outcome. The task-type filter is applied after projection, because turn
+* triggers are not part of a session summary.
+*
+* `from`/`to` bound the recency anchor (`timeUpdated`, falling back to
+* `timeCreated`) — the same field the comparison is sorted by.
+*/
+function matchesBenchmarkFilters(session, filters) {
+	const anchor = session.timeUpdated ?? session.timeCreated;
+	if (filters.from !== void 0 && anchor < filters.from) return false;
+	if (filters.to !== void 0 && anchor > filters.to) return false;
+	const model = text(filters.model);
+	if (model !== void 0 && !equalsIgnoringCase(session.model?.id, model)) return false;
+	const provider = text(filters.provider);
+	if (provider !== void 0 && !equalsIgnoringCase(session.model?.providerID, provider)) return false;
+	const agent = text(filters.agent);
+	if (agent !== void 0 && !equalsIgnoringCase(session.agent, agent)) return false;
+	const directory = text(filters.directory);
+	if (directory !== void 0 && !includesIgnoringCase(session.directory, directory)) return false;
+	const outcome = text(filters.outcome);
+	if (outcome !== void 0 && !equalsIgnoringCase(session.outcome, outcome)) return false;
+	return true;
+}
+/**
+* True when a projected session recorded at least one turn of `taskType`.
+* An unknown value matches nothing (the route rejects it before this runs).
+*/
+function matchesBenchmarkTaskType(input, taskType) {
+	const wanted = text(taskType);
+	if (wanted === void 0) return true;
+	return input.taskTypes.includes(wanted);
+}
+function countOf(value) {
+	return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
+}
+/**
+* Failing tool names by incident count, descending, ties by name. A tool call
+* counts once per recorded `error` status; the DTO carries names only.
+*/
+function failingToolsOf(analysis) {
+	const counts = /* @__PURE__ */ new Map();
+	for (const turn of analysis.turns) for (const step of turn.steps) for (const call of step.toolCalls) {
+		if (call.status !== "error") continue;
+		if (typeof call.name !== "string" || call.name.length === 0) continue;
+		counts.set(call.name, (counts.get(call.name) ?? 0) + 1);
+	}
+	return [...counts.entries()].sort((left, right) => right[1] - left[1] || (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0)).slice(0, 5).map(([name]) => name);
+}
+/** Recorded task trigger kinds, in `BENCHMARK_TASK_TYPES` order. */
+function taskTypesOf(analysis) {
+	const present = /* @__PURE__ */ new Set();
+	for (const turn of analysis.turns) {
+		const kind = turn.trigger.kind;
+		if (kind === "user" || kind === "delegation") present.add(kind);
+	}
+	return BENCHMARK_TASK_TYPES.filter((kind) => present.has(kind));
+}
+/** One benchmark row from the session summary plus its projection. */
+function benchmarkInputFrom(summary, analysis) {
+	const totals = analysis.totals;
+	return {
+		sessionID: summary.id,
+		directory: summary.directory ?? null,
+		model: summary.model?.id ?? null,
+		provider: summary.model?.providerID ?? null,
+		agent: summary.agent ?? null,
+		outcome: summary.outcome ?? null,
+		timeCreated: summary.timeCreated,
+		timeUpdated: summary.timeUpdated ?? null,
+		totals: {
+			turns: countOf(totals.turns),
+			steps: countOf(totals.steps),
+			tokens: totals.tokens,
+			cost: totals.cost.value,
+			duration: totals.wallClockTime.value,
+			cacheHitRate: totals.cacheHitRate.value,
+			retries: countOf(totals.retries),
+			errors: countOf(totals.errors.total),
+			toolFailures: analysis.diagnostics?.incidents.length ?? 0,
+			compactions: countOf(totals.compactions)
+		},
+		triggeredRuleIDs: (analysis.health?.rules ?? []).filter((rule) => rule.triggered).map((rule) => rule.id),
+		failingTools: failingToolsOf(analysis),
+		windowed: analysis.coverage.complete === false,
+		taskTypes: taskTypesOf(analysis)
+	};
+}
+function presentNumbers(values) {
+	return values.filter((value) => typeof value === "number" && Number.isFinite(value));
+}
+/** Sum of the recorded values, `derived`, with the missing count in the note. */
+function sumMetric(values, what) {
+	if (values.length === 0) return metric(null, "unavailable", "no sessions were compared");
+	const present = presentNumbers(values);
+	if (present.length === 0) return metric(null, "unavailable", `no session recorded ${what}`);
+	const missing = values.length - present.length;
+	return metric(present.reduce((sum, value) => sum + value, 0), "derived", missing === 0 ? `sum across ${values.length} session(s)` : `${missing} of ${values.length} session(s) recorded no ${what}`);
+}
+/**
+* Arithmetic mean of the recorded values, `derived`. Callers pass only the
+* comparable (non-windowed) sessions; `comparable` is the denominator the note
+* reports so an excluded session stays visible.
+*/
+function averageMetric(values, comparable, what) {
+	const present = presentNumbers(values);
+	if (present.length === 0) return comparable === 0 ? metric(null, "unavailable", "no session was comparable") : metric(null, "unavailable", `no comparable session recorded ${what}`);
+	return metric(present.reduce((sum, value) => sum + value, 0) / present.length, "derived", `${present.length} of ${comparable} comparable session(s) recorded ${what}`);
+}
+function emptyTokens() {
+	return {
+		input: 0,
+		output: 0,
+		reasoning: 0,
+		cacheRead: 0,
+		cacheWrite: 0
+	};
+}
+function tokenTotal(tokens) {
+	return tokens.input + tokens.output + tokens.reasoning + tokens.cacheRead + tokens.cacheWrite;
+}
+function completionsFor(inputs) {
+	const counts = {
+		succeeded: 0,
+		failed: 0,
+		interrupted: 0,
+		unrecorded: 0
+	};
+	for (const input of inputs) if (input.outcome === "succeeded") counts.succeeded += 1;
+	else if (input.outcome === "failed") counts.failed += 1;
+	else if (input.outcome === "interrupted") counts.interrupted += 1;
+	else counts.unrecorded += 1;
+	return counts;
+}
+function rollupsFor(inputs) {
+	const comparable = inputs.filter((input) => !input.windowed);
+	const windowedCount = inputs.length - comparable.length;
+	const tokens = inputs.length === 0 ? emptyTokens() : sumTokens(inputs.map((input) => input.totals.tokens)).tokens;
+	return {
+		sessions: inputs.length,
+		turns: inputs.reduce((sum, input) => sum + input.totals.turns, 0),
+		steps: inputs.reduce((sum, input) => sum + input.totals.steps, 0),
+		tokens,
+		tokensTotal: tokenTotal(tokens),
+		costSum: sumMetric(inputs.map((input) => input.totals.cost), "a cost value"),
+		costPerSession: averageMetric(comparable.map((input) => input.totals.cost), comparable.length, "a cost value"),
+		durationPerSession: averageMetric(comparable.map((input) => input.totals.duration), comparable.length, "a duration"),
+		cacheHitRate: averageMetric(comparable.map((input) => input.totals.cacheHitRate), comparable.length, "a cache hit rate"),
+		retries: inputs.reduce((sum, input) => sum + input.totals.retries, 0),
+		errors: inputs.reduce((sum, input) => sum + input.totals.errors, 0),
+		toolFailures: inputs.reduce((sum, input) => sum + input.totals.toolFailures, 0),
+		compactions: inputs.reduce((sum, input) => sum + input.totals.compactions, 0),
+		completions: completionsFor(inputs),
+		windowedCount,
+		averagedSessions: comparable.length
+	};
+}
+/** The recorded value a group is built on; missing values share one group. */
+function benchmarkGroupKey(groupBy, input) {
+	if (groupBy === "model") {
+		if (input.model === null) return NOT_RECORDED;
+		return input.provider === null ? input.model : `${input.provider}/${input.model}`;
+	}
+	if (groupBy === "provider") return input.provider ?? "not recorded";
+	if (groupBy === "agent") return input.agent ?? "not recorded";
+	if (groupBy === "outcome") return input.outcome ?? "not recorded";
+	if (groupBy === "taskType") return input.taskTypes.length === 0 ? NOT_RECORDED : input.taskTypes.join("+");
+	return NOT_RECORDED;
+}
+function compareKeys(left, right) {
+	return left < right ? -1 : left > right ? 1 : 0;
+}
+/** Groups ordered by recorded key: declaration order is never importance. */
+function groupsFor(inputs, groupBy) {
+	const buckets = /* @__PURE__ */ new Map();
+	for (const input of inputs) {
+		const key = benchmarkGroupKey(groupBy, input);
+		const bucket = buckets.get(key);
+		if (bucket) bucket.push(input);
+		else buckets.set(key, [input]);
+	}
+	return [...buckets.entries()].sort((left, right) => compareKeys(left[0], right[0])).map(([key, members]) => ({
+		key,
+		label: key,
+		count: members.length,
+		rollups: rollupsFor(members)
+	}));
+}
+/**
+* Recurring patterns: the same triggered health rule id, or the same top failing
+* tool, recorded in at least `PATTERN_MIN_SESSIONS` sessions. Deterministic
+* group-bys only — no correlation, no similarity, no co-occurrence scoring.
+*/
+function patternsFor(inputs) {
+	const rules = /* @__PURE__ */ new Map();
+	const tools = /* @__PURE__ */ new Map();
+	const push = (bucket, key, sessionID) => {
+		const ids = bucket.get(key);
+		if (ids) ids.push(sessionID);
+		else bucket.set(key, [sessionID]);
+	};
+	for (const input of inputs) {
+		for (const ruleID of input.triggeredRuleIDs) if (typeof ruleID === "string" && ruleID.length > 0) push(rules, ruleID, input.sessionID);
+		const top = input.failingTools[0];
+		if (typeof top === "string" && top.length > 0) push(tools, top, input.sessionID);
+	}
+	const out = [];
+	for (const [key, sessionIDs] of [...rules.entries()].sort((left, right) => compareKeys(left[0], right[0]))) {
+		if (sessionIDs.length < 3) continue;
+		out.push({
+			kind: "health-rule",
+			key,
+			sessionCount: sessionIDs.length,
+			sessionIDs
+		});
+	}
+	for (const [key, sessionIDs] of [...tools.entries()].sort((left, right) => compareKeys(left[0], right[0]))) {
+		if (sessionIDs.length < 3) continue;
+		out.push({
+			kind: "failing-tool",
+			key,
+			sessionCount: sessionIDs.length,
+			sessionIDs
+		});
+	}
+	return out;
+}
+function basisNotesFor(inputs, options) {
+	const candidates = options.candidatesConsidered ?? inputs.length;
+	const windowedCount = inputs.filter((input) => input.windowed).length;
+	const notes = [];
+	if (options.sessionsCapped === true) notes.push(`Compared the 50 most recently updated of ${candidates} candidate session(s); older candidates were not loaded.`);
+	else notes.push(`Compared ${inputs.length} of ${candidates} candidate session(s).`);
+	notes.push(`Windowed sessions (coverage.complete = false) are counted in sums and completion counts and excluded from averages; ${windowedCount} of ${inputs.length} compared session(s) are windowed.`);
+	notes.push("Averages are derived: cost per session, duration per session and cache hit rate skip a session whose value was not recorded.");
+	notes.push(`Recurring patterns are deterministic group-bys: a health rule or a top failing tool recorded in at least 3 sessions. Nothing is ranked.`);
+	const skipped = options.skippedSessions ?? 0;
+	if (skipped > 0) notes.push(`${skipped} candidate session(s) could not be loaded between listing and comparison and were skipped.`);
+	return notes;
+}
+/**
+* Primary entry point. Pure, deterministic and local; an empty input set yields
+* a valid empty-shaped benchmark instead of throwing.
+*/
+function computeBenchmark(inputs, options = {}) {
+	const groupBy = isBenchmarkGroupBy(options.groupBy) ? options.groupBy : "none";
+	const candidates = options.candidatesConsidered ?? inputs.length;
+	return {
+		groupBy,
+		groups: groupBy === "none" ? [] : groupsFor(inputs, groupBy),
+		overall: {
+			count: inputs.length,
+			rollups: rollupsFor(inputs)
+		},
+		recurringPatterns: patternsFor(inputs),
+		sessionsCapped: options.sessionsCapped === true,
+		candidatesConsidered: Math.max(inputs.length, candidates),
+		basisNotes: basisNotesFor(inputs, {
+			...options,
+			candidatesConsidered: Math.max(inputs.length, candidates)
+		})
+	};
+}
 // src/core/digest.ts
 /**
 * Deterministic, size-capped Markdown digest of a normalized session analysis.
@@ -5350,6 +5649,48 @@ var ObservabilityService = class {
 			since: options.since
 		});
 		return options.reveal === true ? snapshot : redactValue(snapshot);
+	}
+	/**
+	* Cross-session benchmark over a bounded, recency-sorted candidate set.
+	*
+	* Candidates come from `listSessions`, so they are redacted when `reveal` is
+	* false: an in-memory filter can never turn a redacted value into a
+	* match/no-match oracle. Summary-level filters run first, the survivors are
+	* sorted by `timeUpdated` descending and capped at `MAX_BENCHMARK_SESSIONS`,
+	* and only then is each dataset loaded through the shared requestKey-coherent
+	* cache — the benchmark never clears it and never keeps the event streams.
+	* The task-type filter runs last, because turn triggers only exist after
+	* projection.
+	*/
+	async benchmark(filters = {}, options = {}) {
+		const reveal = options.reveal === true;
+		const ordered = [...(await this.listSessions({
+			limit: 1e3,
+			reveal
+		})).filter((summary) => matchesBenchmarkFilters(summary, filters))].sort((left, right) => (right.timeUpdated ?? right.timeCreated) - (left.timeUpdated ?? left.timeCreated) || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+		const capped = ordered.slice(0, 50);
+		const inputs = [];
+		let skipped = 0;
+		for (const summary of capped) {
+			let dataset;
+			try {
+				dataset = await this.loadDataset(summary.id);
+			} catch (error) {
+				if (!(error instanceof SessionNotFoundError)) throw error;
+				skipped += 1;
+				continue;
+			}
+			const input = benchmarkInputFrom(summary, dataset.analysis);
+			if (!matchesBenchmarkTaskType(input, filters.taskType)) continue;
+			inputs.push(input);
+		}
+		const benchmark = computeBenchmark(inputs, {
+			groupBy: filters.groupBy,
+			sessionsCapped: ordered.length > capped.length,
+			candidatesConsidered: ordered.length,
+			skippedSessions: skipped
+		});
+		return reveal ? benchmark : redactValue(benchmark);
 	}
 	/**
 	* Diagnostics plus the episodes derived from them.
