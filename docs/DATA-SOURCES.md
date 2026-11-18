@@ -263,7 +263,7 @@ The live snapshot is derived from what the session row and message stream alread
 
 | Signal | Basis | Where it comes from |
 |---|---|---|
-| File path | `measured` | A recorded tool call's `input.path` / `input.filePath` / `input.file` (read, grep, glob, edit, write, patch families) and a write-tool's `state.metadata.files[].file` list |
+| File path | `measured` | A recorded tool call's `input.path` / `input.filePath` / `input.file` / `input.dir` / `input.directory` (read, grep, glob, list, edit, write, patch families) and a write-tool's `state.metadata.files[].file` list |
 | File op counts | `measured` | One count per recorded tool call that touched the path; reads and writes are counted separately |
 | Per-file cost share | `derived` | The step's recorded cost divided evenly across the step's tool calls, then across the files a tool call touched — see [METRICS.md](METRICS.md) |
 | Command name | `derived` | The first token of a recorded `shell`/`bash` command; leading `NAME=value` assignments are skipped |
@@ -272,7 +272,11 @@ The live snapshot is derived from what the session row and message stream alread
 
 `taskID` equals `turnID` because the turn is the only task unit the store records; no other grouping is invented. A turn's `trigger` label is copied from the projection (a delegated child session already reads `Delegated prompt`).
 
-Privacy boundary: patch text and full command lines never enter the DTO. A file row carries the path plus capped tool-event ids, a command row carries the first token only, and a file's cost share is a number plus its basis note. Paths still pass through the same `redactValue` path as every other analysis field, so a credential-shaped path reads `[REDACTED:name]` unless reveal is on. Caps are `MAX_FILES_PER_TURN = 12`, `MAX_FILE_EVIDENCE = 6`, `MAX_COMMANDS_PER_TURN = 8`, `MAX_COMMAND_EVIDENCE = 6` and `MAX_ASSESSED_CHILDREN = 8` for subtasks.
+Privacy boundary: patch text and full command lines never enter the DTO. A file row carries the path plus capped tool-event ids, a command row carries the first token only, and a file's cost share is a number plus its basis note. Paths still pass through the same `redactValue` path as every other analysis field, so a credential-shaped path reads `[REDACTED:name]` unless reveal is on. Caps are `MAX_FILES_PER_TURN = 12`, `MAX_FILE_EVIDENCE = 6`, `MAX_COMMANDS_PER_TURN = 8`, `MAX_COMMAND_EVIDENCE = 6` and `MAX_ASSESSED_CHILDREN = 8` for subtasks; a capped turn reports how many rows it dropped in `filesTruncated` / `commandsTruncated` instead of dropping them silently.
+
+Path shape gate: every accepted path key (`path`, `filePath`, `file`, `dir`, `directory`, and a description that is really a path) must be a single token containing a separator or an interior dot and not ending with `.`. Free-text prose and credential-shaped tokens that tools may place in those fields yield no row.
+
+Directory caveat: `glob`, `list` and `grep` may report a directory as their `dir` / `directory` input, and the evaluator records it verbatim. Such a path can therefore appear as a file row; the DTO does not expand directories or claim that every row is a regular file. Path identity merges separator variants (`./src/a.ts`, `src/a.ts`, and their backslash-separated forms) and, on Windows, letter-case variants, while the first recorded spelling is what the row displays.
 
 ## Deliberately unavailable data
 

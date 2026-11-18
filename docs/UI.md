@@ -152,9 +152,11 @@ Advanced Statistics only, below the table/charts block and above the basis legen
 
 One card per attributed turn shows its recorded index, its trigger label (`User message`, `Delegated prompt`, …) and capped evidence links, then:
 
-- **Files** — up to 12 rows with the path, the read/write counts, and the derived per-file cost share carrying its `D` mark and the even-allocation note in the tooltip. A file whose steps recorded no cost reads `—`, never `$0`.
-- **Commands** — up to 8 rows by first token plus `×count`. The full command line is never sent to the browser.
+- **Files** — up to 12 rows with the path, the read/write counts, and the derived per-file cost share carrying its `D` mark and the even-allocation note in the tooltip. A file whose steps recorded no cost reads `—`, never `$0`; a recorded zero share is a measured zero and reads `$0`. A capped turn adds a `+N more files not shown` note from the DTO's `filesTruncated` count.
+- **Commands** — up to 8 rows by first token plus `×count`, with a `+N more commands not shown` note from `commandsTruncated` when the cap dropped rows. The full command line is never sent to the browser.
 - **Subtasks** — up to 8 recorded child sessions, labelled with their delegated agent.
+
+Every evidence chip names its own row (`File 2 · Event 1`, `Command 1 · Event 1`, `Turn 1 · Event 1`) so identically numbered chips in one card stay distinguishable; the `data-event-id` binding is unchanged.
 
 Every row drills through the existing bindings: a file or command links to its tool-call event (`data-event-id`, routed by `bindStatistics()` to `jumpToEvent()`), and a subtask opens the child session (`data-session-id` → `selectSession()`). No new binding is introduced.
 

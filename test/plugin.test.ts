@@ -67,6 +67,9 @@ test("RPC sessions, session and analysis return normalized data", async () => {
   assert.equal(analysis.analysis.totals.toolCalls, 2);
   assert.equal(analysis.analysis.turns[0].steps[0].toolCalls[0].input, null);
   assert.ok(analysis.analysis.turns[0].steps[0].toolCalls[0].inputPreview);
+  // The TUI has no attribution surface, so the RPC payload omits the rider
+  // the service itself still computes.
+  assert.equal("attribution" in analysis.analysis, false);
 });
 
 test("RPC eventPage supports filters and paging", async () => {

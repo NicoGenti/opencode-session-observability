@@ -3,14 +3,16 @@ import assert from "node:assert/strict";
 
 import { ObservabilityService } from "../src/core/service.ts";
 import {
+  MAX_COMMAND_EVIDENCE,
   MAX_COMMANDS_PER_TURN,
+  MAX_COMMAND_TOKEN_LENGTH,
   MAX_FILES_PER_TURN,
   MAX_FILE_EVIDENCE,
+  MAX_PATH_LENGTH,
   evaluateAttribution,
 } from "../src/core/attribution.ts";
 import type { Attribution, FileAttribution } from "../src/core/attribution.ts";
-import type { Analysis } from "../src/core/types.ts";
-import {
+import type { Analysis, RawMessage } from "../src/core/types.ts";import {
   BASE,
   assistant,
   fixture,
@@ -368,6 +370,378 @@ function noCostFixture(): Fixture {
   ]);
 }
 
+/** Quoted assignments keep their quoted segment; `npm` stays the executable. */
+function quotedAssignmentFixture(): Fixture {
+  const messages = [
+    user("msg_u1", 1, BASE),
+    assistant({
+      id: "msg_a1",
+      seq: 2,
+      created: BASE + 100,
+      streamed: BASE + 500,
+      completed: BASE + 900,
+      content: [
+        toolBlock({
+          name: "shell",
+          created: BASE + 150,
+          ran: BASE + 200,
+          completed: BASE + 300,
+          input: { command: 'PASSWORD="correct horse" npm test' },
+        }),
+        toolBlock({
+          name: "shell",
+          created: BASE + 350,
+          ran: BASE + 400,
+          completed: BASE + 500,
+          input: { command: "TOKEN='a b c' bash -c 'echo hi'" },
+        }),
+      ],
+      tokens: TOKENS,
+      cost: 0.02,
+    }),
+    idle("msg_i1", 3, BASE + 1_000, "succeeded"),
+  ];
+  return fixture([
+    {
+      meta: session("ses_attr_quoted", {
+        time: { created: BASE, updated: BASE + 1_000, busy: BASE, idle: BASE + 1_000 },
+      }),
+      messages,
+    },
+  ]);
+}
+
+/** A `dir` input is accepted, but prose and credential-shaped tokens are not. */
+function payloadShapeFixture(): Fixture {
+  const messages = [
+    user("msg_u1", 1, BASE),
+    assistant({
+      id: "msg_a1",
+      seq: 2,
+      created: BASE + 100,
+      streamed: BASE + 500,
+      completed: BASE + 900,
+      content: [
+        toolBlock({
+          name: "read",
+          created: BASE + 150,
+          ran: BASE + 200,
+          completed: BASE + 300,
+          input: { path: "Rewrite the attribution evaluator prose" },
+        }),
+        toolBlock({
+          name: "edit",
+          created: BASE + 350,
+          ran: BASE + 400,
+          completed: BASE + 500,
+          input: { file: "sk-abcdefghijklmnopqrstuvwxyz", oldString: "a", newString: "b" },
+        }),
+        toolBlock({
+          name: "glob",
+          created: BASE + 550,
+          ran: BASE + 600,
+          completed: BASE + 700,
+          input: { dir: "src/core" },
+        }),
+        toolBlock({
+          name: "write",
+          created: BASE + 750,
+          ran: BASE + 800,
+          completed: BASE + 850,
+          input: { directory: "src/trailing.", content: "x" },
+        }),
+      ],
+      tokens: TOKENS,
+      cost: 0.04,
+    }),
+    idle("msg_i1", 3, BASE + 1_000, "succeeded"),
+  ];
+  return fixture([
+    {
+      meta: session("ses_attr_shape", {
+        time: { created: BASE, updated: BASE + 1_000, busy: BASE, idle: BASE + 1_000 },
+      }),
+      messages,
+    },
+  ]);
+}
+
+/** One write call whose metadata lists two files: each takes half the step cost. */
+function metadataMultiFileFixture(): Fixture {
+  const messages = [
+    user("msg_u1", 1, BASE),
+    assistant({
+      id: "msg_a1",
+      seq: 2,
+      created: BASE + 100,
+      streamed: BASE + 500,
+      completed: BASE + 900,
+      content: [
+        toolBlock({
+          name: "write",
+          created: BASE + 150,
+          ran: BASE + 200,
+          completed: BASE + 300,
+          input: { content: "x" },
+          metadata: {
+            truncated: false,
+            files: [{ file: "src/a.ts" }, { file: "src/b.ts" }],
+          },
+        }),
+      ],
+      tokens: TOKENS,
+      cost: 0.02,
+    }),
+    idle("msg_i1", 3, BASE + 1_000, "succeeded"),
+  ];
+  return fixture([
+    {
+      meta: session("ses_attr_multifile", {
+        time: { created: BASE, updated: BASE + 1_000, busy: BASE, idle: BASE + 1_000 },
+      }),
+      messages,
+    },
+  ]);
+}
+
+/** 20 steps with distinct costs, so the file cap keeps a knowable top 12. */
+function distinctCostFixture(): Fixture {
+  const messages: RawMessage[] = [user("msg_u1", 1, BASE)];
+  for (let index = 0; index < 20; index += 1) {
+    messages.push(
+      assistant({
+        id: `msg_a${index}`,
+        seq: index + 2,
+        created: BASE + 100 + index * 100,
+        streamed: BASE + 150 + index * 100,
+        completed: BASE + 180 + index * 100,
+        content: [
+          toolBlock({
+            name: "read",
+            created: BASE + 110 + index * 100,
+            ran: BASE + 120 + index * 100,
+            completed: BASE + 140 + index * 100,
+            input: { path: `src/f${index}.ts` },
+          }),
+        ],
+        tokens: TOKENS,
+        cost: (index + 1) * 0.01,
+      }),
+    );
+  }
+  messages.push(idle("msg_i1", 22, BASE + 3_000, "succeeded"));
+  return fixture([
+    {
+      meta: session("ses_attr_distinct", {
+        time: { created: BASE, updated: BASE + 3_000, busy: BASE, idle: BASE + 3_000 },
+      }),
+      messages,
+    },
+  ]);
+}
+
+/** A step whose recorded cost divides to a repeating binary fraction. */
+function floatNoiseFixture(): Fixture {
+  const messages = [
+    user("msg_u1", 1, BASE),
+    assistant({
+      id: "msg_a1",
+      seq: 2,
+      created: BASE + 100,
+      streamed: BASE + 500,
+      completed: BASE + 900,
+      content: [
+        toolBlock({
+          name: "read",
+          created: BASE + 150,
+          ran: BASE + 200,
+          completed: BASE + 250,
+          input: { path: "src/a.ts" },
+        }),
+        toolBlock({
+          name: "read",
+          created: BASE + 350,
+          ran: BASE + 400,
+          completed: BASE + 450,
+          input: { path: "src/b.ts" },
+        }),
+        toolBlock({
+          name: "read",
+          created: BASE + 550,
+          ran: BASE + 600,
+          completed: BASE + 650,
+          input: { path: "src/c.ts" },
+        }),
+      ],
+      tokens: TOKENS,
+      cost: 0.03,
+    }),
+    idle("msg_i1", 3, BASE + 1_000, "succeeded"),
+  ];
+  return fixture([
+    {
+      meta: session("ses_attr_float", {
+        time: { created: BASE, updated: BASE + 1_000, busy: BASE, idle: BASE + 1_000 },
+      }),
+      messages,
+    },
+  ]);
+}
+
+/** The same file recorded with `./`, `/` and a Windows separator / case. */
+function pathVariantFixture(): Fixture {
+  const messages = [
+    user("msg_u1", 1, BASE),
+    assistant({
+      id: "msg_a1",
+      seq: 2,
+      created: BASE + 100,
+      streamed: BASE + 500,
+      completed: BASE + 700,
+      content: [
+        toolBlock({
+          name: "read",
+          created: BASE + 150,
+          ran: BASE + 200,
+          completed: BASE + 250,
+          input: { path: "./src/a.ts" },
+        }),
+        toolBlock({
+          name: "read",
+          created: BASE + 300,
+          ran: BASE + 350,
+          completed: BASE + 400,
+          input: { path: "src/a.ts" },
+        }),
+        toolBlock({
+          name: "read",
+          created: BASE + 450,
+          ran: BASE + 500,
+          completed: BASE + 550,
+          input: { path: "src\\A.ts" },
+        }),
+      ],
+      tokens: TOKENS,
+      cost: 0.03,
+    }),
+    idle("msg_i1", 3, BASE + 800, "succeeded"),
+  ];
+  return fixture([
+    {
+      meta: session("ses_attr_variants", {
+        time: { created: BASE, updated: BASE + 800, busy: BASE, idle: BASE + 800 },
+      }),
+      messages,
+    },
+  ]);
+}
+
+/** One shell call whose only token is longer than a command name may be. */
+function longCommandTokenFixture(): Fixture {
+  const messages = [
+    user("msg_u1", 1, BASE),
+    assistant({
+      id: "msg_a1",
+      seq: 2,
+      created: BASE + 100,
+      streamed: BASE + 300,
+      completed: BASE + 400,
+      content: [
+        toolBlock({
+          name: "shell",
+          created: BASE + 150,
+          ran: BASE + 200,
+          completed: BASE + 300,
+          input: { command: "a".repeat(MAX_COMMAND_TOKEN_LENGTH + 1) },
+        }),
+      ],
+      tokens: TOKENS,
+      cost: 0.01,
+    }),
+    idle("msg_i1", 3, BASE + 500, "succeeded"),
+  ];
+  return fixture([
+    {
+      meta: session("ses_attr_longcmd", {
+        time: { created: BASE, updated: BASE + 500, busy: BASE, idle: BASE + 500 },
+      }),
+      messages,
+    },
+  ]);
+}
+
+/** One read path longer than `MAX_PATH_LENGTH`. */
+function longPathFixture(): Fixture {
+  const messages = [
+    user("msg_u1", 1, BASE),
+    assistant({
+      id: "msg_a1",
+      seq: 2,
+      created: BASE + 100,
+      streamed: BASE + 300,
+      completed: BASE + 400,
+      content: [
+        toolBlock({
+          name: "read",
+          created: BASE + 150,
+          ran: BASE + 200,
+          completed: BASE + 300,
+          input: { path: `src/${"a".repeat(MAX_PATH_LENGTH)}` },
+        }),
+      ],
+      tokens: TOKENS,
+      cost: 0.01,
+    }),
+    idle("msg_i1", 3, BASE + 500, "succeeded"),
+  ];
+  return fixture([
+    {
+      meta: session("ses_attr_longpath", {
+        time: { created: BASE, updated: BASE + 500, busy: BASE, idle: BASE + 500 },
+      }),
+      messages,
+    },
+  ]);
+}
+
+/** Nine shell calls to the same command: row count 9, evidence capped at 6. */
+function repeatedCommandFixture(): Fixture {
+  const content: unknown[] = [];
+  for (let index = 0; index < 9; index += 1) {
+    content.push(
+      toolBlock({
+        name: "shell",
+        created: BASE + 100 + index * 50,
+        ran: BASE + 110 + index * 50,
+        completed: BASE + 120 + index * 50,
+        input: { command: "npm run check" },
+      }),
+    );
+  }
+  const messages = [
+    user("msg_u1", 1, BASE),
+    assistant({
+      id: "msg_a1",
+      seq: 2,
+      created: BASE + 100,
+      streamed: BASE + 1_000,
+      completed: BASE + 1_200,
+      content,
+      tokens: TOKENS,
+      cost: 0.05,
+    }),
+    idle("msg_i1", 3, BASE + 1_300, "succeeded"),
+  ];
+  return fixture([
+    {
+      meta: session("ses_attr_repeatcmd", {
+        time: { created: BASE, updated: BASE + 1_300, busy: BASE, idle: BASE + 1_300 },
+      }),
+      messages,
+    },
+  ]);
+}
+
 // ---------------------------------------------------------------------------
 // Measured paths and derived cost shares
 // ---------------------------------------------------------------------------
@@ -490,6 +864,56 @@ test("a first token that is not shell-token shaped yields no command row", async
   assert.equal(analysis.attribution, undefined);
 });
 
+test("a quoted env assignment keeps its value out of the command name", async () => {
+  const commands = attributionOf(await analysisOf(quotedAssignmentFixture())).turns[0]!
+    .commands;
+
+  assert.deepEqual(
+    commands.map((command) => command.name),
+    ["bash", "npm"],
+  );
+  const text = JSON.stringify(commands);
+  assert.equal(text.includes("horse"), false, "the quoted value must not leak");
+  assert.equal(text.includes("correct"), false);
+  assert.equal(text.includes("PASSWORD"), false);
+});
+
+test("bare punctuation is never accepted as a command name", async () => {
+  const content = ["--", ".", "/", "npm"].map((command, index) =>
+    toolBlock({
+      name: "shell",
+      created: BASE + 100 + index * 50,
+      ran: BASE + 110 + index * 50,
+      completed: BASE + 120 + index * 50,
+      input: { command },
+    }),
+  );
+  const analysis = await analysisOf(
+    fixture([
+      {
+        meta: session("ses_attr_punct"),
+        messages: [
+          user("msg_u1", 1, BASE),
+          assistant({
+            id: "msg_a1",
+            seq: 2,
+            created: BASE + 100,
+            streamed: BASE + 400,
+            completed: BASE + 500,
+            content,
+            tokens: TOKENS,
+            cost: 0.01,
+          }),
+          idle("msg_i1", 3, BASE + 600, "succeeded"),
+        ],
+      },
+    ]),
+  );
+
+  const names = attributionOf(analysis).turns[0]!.commands.map((row) => row.name);
+  assert.deepEqual(names, ["npm"]);
+});
+
 // ---------------------------------------------------------------------------
 // Payload neutrality
 // ---------------------------------------------------------------------------
@@ -548,6 +972,22 @@ test("a description is only accepted as a file path when it is path-shaped", asy
   assert.equal(analysis.attribution, undefined);
 });
 
+test("prose and credential-shaped path keys never become file rows", async () => {
+  const attribution = attributionOf(await analysisOf(payloadShapeFixture()));
+  const files = attribution.turns[0]!.files;
+
+  // `dir` is accepted, so the rider exists and the negative asserts are real.
+  assert.deepEqual(
+    files.map((file) => file.path),
+    ["src/core"],
+  );
+  assert.deepEqual(files[0]!.ops, { read: 1, write: 0 });
+  const text = JSON.stringify(files);
+  assert.equal(text.includes("Rewrite the attribution"), false);
+  assert.equal(text.includes("sk-abcdefghijklmnopqrstuvwxyz"), false);
+  assert.equal(text.includes("src/trailing."), false);
+});
+
 // ---------------------------------------------------------------------------
 // Subtasks
 // ---------------------------------------------------------------------------
@@ -585,6 +1025,75 @@ test("files per turn are capped, keeping the highest cost shares", async () => {
   for (const file of files) assert.equal(file.basis, "measured");
 });
 
+test("the file cap keeps the 12 highest distinct shares and reports the rest", async () => {
+  const analysis = await analysisOf(distinctCostFixture());
+  const turn = attributionOf(analysis).turns[0]!;
+
+  assert.equal(turn.files.length, MAX_FILES_PER_TURN);
+  // Step i costs (i + 1) * 0.01, so the top 12 are steps 19 down to 8.
+  assert.deepEqual(
+    turn.files.map((file) => file.path),
+    Array.from({ length: 12 }, (_, offset) => `src/f${19 - offset}.ts`),
+  );
+  for (const [offset, file] of turn.files.entries()) {
+    closeTo(file.costShare.value, (20 - offset) * 0.01);
+  }
+  assert.equal(turn.filesTruncated, 8);
+  assert.equal(turn.commandsTruncated, 0);
+});
+
+test("one call's metadata file list splits the step cost evenly", async () => {
+  const files = attributionOf(await analysisOf(metadataMultiFileFixture())).turns[0]!
+    .files;
+
+  assert.deepEqual(
+    files.map((file) => [file.path, file.costShare.value]),
+    [
+      ["src/a.ts", 0.01],
+      ["src/b.ts", 0.01],
+    ],
+  );
+  for (const file of files) {
+    assert.deepEqual(file.ops, { read: 0, write: 1 });
+    assert.equal(file.costShare.basis, "derived");
+  }
+});
+
+test("cost shares are rounded to a 1e-12 grid", async () => {
+  const files = attributionOf(await analysisOf(floatNoiseFixture())).turns[0]!.files;
+
+  assert.deepEqual(
+    files.map((file) => file.path),
+    ["src/a.ts", "src/b.ts", "src/c.ts"],
+  );
+  for (const file of files) {
+    // 0.03 / 3 is 0.009999999999999998 in binary floating point.
+    assert.equal(file.costShare.value, 0.01);
+  }
+  assert.equal(JSON.stringify(files).includes("00999999"), false);
+});
+
+test("path variants share one accumulator and keep the first spelling", async () => {
+  const files = attributionOf(await analysisOf(pathVariantFixture())).turns[0]!.files;
+  const merged = files.find((file) => file.path === "./src/a.ts");
+
+  assert.ok(merged, "the first recorded spelling is the displayed path");
+  assert.equal(merged.path, "./src/a.ts");
+  assert.equal(merged.ops.read, process.platform === "win32" ? 3 : 2);
+  if (process.platform === "win32") {
+    assert.equal(files.length, 1);
+  } else {
+    // Case-sensitive semantics keep `src\A.ts` distinct from `src/a.ts`.
+    assert.ok(files.some((file) => file.path === "src\\A.ts"));
+  }
+});
+
+test("a path longer than the path cap yields no row", async () => {
+  const analysis = await analysisOf(longPathFixture());
+
+  assert.equal(analysis.attribution, undefined);
+});
+
 test("per-file evidence links are capped", async () => {
   const analysis = await analysisOf(wideFileFixture(1, 9));
   const file = attributionOf(analysis).turns[0]!.files[0]!;
@@ -593,7 +1102,22 @@ test("per-file evidence links are capped", async () => {
   assert.equal(file.eventIDs.length, MAX_FILE_EVIDENCE);
 });
 
-test("commands per turn are capped", async () => {
+test("command evidence links are capped", async () => {
+  const turn = attributionOf(await analysisOf(repeatedCommandFixture())).turns[0]!;
+
+  assert.equal(turn.commands.length, 1);
+  assert.equal(turn.commands[0]!.name, "npm");
+  assert.equal(turn.commands[0]!.count, 9);
+  assert.equal(turn.commands[0]!.eventIDs.length, MAX_COMMAND_EVIDENCE);
+});
+
+test("a command token longer than the token cap yields no row", async () => {
+  const analysis = await analysisOf(longCommandTokenFixture());
+
+  assert.equal(analysis.attribution, undefined);
+});
+
+test("commands per turn are capped and the dropped count is reported", async () => {
   const content: unknown[] = [];
   for (let index = 0; index < 12; index += 1) {
     content.push(
@@ -627,11 +1151,10 @@ test("commands per turn are capped", async () => {
       },
     ]),
   );
+  const turn = attributionOf(analysis).turns[0]!;
 
-  assert.equal(
-    attributionOf(analysis).turns[0]!.commands.length,
-    MAX_COMMANDS_PER_TURN,
-  );
+  assert.equal(turn.commands.length, MAX_COMMANDS_PER_TURN);
+  assert.equal(turn.commandsTruncated, 12 - MAX_COMMANDS_PER_TURN);
 });
 
 test("attribution is absent when no turn records a signal", async () => {
@@ -639,6 +1162,21 @@ test("attribution is absent when no turn records a signal", async () => {
 
   assert.equal(analysis.attribution, undefined);
   assert.equal(evaluateAttribution(analysis), null);
+});
+
+test("a malformed analysis yields the absent rider instead of throwing", () => {
+  assert.equal(evaluateAttribution({} as Analysis), null);
+  assert.equal(
+    evaluateAttribution({ events: [], turns: "nope" } as unknown as Analysis),
+    null,
+  );
+  assert.doesNotThrow(() =>
+    evaluateAttribution({ events: [], turns: [{ steps: "nope" }] } as unknown as Analysis),
+  );
+  assert.equal(
+    evaluateAttribution({ events: [], turns: [{ steps: "nope" }] } as unknown as Analysis),
+    null,
+  );
 });
 
 test("attribution carries the turn identity, trigger and evidence", async () => {
