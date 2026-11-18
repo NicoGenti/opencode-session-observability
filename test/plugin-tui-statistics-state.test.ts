@@ -8,6 +8,8 @@ import {
   createStatisticsState,
   moveSelection,
 } from "../src/plugin/tui/statistics/state.ts";
+import { parseAnalysisResponse } from "../src/plugin/tui/analysisResponse.ts";
+import { isSettledAnalysis } from "../src/plugin/tui/polling.ts";
 import {
   reviewPromptFilePath,
   writeReviewPromptFile,
@@ -411,6 +413,133 @@ test("startLivePolling ignores a blank session id", async (t) => {
 
   assert.deepEqual(calls, []);
   state.stopLivePolling();
+});
+
+/** A settled analysis: terminal outcome, idle clock, last turn completed. */
+function settledAnalysis(sessionID = SESSION): unknown {
+  return {
+    session: {
+      id: sessionID,
+      outcome: "succeeded",
+      time: { created: 1_000, updated: 5_000, busy: 1_000, idle: 5_000 },
+    },
+    totals: {},
+    turns: [{ id: "t1", index: 0, status: "completed", steps: [] }],
+  };
+}
+
+/** A still-busy analysis: no outcome and a busy clock ahead of idle. */
+function activeAnalysis(sessionID = SESSION): unknown {
+  return {
+    session: {
+      id: sessionID,
+      time: { created: 1_000, updated: 5_000, busy: 5_000, idle: 1_000 },
+    },
+    totals: {},
+    turns: [{ id: "t1", index: 0, status: "running", steps: [] }],
+  };
+}
+
+test("a malformed live response keeps the last good frame for the same session", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  let response: unknown = { output: { analysis: analysisBody(["t1"]) } };
+  const { client } = fakeClient(() => response);
+  const state = createStatisticsState(client);
+  await state.fetchAnalysis(SESSION);
+
+  state.startLivePolling(SESSION);
+  response = { output: { nope: true } };
+  t.mock.timers.tick(LIVE_POLL_MS);
+  await flush();
+
+  assert.deepEqual(
+    state.turns().map((turn) => turn.id),
+    ["t1"],
+  );
+  assert.ok(state.error());
+  state.stopLivePolling();
+});
+
+test("a malformed response for another session still clears the turn table", async () => {
+  const { client } = fakeClient(() => ({ output: { nope: true } }));
+  const state = createStatisticsState(client);
+
+  await state.fetchAnalysis(SESSION);
+
+  assert.equal(state.analysis(), null);
+  assert.ok(state.error());
+});
+
+test("live polling stops once the fetched analysis is settled", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const { client, calls } = fakeClient(() => ({
+    output: { analysis: settledAnalysis() },
+  }));
+  const state = createStatisticsState(client);
+  await state.fetchAnalysis(SESSION);
+  state.startLivePolling(SESSION);
+
+  t.mock.timers.tick(LIVE_POLL_MS);
+  await flush();
+  assert.equal(calls.length, 2);
+
+  // The settled frame cleared the timer: no further requests.
+  t.mock.timers.tick(LIVE_POLL_MS);
+  t.mock.timers.tick(LIVE_POLL_MS);
+  await flush();
+  assert.equal(calls.length, 2);
+});
+
+test("live polling continues while the session is still busy", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const { client, calls } = fakeClient(() => ({
+    output: { analysis: activeAnalysis() },
+  }));
+  const state = createStatisticsState(client);
+  await state.fetchAnalysis(SESSION);
+  state.startLivePolling(SESSION);
+
+  t.mock.timers.tick(LIVE_POLL_MS);
+  await flush();
+  t.mock.timers.tick(LIVE_POLL_MS);
+  await flush();
+
+  assert.equal(calls.length, 3);
+  state.stopLivePolling();
+});
+
+test("isSettledAnalysis needs a terminal outcome and an idle clock", () => {
+  const settled = parseAnalysisResponse(settledAnalysis());
+  assert.equal(settled.ok, true);
+  if (!settled.ok) return;
+  assert.equal(isSettledAnalysis(settled.analysis), true);
+
+  const active = parseAnalysisResponse(activeAnalysis());
+  assert.equal(active.ok, true);
+  if (!active.ok) return;
+  assert.equal(isSettledAnalysis(active.analysis), false);
+
+  assert.equal(isSettledAnalysis(null), false);
+
+  const runningTurn = parseAnalysisResponse({
+    ...(settledAnalysis() as Record<string, unknown>),
+    turns: [{ id: "t1", index: 0, status: "running", steps: [] }],
+  });
+  assert.equal(runningTurn.ok, true);
+  if (runningTurn.ok) assert.equal(isSettledAnalysis(runningTurn.analysis), false);
+
+  const openTurnNoOutcome = parseAnalysisResponse({
+    session: {
+      id: SESSION,
+      time: { created: 1_000, updated: 5_000, busy: 1_000, idle: 5_000 },
+    },
+    totals: {},
+    turns: [{ id: "t1", index: 0, status: "unknown", steps: [] }],
+  });
+  assert.equal(openTurnNoOutcome.ok, true);
+  if (openTurnNoOutcome.ok) {
+    assert.equal(isSettledAnalysis(openTurnNoOutcome.analysis), false);
+  }
 });
 
 test("fetchReviewPrompt asks for a redacted digest prompt and returns its file surface", async () => {

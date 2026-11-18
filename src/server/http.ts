@@ -372,7 +372,12 @@ export async function createObservabilityServer(
         return;
       }
       const reveal = revealRequested && allowReveal;
-      if (bool(search, "refresh")) service.clearCache();
+      // `?refresh=1` drops the dataset cache for the routes that own a manual
+      // refresh. The live route is polled and keeps requestKey coherence
+      // (session.time.updated) on its own, so a per-poll flush is excluded.
+      if (!SESSION_LIVE_PATTERN.test(path) && bool(search, "refresh")) {
+        service.clearCache();
+      }
 
       if (path === "/api/health") {
         sendJson(req, res, 200, {

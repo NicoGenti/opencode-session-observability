@@ -21,6 +21,7 @@ import {
   session,
   simpleFixture,
   textBlock,
+  toolBlock,
   user,
 } from "./fixtures/build.ts";
 import type { Fixture } from "./fixtures/build.ts";
@@ -37,6 +38,19 @@ async function analysisOf(data: Fixture): Promise<Analysis> {
   const service = new ObservabilityService(memorySource(data));
   const dataset = await service.loadDataset(data.sessions[0]!.meta.id);
   return dataset.analysis;
+}
+
+/** A running session whose only turn has just its user message (no chunk yet). */
+function stepLessOpenFixture(id: string): Fixture {
+  return fixture([
+    {
+      meta: session(id, {
+        outcome: undefined,
+        time: { created: BASE, updated: BASE + 50, busy: BASE + 50, idle: BASE - 1 },
+      }),
+      messages: [user("msg_u1", 1, BASE)],
+    },
+  ]);
 }
 
 /** One complete turn without a recorded idle message. */
@@ -166,6 +180,92 @@ test("openTurn carries the existing turn metrics and the in-progress label", asy
   assert.equal(snapshot.totalInSession, analysis.events.length);
 });
 
+test("a just-opened step-less turn is the open turn", async () => {
+  const analysis = await analysisOf(stepLessOpenFixture("ses_live_open"));
+  const turn = analysis.turns[analysis.turns.length - 1]!;
+  assert.equal(turn.status, "unknown");
+  assert.equal(turn.steps.length, 0);
+
+  const snapshot = deriveLiveSnapshot(analysis);
+
+  assert.equal(snapshot.state, "running");
+  assert.ok(snapshot.openTurn);
+  assert.equal(snapshot.openTurn.id, turn.id);
+  assert.equal(snapshot.openTurn.steps, 0);
+});
+
+/**
+ * Two turns: the first still looks in progress, the last one errored. The old
+ * backwards scan reported the finished session as having an open turn.
+ */
+function settledAfterErroredTurnFixture(id: string): Fixture {
+  return fixture([
+    {
+      meta: session(id, {
+        outcome: undefined,
+        time: { created: BASE, updated: BASE + 1_500, busy: BASE + 1_500, idle: BASE - 1 },
+      }),
+      messages: [
+        user("msg_u1", 1, BASE),
+        assistant({
+          id: "msg_a1",
+          seq: 2,
+          created: BASE + 100,
+          streamed: BASE + 500,
+          completed: null,
+          content: [
+            toolBlock({
+              name: "shell",
+              created: BASE + 200,
+              ran: BASE + 300,
+              completed: null,
+              status: "running",
+              input: { command: "sleep 100" },
+            }),
+          ],
+          tokens: TOKENS,
+          cost: 0.001,
+        }),
+        user("msg_u2", 3, BASE + 800, "Next"),
+        assistant({
+          id: "msg_a2",
+          seq: 4,
+          created: BASE + 900,
+          streamed: BASE + 1_000,
+          completed: BASE + 1_400,
+          content: [
+            toolBlock({
+              name: "shell",
+              created: BASE + 950,
+              ran: BASE + 1_000,
+              completed: BASE + 1_400,
+              status: "error",
+              input: { command: "false" },
+            }),
+          ],
+          tokens: TOKENS,
+          cost: 0.001,
+          error: { type: "UnknownError", message: "boom" },
+        }),
+      ],
+    },
+  ]);
+}
+
+test("an errored last turn is settled, so no open turn is reported", async () => {
+  const analysis = await analysisOf(
+    settledAfterErroredTurnFixture("ses_live_errored"),
+  );
+  const [first, last] = analysis.turns;
+  assert.ok(first && last);
+  assert.equal(first.status, "running");
+  assert.equal(last.status, "error");
+
+  const snapshot = deriveLiveSnapshot(analysis);
+
+  assert.equal(snapshot.openTurn, null);
+});
+
 test("warnings are the five operational rules, never unfinished-outcome", async () => {
   const analysis = structuredClone(await analysisOf(simpleFixture()));
   analysis.health = healthWith([
@@ -228,6 +328,17 @@ test("lastTurns bounds openTurn and the warning evidence and labels the window",
   );
   assert.deepEqual(snapshot.warnings[0]!.turnIDs, [last.id]);
   assert.deepEqual(snapshot.warnings[1]!.eventIDs, [eventOfLast.id]);
+  // The rule's counts stay session-wide, so the note says so; only its
+  // evidence is trimmed to the window.
+  for (const warning of snapshot.warnings) {
+    assert.match(
+      warning.note,
+      /\(session-wide counts; evidence limited to the last 1 turn\)$/,
+    );
+  }
+  for (const warning of deriveLiveSnapshot(analysis).warnings) {
+    assert.doesNotMatch(warning.note, /session-wide counts/);
+  }
 });
 
 test("since trims the event tail by orderKey and caps the page", async () => {
@@ -312,6 +423,31 @@ test("liveSnapshot redacts by default and reveals explicitly", async () => {
     await service.liveSnapshot(id, { since, reveal: true }),
   );
   assert.match(revealed, /sk-abcdefghijklmnopqrstuvwxyz/);
+});
+
+test("the live DTO carries no payload text of the secret-bearing session", async () => {
+  const data = secretsFixture();
+  const service = new ObservabilityService(memorySource(data));
+  const snapshot = await service.liveSnapshot(data.sessions[0]!.meta.id, {
+    since: "0",
+    lastTurns: 3,
+  });
+  // Recursive: JSON.stringify walks the whole DTO, so a payload string
+  // anywhere (title, preview, evidence, note) would surface here.
+  const text = JSON.stringify(snapshot);
+
+  for (const secret of [
+    "curl -H 'Authorization: Bearer abcdefghijklmnop'",
+    "sk-supersecretvalue12345",
+    "hunter2",
+  ]) {
+    assert.equal(text.includes(secret), false, `payload leaked: ${secret}`);
+  }
+  assert.ok(
+    Array.isArray(snapshot.newEvents) && snapshot.newEvents.length > 0,
+    "the cursor page must be present so the assertion is not vacuous",
+  );
+  assert.match(text, /\[REDACTED/);
 });
 
 test("snapshot derivation stays bounded on a 300-turn fixture", async () => {

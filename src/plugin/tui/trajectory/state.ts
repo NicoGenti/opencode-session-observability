@@ -4,6 +4,7 @@ import type { OpenCodeClient } from "@opencode/client";
 import type { Analysis, Turn } from "../../../core/types.ts";
 import { Observability } from "../../rpc.ts";
 import { parseAnalysisResponse } from "../analysisResponse.ts";
+import { isSettledAnalysis } from "../polling.ts";
 import { clampIndex, moveSelection } from "../statistics/state.ts";
 import { LIVE_POLL_MS } from "../statistics/state.ts";
 
@@ -160,7 +161,9 @@ export function createTrajectoryState(
       if (ticket !== request) return;
       const parsed = parseAnalysisResponse(response);
       if (!parsed.ok) {
-        setAnalysis(null);
+        // Same policy as the catch branch: a malformed live response keeps the
+        // last good frame when it belongs to the session on screen.
+        if (!sameSession) setAnalysis(null);
         setError(parsed.message);
         return;
       }
@@ -190,7 +193,9 @@ export function createTrajectoryState(
   /**
    * Re-fetches the current analysis every `LIVE_POLL_MS` while the panel is
    * open. The RPC is the existing `analysis` one — no new surface — and one
-   * request at a time keeps a slow host from piling up polls.
+   * request at a time keeps a slow host from piling up polls. A settled
+   * session (terminal outcome, nothing busy, no running turn) stops the timer:
+   * there is nothing left to re-fetch.
    */
   function startLivePolling(nextSessionID: string): void {
     stopLivePolling();
@@ -203,6 +208,7 @@ export function createTrajectoryState(
       liveInFlight = true;
       void fetchAnalysis(liveTarget).finally(() => {
         liveInFlight = false;
+        if (isSettledAnalysis(analysis())) stopLivePolling();
       });
     }, LIVE_POLL_MS);
   }

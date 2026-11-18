@@ -368,3 +368,55 @@ test("startLivePolling ignores a blank session id", async (t) => {
   assert.deepEqual(calls, []);
   state.stopLivePolling();
 });
+
+/** A settled analysis: terminal outcome, idle clock, last turn completed. */
+function settledBody(sessionID = SESSION): unknown {
+  return {
+    session: {
+      id: sessionID,
+      outcome: "succeeded",
+      time: { created: 1_000, updated: 5_000, busy: 1_000, idle: 5_000 },
+    },
+    totals: {},
+    turns: [{ id: "t1", index: 0, status: "completed", steps: [] }],
+  };
+}
+
+test("a malformed live response keeps the last good frame for the same session", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  let response: unknown = { output: { analysis: analysisBody(["t1"]) } };
+  const { client } = fakeClient(() => response);
+  const state = createTrajectoryState(client);
+  await state.fetchAnalysis(SESSION);
+
+  state.startLivePolling(SESSION);
+  response = { output: { nope: true } };
+  t.mock.timers.tick(LIVE_POLL_MS);
+  await flush();
+
+  assert.deepEqual(
+    state.turns().map((turn) => turn.id),
+    ["t1"],
+  );
+  assert.ok(state.error());
+  state.stopLivePolling();
+});
+
+test("live polling stops once the fetched analysis is settled", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const { client, calls } = fakeClient(() => ({
+    output: { analysis: settledBody() },
+  }));
+  const state = createTrajectoryState(client);
+  await state.fetchAnalysis(SESSION);
+  state.startLivePolling(SESSION);
+
+  t.mock.timers.tick(LIVE_POLL_MS);
+  await flush();
+  assert.equal(calls.length, 2);
+
+  t.mock.timers.tick(LIVE_POLL_MS);
+  t.mock.timers.tick(LIVE_POLL_MS);
+  await flush();
+  assert.equal(calls.length, 2);
+});
