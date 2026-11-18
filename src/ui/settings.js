@@ -57,6 +57,40 @@ export const VIEW_MODES = [
   { id: "advanced", label: "Advanced" },
 ];
 
+/**
+ * Advisory guardrail budgets, mirrored from `src/core/guardrails.ts`
+ * (`DEFAULT_GUARDRAILS`). `src/ui` has no build step and never imports
+ * `src/core`, so this frozen literal is the single client-side copy; a test
+ * pins it field for field against the core constant.
+ */
+export const GUARDRAIL_DEFAULTS = Object.freeze({
+  tokensTotal: 2_000_000,
+  costTotal: 5,
+  contextRun: 6,
+  retries: 10,
+  toolFailures: 5,
+  elapsedMinutes: 60,
+});
+
+/** Largest accepted elapsed budget; mirrors `MAX_ELAPSED_MINUTES` in core. */
+export const GUARDRAIL_MAX_ELAPSED_MINUTES = 100_000;
+
+/** The closed, ordered budget vocabulary the settings panel renders. */
+export const GUARDRAIL_FIELDS = Object.freeze([
+  { key: "tokensTotal", label: "Total tokens", min: 0, max: 1e12, step: 1_000 },
+  { key: "costTotal", label: "Total cost (USD)", min: 0, max: 1e12, step: 0.5 },
+  { key: "contextRun", label: "Context growth run (turns)", min: 0, max: 1e12, step: 1 },
+  { key: "retries", label: "Retry events", min: 0, max: 1e12, step: 1 },
+  { key: "toolFailures", label: "Tool-failure incidents", min: 0, max: 1e12, step: 1 },
+  {
+    key: "elapsedMinutes",
+    label: "Elapsed time (minutes)",
+    min: 0,
+    max: GUARDRAIL_MAX_ELAPSED_MINUTES,
+    step: 5,
+  },
+]);
+
 const DEFAULTS = {
   settingsVersion: 0,
   theme: "auto",
@@ -70,6 +104,7 @@ const DEFAULTS = {
   sessionTree: true,
   expandedProjects: [],
   expandedParents: [],
+  guardrails: null,
 };
 
 const KEY_PREFIX = "observability-";
@@ -192,11 +227,92 @@ export function setViewMode(mode) {
   return next;
 }
 
-export function isTheme(value) {
-  return THEMES.some((theme) => theme.id === value);
+/** The closed budget metadata entry for a key, or `null` for an unknown key. */
+export function guardrailField(key) {
+  return GUARDRAIL_FIELDS.find((field) => field.key === key) ?? null;
 }
 
-export function normalizeTheme(value) {
+/**
+ * One budget as a stored number: finite, non-negative and inside its field
+ * bound. `null` means "reject" — the settings form shows the message and the
+ * value never reaches localStorage or a request.
+ */
+export function normalizeGuardrailValue(key, value) {
+  const field = guardrailField(key);
+  if (!field) return null;
+  const number = typeof value === "number" ? value : Number(value);
+  if (
+    !Number.isFinite(number) ||
+    number < field.min ||
+    number > field.max
+  ) {
+    return null;
+  }
+  return number;
+}
+
+/** The inline message for one rejected budget. */
+export function guardrailErrorMessage(key) {
+  const field = guardrailField(key);
+  if (!field) return "Unknown guardrail budget.";
+  return `${field.label} must be a number between ${field.min} and ${field.max}.`;
+}
+
+/**
+ * The effective budgets: the stored values, each falling back to the mirrored
+ * default when absent or malformed. A hand-edited localStorage entry can
+ * therefore never disable a budget or send a hostile number.
+ */
+export function getGuardrails() {
+  const stored = get("guardrails");
+  const values = { ...GUARDRAIL_DEFAULTS };
+  if (stored && typeof stored === "object") {
+    for (const field of GUARDRAIL_FIELDS) {
+      const value = normalizeGuardrailValue(field.key, stored[field.key]);
+      if (value !== null) values[field.key] = value;
+    }
+  }
+  return values;
+}
+
+/** Stores one validated budget; a rejected value is never written. */
+export function setGuardrail(key, value) {
+  const normalized = normalizeGuardrailValue(key, value);
+  if (normalized === null) {
+    return { ok: false, message: guardrailErrorMessage(key) };
+  }
+  set("guardrails", { ...getGuardrails(), [key]: normalized });
+  return { ok: true, value: normalized };
+}
+
+/** Drops every stored override, restoring the mirrored defaults. */
+export function resetGuardrails() {
+  set("guardrails", null);
+  return { ...GUARDRAIL_DEFAULTS };
+}
+
+/**
+ * The `gr.*` parameters appended to the analysis fetch. All six budgets are
+ * always sent in the documented order — the effective values, defaults
+ * included, are exactly what the server evaluates — so "only set keys" means
+ * exactly the six documented keys, never a stray one. A malformed value falls
+ * back to the default instead of being dropped, so the panel and the server
+ * always agree.
+ */
+export function guardrailParams(values = getGuardrails()) {
+  const params = {};
+  for (const field of GUARDRAIL_FIELDS) {
+    const value = normalizeGuardrailValue(field.key, values?.[field.key]);
+    params[`gr.${field.key}`] = String(
+      value === null ? GUARDRAIL_DEFAULTS[field.key] : value,
+    );
+  }
+  return params;
+}
+
+export function isTheme(value) {
+  return THEMES.some((theme) => theme.id === value);
+}export function normalizeTheme(value) {
   if (typeof value !== "string") return "auto";
   const normalized = value.trim().toLowerCase();
   if (isTheme(normalized)) return normalized;
