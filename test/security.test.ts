@@ -16,7 +16,6 @@ import {
   RATE_LIMIT_BURST,
   RATE_LIMIT_REFILL_PER_MINUTE,
   createObservabilityServer,
-  errorBody,
 } from "../src/server/http.ts";
 import {
   openCodeThemeReadCount,
@@ -369,12 +368,6 @@ test("every error response body is a literal pinned to the reviewed table", asyn
     /^sendJson\(\s*req,\s*res,\s*500,\s*\{\s*error:\s*"internal_error",\s*message:\s*"Internal error\.",?\s*\}\s*\);/,
   );
   assert.doesNotMatch(block, /opencode\.db|alice|SECRET/);
-
-  // The payload builder copies its two constant arguments and nothing else.
-  assert.deepEqual(errorBody("sample_code", "Sample message."), {
-    error: "sample_code",
-    message: "Sample message.",
-  });
 });
 
 test("an unknown exception from a route becomes a fixed 500 body", async () => {

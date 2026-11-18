@@ -374,22 +374,6 @@ function clientKey(req: IncomingMessage): string {
     : address;
 }
 
-/** The wire body of an error response: two fixed strings, nothing derived. */
-export interface ErrorPayload {
-  error: string;
-  message: string;
-}
-
-/**
- * Builds an error payload from two constants. There is deliberately no
- * exception-to-response mapper: every wire error body is written as a literal
- * at its call site, so no exception value can ever reach `sendJson`/`res.end`.
- * Exported so the regression tests can pin the shape directly.
- */
-export function errorBody(code: string, message: string): ErrorPayload {
-  return { error: code, message };
-}
-
 /**
  * Rejects requests whose Host/Origin do not belong to this listener. Without
  * this, a page that DNS-rebinds its own hostname to 127.0.0.1 is treated as
