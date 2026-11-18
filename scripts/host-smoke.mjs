@@ -29,6 +29,10 @@
 // Host binary: `OPENCODE_BIN` when set, otherwise `opencode` on PATH. A host
 // that is not OpenCode 2 (today's PATH `opencode` is the 1.x CLI) cannot be
 // driven this way, so the script exits 2 (MANUAL-REQUIRED) instead of guessing.
+// Every command is spawned from an argument array with no shell, and `npm` is
+// run as its CLI script through this Node binary, so no argument is ever parsed
+// by a shell; a Windows `.cmd` shim cannot be launched that way, so it is
+// reported as MANUAL-REQUIRED instead of being handed to cmd.exe.
 // Budget: `HOST_SMOKE_TIMEOUT_MS` (default 45000, clamped to 5000..600000).
 //
 // Exit codes: 0 PASS, 1 FAIL (a real failure, blocks publication), 2
@@ -91,8 +95,15 @@ import {
 } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import {
+  describeNpmCli,
+  npmCliFile,
+  npmCliMissMessage,
+  resolveNpmCli,
+} from "./lib/npm-cli.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const isWindows = process.platform === "win32";
@@ -242,19 +253,15 @@ function fail(message) {
 // Process helpers
 // ---------------------------------------------------------------------------
 
-/** Quotes an argument for the cmd.exe command line npm and `.cmd` shims run under. */
-function quoteArg(arg) {
-  if (arg === "") return '""';
-  if (!/[\s"&|<>^()]/.test(arg)) return arg;
-  return `"${arg.split('"').join('""')}"`;
-}
-
-/** True when the command has to go through cmd.exe on Windows. */
-function needsShell(command) {
+/**
+ * True when Windows cannot start the file itself: a batch shim or an
+ * extensionless wrapper needs cmd.exe, and this script launches nothing through
+ * a shell.
+ */
+function cannotStartWithoutShell(command) {
   if (!isWindows) return false;
-  if (/[\\/]/u.test(command)) return /\.(cmd|bat)$/iu.test(command);
-  // A bare name (npm, npx) resolves to a .cmd shim that Node cannot spawn directly.
-  return true;
+  const extension = extname(command).toLowerCase();
+  return extension === ".cmd" || extension === ".bat" || extension === "";
 }
 
 function describeFailure(result) {
@@ -266,6 +273,14 @@ function describeFailure(result) {
   return parts.join("\n");
 }
 
+/**
+ * Runs a command synchronously without a shell. `npm`/`npx` are `.cmd` shims on
+ * Windows that would only start through cmd.exe, so the npm CLI script behind
+ * the shim is resolved through `scripts/lib/npm-cli.mjs` (shared with
+ * consumer-smoke.mjs) and run by this Node binary; every other command is
+ * spawned as a program with an argument array, so no argument is ever parsed by
+ * a shell.
+ */
 function runSync(command, args, options = {}) {
   const {
     cwd = repoRoot,
@@ -279,12 +294,14 @@ function runSync(command, args, options = {}) {
     encoding: "utf8",
     maxBuffer: MAX_BUFFER,
     windowsHide: true,
+    shell: false,
   };
-  if (needsShell(command)) {
-    return spawnSync([command, ...args.map(quoteArg)].join(" "), {
-      ...common,
-      shell: true,
-    });
+  if (npmCliFile(command) !== null) {
+    const npmCli = resolveNpmCli(command, env);
+    if (npmCli.script === null) {
+      throw fail(npmCliMissMessage(command, npmCli, env));
+    }
+    return spawnSync(process.execPath, [npmCli.script, ...args], common);
   }
   return spawnSync(command, args, common);
 }
@@ -442,6 +459,14 @@ async function stepTarball() {
 
 async function stepInstall() {
   state.prefix = mkdtempSync(join(tmpdir(), "opencode-host-smoke-"));
+  // Resolve the npm CLI script once here so the step output names the script and
+  // version actually used: a PATH/prefix surprise is then visible instead of
+  // implicit. A miss fails here with the full list of searched layouts.
+  const npmCli = resolveNpmCli("npm", process.env);
+  if (npmCli.script === null) {
+    throw fail(npmCliMissMessage("npm", npmCli, process.env));
+  }
+  const npmCliLine = describeNpmCli(npmCli, process.env);
   const result = runSync(
     "npm",
     [
@@ -477,7 +502,7 @@ async function stepInstall() {
     );
   }
   state.packageRoot = packageRoot;
-  return `installed ${PACKAGE_NAME}@${installed.version} into ${state.prefix}`;
+  return `installed ${PACKAGE_NAME}@${installed.version} into ${state.prefix}\nvia ${npmCliLine}`;
 }
 
 async function stepConfig() {
@@ -523,6 +548,15 @@ async function stepHostBinary() {
   if (!existsSync(command)) {
     throw manual(
       `OPENCODE_BIN points at a missing file: ${command}. Fix the path or unset it to use PATH; the manual checklist then applies.`,
+    );
+  }
+  if (cannotStartWithoutShell(command)) {
+    throw manual(
+      `${command} cannot be started without a shell on Windows. Windows appends \`.exe\` to an ` +
+        "extensionless program name, and a `.cmd`/`.bat` shim needs cmd.exe; neither can be started " +
+        "by this script, which launches no command line through a shell. Point OPENCODE_BIN at the " +
+        "native executable instead (for example %USERPROFILE%\\.opencode2\\node_modules\\@opencode\\cli\\bin\\opencode.exe) " +
+        "or put its directory on PATH. Until then the manual checklist at the top of this file is the gate.",
     );
   }
   state.hostBin = command;
@@ -665,10 +699,9 @@ async function stepSpawn() {
     env,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
+    shell: false,
   };
-  const child = needsShell(state.hostBin)
-    ? spawn([state.hostBin, ...args.map(quoteArg)].join(" "), { ...options, shell: true })
-    : spawn(state.hostBin, args, options);
+  const child = spawn(state.hostBin, args, options);
   state.child = child;
   state.capture = { stdout: "", stderr: "" };
   child.stdout.on("data", (chunk) => {
