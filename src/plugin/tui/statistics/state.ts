@@ -48,6 +48,13 @@ export interface StatisticsState {
   isSelected(turn: Turn): boolean;
   fetchAnalysis(sessionID: string): Promise<void>;
   /**
+   * Starts the 5 s re-fetch used while the view is open. Only one timer is
+   * ever live; a new session id replaces the previous one.
+   */
+  startLivePolling(sessionID: string): void;
+  /** Clears the poll timer. Safe to call when nothing is polling. */
+  stopLivePolling(): void;
+  /**
    * Asks the RPC for the redacted LLM review prompt of the current session.
    * No `reveal` flag is ever sent, so the result is redacted by construction.
    */
@@ -103,6 +110,9 @@ export function moveSelection(
 }
 
 type RpcCapable = Pick<OpenCodeClient, "rpc">;
+
+/** Cadence of the in-panel live re-fetch. */
+export const LIVE_POLL_MS = 5_000;
 
 const UNAVAILABLE: Metric = { value: null, basis: "unavailable" };
 
@@ -165,6 +175,9 @@ export function createStatisticsState(client: RpcCapable): StatisticsState {
     new Set(),
   );
   let request = 0;
+  let liveTimer: ReturnType<typeof setInterval> | null = null;
+  let liveTarget = "";
+  let liveInFlight = false;
 
   const totals = (): StatisticsTotals | null => {
     const value = analysis();
@@ -237,14 +250,17 @@ export function createStatisticsState(client: RpcCapable): StatisticsState {
     // tracked read would subscribe the effect to the `setSessionID` write below
     // and issue a second request per open/session change.
     const previous = untrack(sessionID);
-    if (target !== previous) {
+    const sameSession = target === previous;
+    if (!sameSession) {
       // Written signal-level rather than through `setSelectedIndex`, which
       // reads `turns()` and would re-subscribe the effect to the response.
       setSelectedIndexSignal(0);
       setExpandedTurns(new Set<string>());
     }
     setSessionID(target);
-    setAnalysis(null);
+    // A same-session live poll keeps the previous frame until the response
+    // lands; a session change must not show the old session's turn table.
+    if (!sameSession) setAnalysis(null);
     setError(null);
 
     if (target.length === 0) {
@@ -267,11 +283,43 @@ export function createStatisticsState(client: RpcCapable): StatisticsState {
       setAnalysis(parsed.analysis);
     } catch {
       if (ticket !== request) return;
-      setAnalysis(null);
+      // Keep the last good frame on a failed live poll; only a fresh session
+      // falls back to the error state.
+      if (!sameSession) setAnalysis(null);
       setError("The analysis could not be loaded. Reopen the panel to retry.");
     } finally {
       if (ticket === request) setLoading(false);
     }
+  }
+
+  /** Clears the live poll timer and its in-flight guard. */
+  function stopLivePolling(): void {
+    if (liveTimer !== null) {
+      clearInterval(liveTimer);
+      liveTimer = null;
+    }
+    liveTarget = "";
+    liveInFlight = false;
+  }
+
+  /**
+   * Re-fetches the current analysis every `LIVE_POLL_MS` while the panel is
+   * open. The RPC is the existing `analysis` one — no new surface — and one
+   * request at a time keeps a slow host from piling up polls.
+   */
+  function startLivePolling(nextSessionID: string): void {
+    stopLivePolling();
+    const target =
+      typeof nextSessionID === "string" ? nextSessionID.trim() : "";
+    if (target.length === 0) return;
+    liveTarget = target;
+    liveTimer = setInterval(() => {
+      if (liveInFlight) return;
+      liveInFlight = true;
+      void fetchAnalysis(liveTarget).finally(() => {
+        liveInFlight = false;
+      });
+    }, LIVE_POLL_MS);
   }
 
   async function fetchReviewPrompt(): Promise<ReviewPromptOutcome> {
@@ -308,6 +356,8 @@ export function createStatisticsState(client: RpcCapable): StatisticsState {
     toggleTurnExpand,
     isSelected,
     fetchAnalysis,
+    startLivePolling,
+    stopLivePolling,
     fetchReviewPrompt,
   };
 }
