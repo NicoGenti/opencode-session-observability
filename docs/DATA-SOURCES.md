@@ -247,6 +247,16 @@ Native `/statistics` is live: it opens the built-in fullscreen Statistics panel 
 
 The status badge seam is `formatStatusBadge({ cost, cacheHitRate })` plus `fetchSessionStatus(context, sessionID, options?)`, and `statusBadgeText(context, sessionID, options?)` composes them into the one-line slot text. The fetcher reads the session cost from the SDK (`context.data.session.cost`) and the cache hit rate from `GET /api/sessions/{id}/analysis` (`analysis.totals.cacheHitRate.value`), adding `Authorization: Bearer <token>` only when `/api/health` reports `authRequired`. Results are cached per session for at least 15 s with one in-flight request per session, including negative results. Every failure (offline, 401, unparsable body, out-of-domain value) resolves to `cacheHitRate: null`; the module never throws and never toasts. The TUI claims `prompt.footer.status` (issue #6), renders nothing without a session id, and shows `"$X.XX · cache NN%"` with `n/a` for missing data.
 
+## Live signals
+
+The live snapshot is derived from what the session row and message stream already record; there is no streaming or websocket path, and polling is a full re-projection.
+
+- `time_updated` moving is what invalidates the service cache: a live poll is fresh only when the session row's `time_updated` advances (or the message bounds change).
+- `time_busy` > `time_idle` (with `time_idle` absent or older) is the `running` signal, the same predicate `projectSession` uses.
+- A recorded terminal `idle` message on the last turn, or a session `idle_outcome`, makes the session `ended`; `idle` with both timestamps present but no terminal outcome reads as `Incomplete — no terminal outcome`; a session with neither signal is `unknown`.
+- The open turn (`status: "running"`) carries its already-computed tokens/cost and the `session-in-progress` uncertainty label.
+- Polling is `derived`: the endpoint re-projects the dataset each tick and never writes. A session that records messages without bumping `time_updated` would serve a stale-but-unlabelled frame; the cache-coherence test pins the invalidation path.
+
 ## Deliberately unavailable data
 
 | Wanted | Status | Why |

@@ -236,6 +236,10 @@ Charts are projected from the already-loaded `Analysis`: no extra fetch and no r
 
 Health is a derived signal computed from the already-produced `Analysis`; it carries no numeric score. Its state is one of `healthy` / `watch` / `degraded`, with a sufficiency gate that prevents a `healthy` claim when data is missing or the analysis is windowed. All seven rules, thresholds, caps, drill targets and the tuning policy are documented in [HEALTH.md](HEALTH.md) (linked, not duplicated here).
 
+### Live snapshot
+
+The live endpoint re-shapes the same `Analysis`; it introduces no new metric formula. `openTurn` copies the turn's existing tokens/cost, `warnings` are the triggered health rules, and every value keeps its existing basis. The badge and warning vocabulary (states, the five rules, caps, `since`/`lastTurns`) is documented in [UI.md](UI.md#live-mode) and [ARCHITECTURE.md](ARCHITECTURE.md#live-snapshot).
+
 ## Session vs window totals
 
 - `Session total` — coverage includes the full message range (`fromSeq <= minSeq && toSeq >= maxSeq`).
