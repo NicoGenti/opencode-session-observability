@@ -7,6 +7,7 @@ export * from "./format.ts";
 export * from "./redact.ts";
 export * from "./diagnostics.ts";
 export * from "./health.ts";
+export * from "./guardrails.ts";
 export * from "./live.ts";
 export * from "./attribution.ts";
 export * from "./recommendations.ts";

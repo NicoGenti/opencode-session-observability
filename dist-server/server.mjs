@@ -2513,7 +2513,12 @@ function compactionBreaks(previous, next, compactions) {
 		return item.timestamp > previousEnd && item.timestamp <= nextEnd;
 	});
 }
-/** Longest run of consecutive turns whose context delta is positive. */
+/**
+* Longest run of consecutive turns whose context delta is positive.
+*
+* Exported so the guardrail context-run budget shares the exact health
+* vocabulary (compaction breaks included) instead of reimplementing it.
+*/
 function longestGrowthRun(analysis) {
 	const runs = [];
 	let current = [];

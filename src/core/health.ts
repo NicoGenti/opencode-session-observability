@@ -265,7 +265,8 @@ function toolFailureRecurrenceRule(
   );
 }
 
-interface GrowthRun {
+/** One span of consecutive turns whose context delta is positive. */
+export interface GrowthRun {
   first: Turn;
   last: Turn;
   length: number;
@@ -289,8 +290,13 @@ function compactionBreaks(
   });
 }
 
-/** Longest run of consecutive turns whose context delta is positive. */
-function longestGrowthRun(analysis: Analysis): GrowthRun | null {
+/**
+ * Longest run of consecutive turns whose context delta is positive.
+ *
+ * Exported so the guardrail context-run budget shares the exact health
+ * vocabulary (compaction breaks included) instead of reimplementing it.
+ */
+export function longestGrowthRun(analysis: Analysis): GrowthRun | null {
   const runs: Turn[][] = [];
   let current: Turn[] = [];
   const flush = (): void => {
