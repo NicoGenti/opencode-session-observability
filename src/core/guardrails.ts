@@ -64,8 +64,23 @@ export const DEFAULT_GUARDRAILS: Readonly<GuardrailThresholds> = Object.freeze({
   elapsedMinutes: 60,
 });
 
-/** Largest accepted `elapsedMinutes` budget; mirrored by the GET contract. */
-export const MAX_ELAPSED_MINUTES = 100_000;
+/**
+ * The largest accepted value per budget. This table is the single source of
+ * truth: the GET `gr.*` contract validates against it, the browser settings
+ * panel mirrors it as a frozen literal and a test pins the mirror field for
+ * field, so a client and the server can never disagree on a bound.
+ */
+export const GUARDRAIL_MAX: Readonly<GuardrailThresholds> = Object.freeze({
+  tokensTotal: 1e12,
+  costTotal: 1e12,
+  contextRun: 1e12,
+  retries: 1e12,
+  toolFailures: 1e12,
+  elapsedMinutes: 100_000,
+});
+
+/** Largest accepted `elapsedMinutes` budget; derived from `GUARDRAIL_MAX`. */
+export const MAX_ELAPSED_MINUTES = GUARDRAIL_MAX.elapsedMinutes;
 
 /**
  * One crossed budget. `observed` is a deterministic phrase with the measured

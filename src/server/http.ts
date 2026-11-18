@@ -28,7 +28,7 @@ import {
 import type { BenchmarkFilters } from "../core/benchmark.ts";
 import {
   DEFAULT_GUARDRAILS,
-  MAX_ELAPSED_MINUTES,
+  GUARDRAIL_MAX,
   evaluateGuardrails,
 } from "../core/guardrails.ts";
 import type { GuardrailThresholds } from "../core/guardrails.ts";
@@ -304,19 +304,32 @@ function numericParam(
   return { value, invalid: false };
 }
 
-/** The closed `gr.*` vocabulary: one bounded budget per query parameter. */
+/**
+ * The closed `gr.*` vocabulary: one bounded budget per query parameter. The
+ * bounds come from `GUARDRAIL_MAX`, the same table the browser panel mirrors.
+ */
 const GUARDRAIL_PARAM_SPECS: ReadonlyArray<{
   name: string;
   key: keyof GuardrailThresholds;
-  max: number;
 }> = [
-  { name: "tokensTotal", key: "tokensTotal", max: 1e12 },
-  { name: "costTotal", key: "costTotal", max: 1e12 },
-  { name: "contextRun", key: "contextRun", max: 1e12 },
-  { name: "retries", key: "retries", max: 1e12 },
-  { name: "toolFailures", key: "toolFailures", max: 1e12 },
-  { name: "elapsedMinutes", key: "elapsedMinutes", max: MAX_ELAPSED_MINUTES },
+  { name: "tokensTotal", key: "tokensTotal" },
+  { name: "costTotal", key: "costTotal" },
+  { name: "contextRun", key: "contextRun" },
+  { name: "retries", key: "retries" },
+  { name: "toolFailures", key: "toolFailures" },
+  { name: "elapsedMinutes", key: "elapsedMinutes" },
 ];
+
+/** Count budgets are whole numbers; cost and elapsed minutes may be fractional. */
+const GUARDRAIL_INTEGER_KEYS: ReadonlySet<string> = new Set([
+  "tokensTotal",
+  "contextRun",
+  "retries",
+  "toolFailures",
+]);
+
+/** Plain decimal only: `0x10`, `1e3`, `+5` and `" 12 "` are all rejected. */
+const GUARDRAIL_NUMBER_PATTERN = /^\d+(\.\d+)?$/;
 
 /** The accepted budget parameters, exported so tests and docs stay in sync. */
 export const GUARDRAIL_PARAM_NAMES: readonly string[] = Object.freeze(
@@ -326,7 +339,7 @@ export const GUARDRAIL_PARAM_NAMES: readonly string[] = Object.freeze(
 interface GuardrailQuery {
   /** At least one known `gr.*` parameter was present. */
   present: boolean;
-  /** A present parameter was empty, malformed, negative or out of bounds. */
+  /** A present parameter was empty, duplicated, malformed or out of bounds. */
   invalid: boolean;
   /** Present values over the defaults; absent keys keep the default. */
   thresholds: GuardrailThresholds;
@@ -334,23 +347,40 @@ interface GuardrailQuery {
 
 /**
  * Reads the browser-owned guardrail budgets. The vocabulary is closed: an
- * unknown `gr.*` key is invalid instead of silently ignored, and every present
- * value must be a finite number inside its documented bound. Absent keys fall
- * back to `DEFAULT_GUARDRAILS`, so the evaluator stays stateless and the route
- * is still a pure function of the query.
+ * unknown `gr.*` key is invalid instead of silently ignored, a key repeated in
+ * the query is invalid instead of "first one wins", and every present value
+ * must be a plain decimal inside its documented bound (and a whole number for
+ * the count budgets). Absent keys fall back to `DEFAULT_GUARDRAILS`, so the
+ * evaluator stays stateless and the route is still a pure function of the query.
  */
 function guardrailQuery(search: URLSearchParams): GuardrailQuery {
   const thresholds: GuardrailThresholds = { ...DEFAULT_GUARDRAILS };
+  const seen = new Set<string>();
   let present = false;
   for (const key of search.keys()) {
     if (!key.startsWith("gr.")) continue;
     present = true;
+    if (seen.has(key)) return { present, invalid: true, thresholds };
+    seen.add(key);
     const name = key.slice("gr.".length);
     const spec = GUARDRAIL_PARAM_SPECS.find((entry) => entry.name === name);
     if (!spec) return { present, invalid: true, thresholds };
-    const raw = search.get(key) ?? "";
-    const value = raw.trim() === "" ? Number.NaN : Number(raw);
-    if (!Number.isFinite(value) || value < 0 || value > spec.max) {
+    const values = search.getAll(key);
+    // Exactly one value per key: a duplicate is ambiguous, never "first wins".
+    if (values.length !== 1) return { present, invalid: true, thresholds };
+    const raw = values[0] ?? "";
+    if (!GUARDRAIL_NUMBER_PATTERN.test(raw)) {
+      return { present, invalid: true, thresholds };
+    }
+    const value = Number(raw);
+    if (
+      !Number.isFinite(value) ||
+      value < 0 ||
+      value > GUARDRAIL_MAX[spec.key]
+    ) {
+      return { present, invalid: true, thresholds };
+    }
+    if (GUARDRAIL_INTEGER_KEYS.has(spec.key) && !Number.isInteger(value)) {
       return { present, invalid: true, thresholds };
     }
     thresholds[spec.key] = value;

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { ObservabilityService } from "../src/core/service.ts";
 import {
   DEFAULT_GUARDRAILS,
+  GUARDRAIL_MAX,
   MAX_ELAPSED_MINUTES,
   evaluateGuardrails,
 } from "../src/core/guardrails.ts";
@@ -238,6 +239,24 @@ test("exports the frozen default budgets", () => {
     elapsedMinutes: 60,
   });
   assert.equal(MAX_ELAPSED_MINUTES, 100_000);
+});
+
+test("exports one frozen max table that bounds every budget", () => {
+  assert.ok(Object.isFrozen(GUARDRAIL_MAX));
+  assert.equal(MAX_ELAPSED_MINUTES, GUARDRAIL_MAX.elapsedMinutes);
+  assert.deepEqual({ ...GUARDRAIL_MAX }, {
+    tokensTotal: 1e12,
+    costTotal: 1e12,
+    contextRun: 1e12,
+    retries: 1e12,
+    toolFailures: 1e12,
+    elapsedMinutes: 100_000,
+  });
+  // Same key set as the defaults, so a new budget cannot ship an unbounded one.
+  assert.deepEqual(
+    Object.keys(GUARDRAIL_MAX).sort(),
+    Object.keys(DEFAULT_GUARDRAILS).sort(),
+  );
 });
 
 test("a malformed injected budget falls back to the default", async () => {
