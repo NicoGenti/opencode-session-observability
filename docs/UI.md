@@ -214,6 +214,14 @@ The Live toggle in the header follows an in-progress session without replacing t
 
 The native TUI panels re-fetch their existing `analysis` RPC on the same 5 second cadence while open; they add no live-specific RPC and never enqueue prompts.
 
+## Guardrails
+
+Advisory budget warnings sit directly below the live-warning rows and above the active pane, in **both** view modes: they are deliberately not an Advanced-only section. Every analysis load appends the browser's six `gr.*` budgets to the request, so the server evaluates them against the same analysis (contract in [HEALTH.md](HEALTH.md#guardrails)).
+
+- **Rows** — each crossed budget keeps the health-rule rhythm: the budget label, the `derived` basis, an `advisory` chip, the deterministic observation with the budget it crossed, and capped `Event N` buttons carrying `data-event-id` that jump to the event in Trajectory. The section header carries the count (`N advisory`) and the standing line `advisory — never blocks anything`; there is no score, no ranking and no ordering control. A budget that could not be evaluated appears as a `Not evaluated — …` line instead of a guess.
+- **Settings** — the settings panel has a Guardrails group with one numeric input per budget (total tokens, total cost, context growth run, retries, tool failures, elapsed minutes), each validated inline against its documented bounds, plus **Reset guardrail defaults**. A rejected value shows its message and is never stored or sent. Budgets persist in this browser's localStorage; the server keeps no configuration. Changing one re-requests the current session's analysis, which is where the budgets are evaluated.
+- **TUI** — the native statistics banner adds `Guardrails (defaults): N advisory`. Browser thresholds never cross the RPC, so the panel names the defaults it evaluates.
+
 ## Episode comparison
 
 `Compare episodes` in the session tabs opens the `#compare` modal. Each side picks a session (the current session, its parent or a child) and one diagnostic episode — one tool's failure run within one turn, together with any recorded recovery. The modal aligns the two episodes by recorded ordinal: attempt 1 with attempt 1, attempt 2 with attempt 2, and so on, so a missing attempt stays visible as a one-sided row instead of shifting later attempts. When a side records a recovery, one trailing recovery row is aligned after the attempts; differing tools, attempt counts and recovery states are named per side.

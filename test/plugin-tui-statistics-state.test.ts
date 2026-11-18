@@ -4,12 +4,18 @@ import { join } from "node:path";
 
 import {
   LIVE_POLL_MS,
+  advisoryGuardrailCount,
   advisoryRecommendationCount,
   clampIndex,
   createStatisticsState,
   moveSelection,
 } from "../src/plugin/tui/statistics/state.ts";
-import { recommendationsStatusLine } from "../src/plugin/tui/statistics/status.ts";
+import {
+  guardrailsStatusLine,
+  recommendationsStatusLine,
+} from "../src/plugin/tui/statistics/status.ts";
+import { ObservabilityService } from "../src/core/service.ts";
+import { memorySource, toolsFixture } from "./fixtures/build.ts";
 import { parseAnalysisResponse } from "../src/plugin/tui/analysisResponse.ts";
 import { isSettledAnalysis } from "../src/plugin/tui/polling.ts";
 import {
@@ -166,6 +172,43 @@ test("a missing or malformed recommendation rider reads as zero", async () => {
   }
   assert.equal(advisoryRecommendationCount(null), 0);
   assert.equal(advisoryRecommendationCount(undefined), 0);
+});
+
+test("the banner counts advisory guardrail warnings under the default budgets", async () => {
+  const service = new ObservabilityService(memorySource(toolsFixture()));
+  const { analysis } = await service.analyze("ses_tools", { reveal: true });
+  // Twelve retries cross the default retry budget of ten.
+  const body = {
+    ...analysis,
+    totals: { ...analysis.totals, retries: 12 },
+  };
+  const { client } = fakeClient(() => ({ output: { analysis: body } }));
+  const state = createStatisticsState(client);
+
+  await state.fetchAnalysis("ses_tools");
+
+  const banner = state.totals();
+  assert.ok(banner);
+  assert.equal(banner.guardrails, 1);
+  assert.equal(advisoryGuardrailCount(state.analysis()), 1);
+  assert.equal(
+    guardrailsStatusLine(banner.guardrails),
+    "Guardrails (defaults): 1 advisory",
+  );
+});
+
+test("a truncated analysis reads as zero guardrail warnings", async () => {
+  const { client } = fakeClient(() => analysisBody(["t1"]));
+  const state = createStatisticsState(client);
+
+  await state.fetchAnalysis(SESSION);
+
+  const banner = state.totals();
+  assert.ok(banner);
+  assert.equal(banner.guardrails, 0);
+  assert.equal(advisoryGuardrailCount(state.analysis()), 0);
+  assert.equal(advisoryGuardrailCount(null), 0);
+  assert.equal(advisoryGuardrailCount(undefined), 0);
 });
 
 test("fetchAnalysis surfaces a malformed response as an error state", async () => {

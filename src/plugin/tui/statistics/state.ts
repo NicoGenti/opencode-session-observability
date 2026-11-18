@@ -2,6 +2,10 @@ import { createSignal, untrack, type Accessor } from "solid-js";
 import type { OpenCodeClient } from "@opencode/client";
 
 import type { Analysis, Metric, Turn } from "../../../core/types.ts";
+import {
+  DEFAULT_GUARDRAILS,
+  evaluateGuardrails,
+} from "../../../core/guardrails.ts";
 import { Observability } from "../../rpc.ts";
 import { isRecord, parseAnalysisResponse } from "../analysisResponse.ts";
 import { isSettledAnalysis } from "../polling.ts";
@@ -23,6 +27,12 @@ export interface StatisticsTotals {
   readonly turns: number;
   /** Advisory recommendation rows in the validated analysis; `0` when absent. */
   readonly recommendations: number;
+  /**
+   * Advisory guardrail warnings under the TUI's default budgets. Browser-set
+   * thresholds live in localStorage and never travel here, so the panel always
+   * evaluates `DEFAULT_GUARDRAILS` and names that in the status line.
+   */
+  readonly guardrails: number;
 }
 
 /** Outcome of one review-prompt request; the file body or a short error. */
@@ -141,6 +151,39 @@ export function advisoryRecommendationCount(
 }
 
 /**
+ * Counts the advisory guardrail warnings the pure evaluator reports under
+ * `DEFAULT_GUARDRAILS`.
+ *
+ * The TUI has no per-user settings store: the browser's budgets live in
+ * localStorage and never travel across the RPC, so this panel deliberately
+ * evaluates the defaults and the status line says so. Only a full analysis
+ * shape is evaluated (the evaluator reads totals, turns, compactions, events
+ * and coverage); a truncated or malformed payload reads as `0` instead of
+ * throwing in the panel.
+ */
+export function advisoryGuardrailCount(
+  analysis: Analysis | null | undefined,
+): number {
+  if (
+    !analysis ||
+    !Array.isArray(analysis.turns) ||
+    !Array.isArray(analysis.events) ||
+    !Array.isArray(analysis.compactions) ||
+    !analysis.totals ||
+    typeof analysis.totals !== "object" ||
+    !analysis.coverage ||
+    typeof analysis.coverage !== "object"
+  ) {
+    return 0;
+  }
+  try {
+    return evaluateGuardrails(analysis, DEFAULT_GUARDRAILS).warnings.length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * Validates an export response the same way `parseAnalysisResponse` validates
  * the analysis: the payload crosses the RPC boundary, so it can arrive as the
  * raw envelope (`{ output: … }`), the handler result (`{ filename, content, … }`)
@@ -212,6 +255,7 @@ export function createStatisticsState(client: RpcCapable): StatisticsState {
           ? source.turns
           : (value.turns?.length ?? 0),
       recommendations: advisoryRecommendationCount(value),
+      guardrails: advisoryGuardrailCount(value),
     };
   };
 
