@@ -48,7 +48,7 @@ This checklist separates what is implemented, what is available from OpenCode 2,
 - [x] Parent/child session navigation.
 - [x] Badges: error, retry, compaction, context, subagent, uncertain.
 - [x] Statistics table with turn rows and expandable step details.
-- [x] Basic/Advanced view mode toggle (persisted per browser; topbar or Settings), with Advanced-only surfaces (full 19-column table, Table/Charts control, session-health badge + breakdown, Advanced filters, copy actions).
+- [x] Basic/Advanced view mode toggle (persisted per browser; topbar or Settings), with Advanced-only surfaces (full 19-column table, Table/Charts control, session-health badge + breakdown, Advanced filters, copy actions, header Benchmark link).
 - [x] Advanced-mode Charts sub-tab (4 charts: context growth, token usage, cost, step duration) over the loaded analysis; unavailable values render as gaps/`Not recorded`, never as zero.
 - [x] Session-health badge + 7 rules + sufficiency gate (Advanced Statistics) with breakdown drill-down; insufficient sessions render `watch` + "insufficient data".
 - [x] Advanced-mode copy actions in the web Statistics toolbar and the TUI `d` key writing an always-redacted review prompt to a temp file.

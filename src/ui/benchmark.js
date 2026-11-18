@@ -11,7 +11,9 @@
  * The filter helpers are pure as well: the hash query string is the single
  * source of truth for the comparison, so `parseBenchmarkFilters` and
  * `serializeBenchmarkFilters` round-trip the same field names the endpoint
- * accepts. Date inputs are converted to epoch milliseconds in UTC.
+ * accepts. Date inputs are converted to epoch milliseconds in UTC day bounds on
+ * both paths, so parsing a hash and re-submitting it reproduces the same query;
+ * a non-numeric `from`/`to` never reaches the endpoint.
  *
  * Unavailable numbers are rendered as the literal text "Not recorded", never as
  * a zero: an average nobody recorded is not a cheap session. Colour never
@@ -123,26 +125,56 @@ function clampText(value) {
   return asText(value).trim().slice(0, MAX_BENCHMARK_FILTER_LENGTH);
 }
 
+const DAY_MS = 86_400_000;
+
+/**
+ * A numeric epoch value quantised to its UTC day bound: day start for `from`,
+ * day end for `to`. Returns `undefined` for anything that is not a finite
+ * number, so a malformed bound is dropped instead of forwarded.
+ */
+export function quantiseDateBound(value, endOfDay = false) {
+  const text = (typeof value === "number" ? String(value) : asText(value)).trim();
+  if (text.length === 0) return undefined;
+  const ms = Number(text);
+  if (!Number.isFinite(ms)) return undefined;
+  const day = Math.floor(ms / DAY_MS);
+  return endOfDay ? (day + 1) * DAY_MS - 1 : day * DAY_MS;
+}
+
+/**
+ * One filter key as the query carries it, or `undefined` when it carries
+ * nothing. `from`/`to` must be finite epoch milliseconds and are quantised to
+ * their UTC day bound; every other key is trimmed text.
+ */
+function queryValue(key, value) {
+  const text = clampText(value);
+  if (text.length === 0) return undefined;
+  if (key !== "from" && key !== "to") return text;
+  const bound = quantiseDateBound(text, key === "to");
+  return bound === undefined ? undefined : String(bound);
+}
+
 // ---------------------------------------------------------------------------
 // Filters and the hash query
 // ---------------------------------------------------------------------------
 
 /** True when at least one criterion is set; `groupBy` alone asks for nothing. */
 export function benchmarkHasFilters(filters = {}) {
-  return BENCHMARK_FILTER_KEYS.some((key) => clampText(filters[key]).length > 0);
+  return BENCHMARK_FILTER_KEYS.some((key) => queryValue(key, filters[key]) !== undefined);
 }
 
 /**
  * Reads the benchmark filters out of a hash query string. Unknown keys (the
  * access token, a theme) are ignored, blank values are dropped and a value
- * outside a closed vocabulary is discarded rather than forwarded.
+ * outside a closed vocabulary is discarded rather than forwarded. `from`/`to`
+ * come back quantised to their UTC day bound, so a re-submit is stable.
  */
 export function parseBenchmarkFilters(query) {
   const params = new URLSearchParams(asText(query).replace(/^\?/, ""));
   const filters = {};
   for (const key of BENCHMARK_FILTER_KEYS) {
-    const value = clampText(params.get(key));
-    if (value.length > 0) filters[key] = value;
+    const value = queryValue(key, params.get(key));
+    if (value !== undefined) filters[key] = value;
   }
   const groupBy = clampText(params.get("groupBy"));
   if (BENCHMARK_GROUP_BYS.includes(groupBy)) filters.groupBy = groupBy;
@@ -159,8 +191,9 @@ export function parseBenchmarkFilters(query) {
 export function serializeBenchmarkFilters(filters = {}) {
   const params = new URLSearchParams();
   for (const key of [...BENCHMARK_FILTER_KEYS, "groupBy"]) {
-    const value = clampText(filters[key]);
-    if (value.length > 0) params.set(key, value);
+    const value =
+      key === "groupBy" ? clampText(filters[key]) : queryValue(key, filters[key]);
+    if (value !== undefined && value.length > 0) params.set(key, value);
   }
   return params.toString();
 }
@@ -183,7 +216,7 @@ export function dateInputToEpoch(value, endOfDay = false) {
   if (!DATE_PATTERN.test(text)) return undefined;
   const midnight = Date.parse(`${text}T00:00:00.000Z`);
   if (!Number.isFinite(midnight)) return undefined;
-  return endOfDay ? midnight + 86_400_000 - 1 : midnight;
+  return endOfDay ? midnight + DAY_MS - 1 : midnight;
 }
 
 /** Epoch milliseconds back to the `YYYY-MM-DD` a date input expects. */

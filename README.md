@@ -309,7 +309,7 @@ Advanced mode (the topbar toggle, persisted per browser) unlocks surfaces that s
 
 **Privacy (Advanced, and everywhere else).** The app **never calls an LLM provider and never transmits session data anywhere.** The review text is built from the normalized projection by your local server and handed to the browser clipboard through the same-origin local API (`http://127.0.0.1:<port>/api/…`): the copy itself is `navigator.clipboard.writeText`, there is no upload, no telemetry and no third-party request. In the OpenCode TUI, where no clipboard API exists, the native Statistics panel's **`d`** key writes the **always-redacted** LLM review prompt to one deterministic file under the system temp directory (`opencode-observability-review-<session>.md`) and toasts its path; no reveal or redaction plumbing exists there.
 
-**Advanced-only surfaces:** the Table/Charts segmented control and all four charts; the session-health badge and breakdown; the full 19-column turn/step table and all Statistics filters (per the view-modes table); and both copy buttons. Basic mode keeps the turn table, headline filters and diagnostics.
+**Advanced-only surfaces:** the Table/Charts segmented control and all four charts; the session-health badge and breakdown; the full 19-column turn/step table and all Statistics filters (per the view-modes table); both copy buttons; and the header **Benchmark** link (the `#/benchmark` route itself stays reachable by URL). Basic mode keeps the turn table, headline filters and diagnostics.
 
 <p>
   <img src="docs/screenshots/statistics-advanced-dark.png" alt="Statistics view in Advanced mode, with the Session health badge in the toolbar" width="49%">
