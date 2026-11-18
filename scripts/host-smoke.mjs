@@ -98,6 +98,13 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  describeNpmCli,
+  npmCliFile,
+  npmCliMissMessage,
+  resolveNpmCli,
+} from "./lib/npm-cli.mjs";
+
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const isWindows = process.platform === "win32";
 
@@ -247,44 +254,6 @@ function fail(message) {
 // ---------------------------------------------------------------------------
 
 /**
- * `npm` is a `.cmd` batch shim on Windows that Node refuses to spawn without a
- * shell, and joining a command line for a shell is the injection surface this
- * script must not have. The shim is a thin wrapper around the npm CLI script,
- * so the script is located and handed to this Node binary as an argument
- * array: no shell, no quoting, same entry point.
- */
-const NPM_CLI_FILES = { npm: "npm-cli.js", npx: "npx-cli.js" };
-
-/** The npm CLI script behind `npm`/`npx`, or null when this Node installation has no npm. */
-function npmCliScript(name, env) {
-  const file = NPM_CLI_FILES[name];
-  if (!file) return null;
-  const pathValue = env?.PATH ?? env?.Path ?? process.env.PATH ?? process.env.Path ?? "";
-  const directories = new Set([dirname(process.execPath)]);
-  for (const entry of pathValue.split(delimiter)) {
-    if (entry !== "") directories.add(entry);
-  }
-  for (const directory of directories) {
-    // <node>/node_modules/npm/bin (Windows, nvm), <prefix>/lib/node_modules/npm/bin
-    // (POSIX, actions/setup-node) and <prefix>/libexec/lib/node_modules/npm/bin.
-    const roots = [
-      join(directory, "node_modules", "npm", "bin"),
-      resolve(directory, "..", "lib", "node_modules", "npm", "bin"),
-      resolve(directory, "..", "libexec", "lib", "node_modules", "npm", "bin"),
-    ];
-    for (const root of roots) {
-      const candidate = join(root, file);
-      try {
-        if (statSync(candidate).isFile()) return candidate;
-      } catch {
-        continue;
-      }
-    }
-  }
-  return null;
-}
-
-/**
  * True when Windows cannot start the file itself: a batch shim or an
  * extensionless wrapper needs cmd.exe, and this script launches nothing through
  * a shell.
@@ -305,9 +274,12 @@ function describeFailure(result) {
 }
 
 /**
- * Runs a command synchronously without a shell. `npm`/`npx` resolve to their
- * CLI script run by this Node binary; every other command is spawned as a
- * program with an argument array, so no argument is ever parsed by a shell.
+ * Runs a command synchronously without a shell. `npm`/`npx` are `.cmd` shims on
+ * Windows that would only start through cmd.exe, so the npm CLI script behind
+ * the shim is resolved through `scripts/lib/npm-cli.mjs` (shared with
+ * consumer-smoke.mjs) and run by this Node binary; every other command is
+ * spawned as a program with an argument array, so no argument is ever parsed by
+ * a shell.
  */
 function runSync(command, args, options = {}) {
   const {
@@ -324,15 +296,12 @@ function runSync(command, args, options = {}) {
     windowsHide: true,
     shell: false,
   };
-  if (NPM_CLI_FILES[command]) {
-    const script = npmCliScript(command, env);
-    if (!script) {
-      throw fail(
-        `could not locate the \`${command}\` CLI script next to ${process.execPath}; ` +
-          "this script never builds command lines for a shell, so the npm installation on PATH is required",
-      );
+  if (npmCliFile(command) !== null) {
+    const npmCli = resolveNpmCli(command, env);
+    if (npmCli.script === null) {
+      throw fail(npmCliMissMessage(command, npmCli, env));
     }
-    return spawnSync(process.execPath, [script, ...args], common);
+    return spawnSync(process.execPath, [npmCli.script, ...args], common);
   }
   return spawnSync(command, args, common);
 }
@@ -490,6 +459,14 @@ async function stepTarball() {
 
 async function stepInstall() {
   state.prefix = mkdtempSync(join(tmpdir(), "opencode-host-smoke-"));
+  // Resolve the npm CLI script once here so the step output names the script and
+  // version actually used: a PATH/prefix surprise is then visible instead of
+  // implicit. A miss fails here with the full list of searched layouts.
+  const npmCli = resolveNpmCli("npm", process.env);
+  if (npmCli.script === null) {
+    throw fail(npmCliMissMessage("npm", npmCli, process.env));
+  }
+  const npmCliLine = describeNpmCli(npmCli, process.env);
   const result = runSync(
     "npm",
     [
@@ -525,7 +502,7 @@ async function stepInstall() {
     );
   }
   state.packageRoot = packageRoot;
-  return `installed ${PACKAGE_NAME}@${installed.version} into ${state.prefix}`;
+  return `installed ${PACKAGE_NAME}@${installed.version} into ${state.prefix}\nvia ${npmCliLine}`;
 }
 
 async function stepConfig() {
@@ -575,9 +552,10 @@ async function stepHostBinary() {
   }
   if (cannotStartWithoutShell(command)) {
     throw manual(
-      `${command} is a Windows batch shim (or an extensionless wrapper), which only cmd.exe can start. ` +
-        "This script launches no command line through a shell, so it cannot drive that shim: point " +
-        "OPENCODE_BIN at the native executable (for example %USERPROFILE%\\.opencode2\\node_modules\\@opencode\\cli\\bin\\opencode.exe) " +
+      `${command} cannot be started without a shell on Windows. Windows appends \`.exe\` to an ` +
+        "extensionless program name, and a `.cmd`/`.bat` shim needs cmd.exe; neither can be started " +
+        "by this script, which launches no command line through a shell. Point OPENCODE_BIN at the " +
+        "native executable instead (for example %USERPROFILE%\\.opencode2\\node_modules\\@opencode\\cli\\bin\\opencode.exe) " +
         "or put its directory on PATH. Until then the manual checklist at the top of this file is the gate.",
     );
   }

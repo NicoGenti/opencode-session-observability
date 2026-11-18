@@ -35,8 +35,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import {
+  describeNpmCli,
+  npmCliFile,
+  npmCliMissMessage,
+  resolveNpmCli,
+} from "./lib/npm-cli.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const isWindows = process.platform === "win32";
@@ -133,44 +140,6 @@ function readJson(path) {
 // Process helpers
 // ---------------------------------------------------------------------------
 
-/**
- * `npm` and `npx` are `.cmd` batch shims on Windows that Node refuses to spawn
- * without a shell, and joining a command line for a shell is the injection
- * surface this script must not have. Both shims are thin wrappers around the
- * npm CLI scripts, so the script is located and handed to this Node binary as
- * an argument array: no shell, no quoting, same entry point.
- */
-const NPM_CLI_FILES = { npm: "npm-cli.js", npx: "npx-cli.js" };
-
-/** The npm CLI script behind `npm`/`npx`, or null when this Node installation has no npm. */
-function npmCliScript(name, env) {
-  const file = NPM_CLI_FILES[name];
-  if (!file) return null;
-  const pathValue = env?.PATH ?? env?.Path ?? process.env.PATH ?? process.env.Path ?? "";
-  const directories = new Set([dirname(process.execPath)]);
-  for (const entry of pathValue.split(delimiter)) {
-    if (entry !== "") directories.add(entry);
-  }
-  for (const directory of directories) {
-    // <node>/node_modules/npm/bin (Windows, nvm), <prefix>/lib/node_modules/npm/bin
-    // (POSIX, actions/setup-node) and <prefix>/libexec/lib/node_modules/npm/bin.
-    const roots = [
-      join(directory, "node_modules", "npm", "bin"),
-      resolve(directory, "..", "lib", "node_modules", "npm", "bin"),
-      resolve(directory, "..", "libexec", "lib", "node_modules", "npm", "bin"),
-    ];
-    for (const root of roots) {
-      const candidate = join(root, file);
-      try {
-        if (statSync(candidate).isFile()) return candidate;
-      } catch {
-        continue;
-      }
-    }
-  }
-  return null;
-}
-
 function describeFailure(result) {
   const stdout = tail(redact(result.stdout ?? ""));
   const stderr = tail(redact(result.stderr ?? ""));
@@ -181,9 +150,11 @@ function describeFailure(result) {
 }
 
 /**
- * Runs a command synchronously without a shell. `npm`/`npx` resolve to their
- * CLI script run by this Node binary; every other command is spawned as a
- * program with an argument array, so no argument is ever parsed by a shell.
+ * Runs a command synchronously without a shell. `npm`/`npx` are `.cmd` shims on
+ * Windows that would only start through cmd.exe, so the npm CLI script behind
+ * the shim is resolved through `scripts/lib/npm-cli.mjs` (shared with
+ * host-smoke.mjs) and run by this Node binary; every other command is spawned as
+ * a program with an argument array, so no argument is ever parsed by a shell.
  */
 function runSync(command, args, options = {}) {
   const {
@@ -200,15 +171,12 @@ function runSync(command, args, options = {}) {
     windowsHide: true,
     shell: false,
   };
-  if (NPM_CLI_FILES[command]) {
-    const script = npmCliScript(command, env);
-    if (!script) {
-      throw new Error(
-        `could not locate the \`${command}\` CLI script next to ${process.execPath}; ` +
-          "this script never builds command lines for a shell, so the npm installation on PATH is required",
-      );
+  if (npmCliFile(command) !== null) {
+    const npmCli = resolveNpmCli(command, env);
+    if (npmCli.script === null) {
+      throw new Error(npmCliMissMessage(command, npmCli, env));
     }
-    return spawnSync(process.execPath, [script, ...args], common);
+    return spawnSync(process.execPath, [npmCli.script, ...args], common);
   }
   return spawnSync(command, args, common);
 }
@@ -289,6 +257,14 @@ async function stepInstall() {
   state.prefix = mkdtempSync(
     join(tmpdir(), "opencode-consumer-smoke-"),
   );
+  // Name the npm CLI script and version actually used, so a PATH/prefix surprise
+  // is visible in the step output instead of implicit. A miss fails here with
+  // the full list of searched layouts (shared with host-smoke.mjs).
+  const npmCli = resolveNpmCli("npm", process.env);
+  if (npmCli.script === null) {
+    throw new Error(npmCliMissMessage("npm", npmCli, process.env));
+  }
+  const npmCliLine = describeNpmCli(npmCli, process.env);
   const result = runSync(
     "npm",
     [
@@ -312,7 +288,7 @@ async function stepInstall() {
       )}`,
     );
   }
-  return `installed into ${state.prefix}`;
+  return `installed into ${state.prefix}\nvia ${npmCliLine}`;
 }
 
 async function stepNoDependencies() {
@@ -383,6 +359,12 @@ async function stepVersion() {
 }
 
 async function stepNpx() {
+  // Resolve here as well as inside runSync so the step output names the npx CLI
+  // script and npm version that answered; a miss reports every searched layout.
+  const npxCli = resolveNpmCli("npx", process.env);
+  if (npxCli.script === null) {
+    throw new Error(npmCliMissMessage("npx", npxCli, process.env));
+  }
   const result = runSync(
     "npx",
     ["--no-install", PACKAGE_NAME, "--version"],
@@ -395,7 +377,7 @@ async function stepNpx() {
       `npx printed ${JSON.stringify(printed)}, expected ${JSON.stringify(repoVersion)}`,
     );
   }
-  return `npx resolved the bin offline and printed ${printed}`;
+  return `npx resolved the bin offline and printed ${printed}; via ${describeNpmCli(npxCli, process.env)}`;
 }
 
 async function stepNpxCleanEnvironment() {
@@ -404,6 +386,13 @@ async function stepNpxCleanEnvironment() {
   const userConfigFile = join(scrubDirectory, "npmrc");
   mkdirSync(cacheDirectory, { recursive: true });
   writeFileSync(userConfigFile, "", "utf8");
+  // Resolved against the scrubbed environment, which is the one this step tests:
+  // the shim must still be reachable with an empty userconfig and a fresh cache.
+  const scrubbed = scrubbedEnvironment(cacheDirectory, userConfigFile);
+  const npxCli = resolveNpmCli("npx", scrubbed);
+  if (npxCli.script === null) {
+    throw new Error(npmCliMissMessage("npx", npxCli, scrubbed));
+  }
 
   const result = runSync(
     "npx",
@@ -418,7 +407,7 @@ async function stepNpxCleanEnvironment() {
     ],
     {
       cwd: state.prefix,
-      env: scrubbedEnvironment(cacheDirectory, userConfigFile),
+      env: scrubbed,
       timeout: COMMAND_TIMEOUT_MS,
     },
   );
@@ -429,7 +418,7 @@ async function stepNpxCleanEnvironment() {
       `scrubbed npx printed ${JSON.stringify(printed)}, expected ${JSON.stringify(repoVersion)}`,
     );
   }
-  return `resolved with an empty userconfig and a fresh cache; printed ${printed}`;
+  return `resolved with an empty userconfig and a fresh cache; printed ${printed}; via ${describeNpmCli(npxCli, scrubbed)}`;
 }
 
 async function stepFixture() {
