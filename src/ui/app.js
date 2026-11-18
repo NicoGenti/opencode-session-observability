@@ -410,6 +410,9 @@ async function selectSession(sessionID, view = state.view, eventID = null) {
   updateHash();
   renderTabs();
   renderCompareButton();
+  // A session switch clears the previous frame's sibling immediately, so a
+  // failed load cannot leave another session's advisory rows on screen.
+  renderGuardrails();
   await loadSessionData({ resetScroll: true, openEventID: eventID });
   renderSessionList();
   renderFamily();
