@@ -20,8 +20,24 @@ import { escapeAttr, escapeHtml, formatNumber } from "./format.js";
 /** Mirrors the core event cap; a hostile payload cannot grow the section. */
 export const MAX_EVENT_LINKS = 10;
 
+/** Mirrors the core turn cap; a warning never renders more turn anchors. */
+export const MAX_TURN_LINKS = 6;
+
 /** The standing advisory copy. Fixed, independent of the payload. */
 export const GUARDRAIL_ADVISORY_COPY = "advisory — never blocks anything";
+
+/**
+ * Budgets may be fractional (cost in dollars, elapsed minutes), so the
+ * threshold keeps up to two decimals. `formatNumber` rounds to whole units and
+ * would report a `$12.75` budget as `13`; the row counts keep using it.
+ */
+const BUDGET_FORMAT = new Intl.NumberFormat("en-US", {
+  maximumFractionDigits: 2,
+});
+
+function formatBudget(value) {
+  return BUDGET_FORMAT.format(value);
+}
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
@@ -43,27 +59,54 @@ function cappedIDs(ids, limit) {
   return out;
 }
 
-function eventLinksHtml(warning, label) {
-  const ids = cappedIDs(warning?.eventIDs, MAX_EVENT_LINKS);
-  if (ids.length === 0) return "";
-  const links = ids
-    .map(
-      (eventID, position) =>
-        `<button type="button" class="link-button guardrail-link" data-event-id="${escapeAttr(
-          eventID,
-        )}" aria-label="${escapeAttr(
-          `Open event ${position + 1} of ${label} in Trajectory`,
-        )}">Event ${position + 1}</button>`,
-    )
-    .join("");
-  return `<div class="guardrail-links">${links}</div>`;
+/** `turn.trigger?.eventID ?? turn.eventIDs?.[0]`, the health-breakdown rule. */
+function anchorOf(turn) {
+  const anchor = turn?.trigger?.eventID ?? turn?.eventIDs?.[0] ?? null;
+  return typeof anchor === "string" && anchor.length > 0 ? anchor : null;
 }
 
-function rowHtml(warning, position) {
+/**
+ * The evidence buttons: `Event N` links for the capped event ids, then
+ * `Turn N` links for the capped turn ids. Both carry `data-event-id`, because a
+ * turn's anchor *is* an event id, so the existing `jumpToEvent()` binding opens
+ * the Trajectory row either way. A turn whose anchor cannot be resolved
+ * renders no link — an id that cannot be opened is never shown.
+ */
+function evidenceLinksHtml(warning, label, turnByID) {
+  const links = [];
+  const ids = cappedIDs(warning?.eventIDs, MAX_EVENT_LINKS);
+  ids.forEach((eventID, position) => {
+    links.push(
+      `<button type="button" class="link-button guardrail-link" data-event-id="${escapeAttr(
+        eventID,
+      )}" aria-label="${escapeAttr(
+        `Open event ${position + 1} of ${label} in Trajectory`,
+      )}">Event ${position + 1}</button>`,
+    );
+  });
+  const turnIDs = cappedIDs(warning?.turnIDs, MAX_TURN_LINKS);
+  for (const turnID of turnIDs) {
+    const turn = turnByID.get(turnID);
+    const anchor = anchorOf(turn);
+    if (!anchor) continue;
+    const turnLabel = `Turn ${turn.index}`;
+    links.push(
+      `<button type="button" class="link-button guardrail-link" data-event-id="${escapeAttr(
+        anchor,
+      )}" aria-label="${escapeAttr(
+        `Open ${turnLabel} in Trajectory`,
+      )}">${escapeHtml(turnLabel)}</button>`,
+    );
+  }
+  if (links.length === 0) return "";
+  return `<div class="guardrail-links">${links.join("")}</div>`;
+}
+
+function rowHtml(warning, position, turnByID) {
   const label = asText(warning?.label);
   const observed = asText(warning?.observed);
   const budget = Number.isFinite(warning?.threshold)
-    ? formatNumber(warning.threshold)
+    ? formatBudget(warning.threshold)
     : "—";
   if (label.length === 0 || observed.length === 0) return "";
   const id = asText(warning?.id) || `budget-${position}`;
@@ -73,7 +116,7 @@ function rowHtml(warning, position) {
           <span class="guardrail-basis">derived</span>
           <span class="grow"></span>
           <span class="guardrail-advisory">advisory</span>
-          ${eventLinksHtml(warning, label)}
+          ${evidenceLinksHtml(warning, label, turnByID)}
         </div>
         <p class="small muted guardrail-note">${escapeHtml(
           `${observed} · budget ${budget}`,
@@ -86,15 +129,24 @@ function rowHtml(warning, position) {
  * container), in both view modes. An absent, empty or malformed sibling
  * renders nothing, so a session under every budget leaves no frame behind.
  *
+ * `turns` is the already-loaded `Analysis.turns`, used only to label and anchor
+ * the `Turn N` evidence links of the event-only budgets (`tokens-total`,
+ * `cost-total`, `context-run`); without it those budgets keep their observation
+ * and simply render no turn button.
+ *
  * A budget that could not be evaluated is reported as skipped instead of
  * guessed. Rows that cannot render (an empty label or observation) are skipped
  * before the count is built, so the header never claims a row the block does
  * not show.
  */
-export function guardrailsHtml(guardrails) {
+export function guardrailsHtml(guardrails, turns = []) {
+  const turnByID = new Map();
+  for (const turn of asArray(turns)) {
+    if (turn && typeof turn.id === "string") turnByID.set(turn.id, turn);
+  }
   const rows = [];
   for (const warning of asArray(guardrails?.warnings)) {
-    const html = rowHtml(warning, rows.length + 1);
+    const html = rowHtml(warning, rows.length + 1, turnByID);
     if (html.length > 0) rows.push(html);
   }
   const skipped = asArray(guardrails?.skipped)

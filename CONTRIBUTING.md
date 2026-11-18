@@ -22,13 +22,13 @@ Use `npm ci` rather than `npm install`: `package-lock.json` is committed and the
 npm run check        # typecheck + typecheck:tui + full test suite — the standard gate
 npm run typecheck    # tsc --noEmit only
 npm run typecheck:tui # tsc --noEmit -p tsconfig.tui.json (Solid JSX sidecar)
-npm test             # node:test, 37 files, 368 tests
+npm test             # node:test, 51 files, 797 tests
 npm run build:tui    # rebuild dist-tui/tui.mjs; CI verifies the artifact is fresh
 npm run audit:prod   # production dependency audit
 npm run serve        # start the local UI (alias of npm start)
 ```
 
-`npm run check` must be green before you open a pull request. The suite is at 368 tests across 37 files and grows with each new suite.
+`npm run check` must be green before you open a pull request. The suite is at 797 tests across 51 files and grows with each new suite.
 
 After any change under `src/plugin/tui.*`, rebuild the committed bundle and prove it is fresh:
 
