@@ -924,6 +924,10 @@ async function uiAppSource(): Promise<string> {
   return readFile(new URL("../src/ui/app.js", import.meta.url), "utf8");
 }
 
+async function uiFormatSource(): Promise<string> {
+  return readFile(new URL("../src/ui/format.js", import.meta.url), "utf8");
+}
+
 /**
  * One function's source. The slice stops right after the first `}` in column 0
  * (tolerating CRLF), so a nested block or the next declaration cannot widen it.
@@ -1377,4 +1381,52 @@ test("download names keep the export route's shape and reject everything else", 
     safeDownloadName("../x.md", "session.fallback.md"),
     "session.fallback.md",
   );
+});
+
+test("downloadBlob clicks a detached anchor and never inserts it into the document", async () => {
+  const downloadBlob = uiFunctionBody(
+    await uiFormatSource(),
+    "export function downloadBlob(",
+  );
+
+  // The blob URL and the checked name are still the only values the anchor
+  // receives: the sink is the click, not the attribute writes.
+  assert.match(downloadBlob, /const url = URL\.createObjectURL\(blob\)/);
+  assert.match(downloadBlob, /anchor\.href = url;/);
+  assert.match(downloadBlob, /anchor\.download = safeDownloadName\(filename\)/);
+
+  // The download starts from a detached anchor: the element is clicked but
+  // never appended, so there is no DOM-insertion sink left to feed (alert 23).
+  assert.match(downloadBlob, /anchor\.click\(\);/);
+  assert.doesNotMatch(downloadBlob, /document\.body/);
+  assert.doesNotMatch(downloadBlob, /appendChild|\.append\(|insertAdjacent/);
+  // Nothing was inserted, so nothing needs removing either.
+  assert.doesNotMatch(downloadBlob, /anchor\.remove\(\)/);
+
+  // The revoke keeps today's timing: one 2 s timeout after the click.
+  assert.match(
+    downloadBlob,
+    /setTimeout\(\(\) => URL\.revokeObjectURL\(url\), 2_000\);/,
+  );
+  assert.ok(
+    downloadBlob.indexOf("anchor.click()") <
+      downloadBlob.indexOf("URL.revokeObjectURL(url)"),
+    "the URL must be revoked after the click",
+  );
+});
+
+test("the format module's only node insertion is the clipboard fallback", async () => {
+  const source = await uiFormatSource();
+
+  // The whole module is checked, not one function: a future helper cannot
+  // reintroduce markup next to the download path.
+  assert.doesNotMatch(source, /insertAdjacent(HTML|Element|Text)/);
+  assert.doesNotMatch(source, /\.(inner|outer)HTML\s*=/);
+
+  // Exactly one `appendChild` remains, and it is the execCommand clipboard
+  // fallback: its textarea receives the text as a value, never as markup.
+  assert.equal([...source.matchAll(/\.appendChild\(/g)].length, 1);
+  const copyText = uiFunctionBody(source, "export async function copyText(");
+  assert.match(copyText, /document\.body\.appendChild\(area\)/);
+  assert.match(copyText, /area\.value = text;/);
 });

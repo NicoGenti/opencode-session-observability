@@ -231,8 +231,9 @@ export function downloadBlob(filename, blob) {
   // Re-checked at the sink, immediately before the attribute write, with the
   // same rule set the caller used: anything outside it becomes the default.
   anchor.download = safeDownloadName(filename);
-  document.body.appendChild(anchor);
+  // Detached click, intentionally: the anchor is never inserted into the
+  // document. Evergreen browsers start a `download` from an unconnected
+  // element, so the DOM-insertion sink is gone (code-scanning alert 23).
   anchor.click();
-  anchor.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2_000);
 }
