@@ -40,23 +40,59 @@ const VERSION = "0.1.0";
  * Hard ceiling for one static asset. The largest shipped file is
  * `src/ui/app.js` at ~161 KiB, so 8 MiB keeps roughly 50x headroom for future
  * UI work while a runaway or hostile file can never become an unbounded
- * allocation (alerts 11/12 and their bundle mirror, 17).
+ * allocation. The size comes from the file handle's own `stat` before any
+ * buffer is allocated, and an oversized file answers exactly like a missing
+ * one.
  */
 export const MAX_SERVED_FILE_BYTES = 8 * 1024 * 1024;
 
 /**
  * Hard ceiling for a request body. The API is read-only and every action
- * travels in the URL, so no route needs a payload; the cap bounds what a
- * client can push at the socket before the router answers (alert 12).
+ * travels in the URL, so no route consumes a payload; the cap still bounds
+ * what a client can push at a socket. A declared `Content-Length` is rejected
+ * from the header alone, chunked framing is counted as it arrives, and the
+ * drain only starts after the Host and token gates accepted the request.
  */
 export const MAX_BODY_BYTES = 64 * 1024;
 
 /**
  * Concurrent requests served at once. This is the throttle that guards every
  * filesystem-backed handler: once it is reached the listener answers 503 with
- * `Retry-After` instead of starting more work (alerts 11/12/17).
+ * `Retry-After` instead of starting more work. The counter is decremented on
+ * every exit path, including failures and aborted connections.
  */
 export const MAX_IN_FLIGHT_REQUESTS = 32;
+
+/**
+ * Per-client token bucket, checked before routing. Capacity 300 is a burst far
+ * above the UI's own traffic (live mode polls at roughly 1-2 requests/second),
+ * and the bucket refills at 300 requests/minute (5/second), so interactive use
+ * can never drain it while a local loop that hammers the filesystem-backed
+ * handlers is answered 429 instead of running unbounded. State is in memory and
+ * keyed per remote address.
+ */
+export const RATE_LIMIT_BURST = 300;
+export const RATE_LIMIT_REFILL_PER_MINUTE = 300;
+
+/** Tracked addresses before idle buckets are swept. */
+const RATE_LIMIT_MAX_CLIENTS = 1024;
+
+/**
+ * The 429 body is a fixed byte string: the limiter runs before routing, so no
+ * request-provided value can reach it.
+ */
+export const RATE_LIMIT_BODY =
+  '{"error":"rate_limited","message":"Too many requests. Retry later."}';
+
+/**
+ * Node's own request timeout default is five minutes; the listener answers well
+ * before that, and the drain deadline below bounds a body that trickles in
+ * after its headers were accepted.
+ */
+export const REQUEST_TIMEOUT_MS = 30_000;
+
+/** A body still streaming after this long is aborted and its socket dropped. */
+export const DRAIN_DEADLINE_MS = 10_000;
 
 /**
  * `/api/sessions/{id}/diagnostics`. Exported so tests build requests from the
@@ -86,6 +122,11 @@ export interface ServerOptions {
   /** When set, every /api route except /api/health requires this token. */
   authToken?: string;
   uiRoot?: string;
+  /**
+   * Test hook: overrides this instance's per-client bucket. Production always
+   * uses `RATE_LIMIT_BURST` / `RATE_LIMIT_REFILL_PER_MINUTE`.
+   */
+  rateLimit?: { burst?: number; refillPerMinute?: number };
 }
 
 export interface RunningServer {
@@ -128,6 +169,7 @@ function sendJson(
   payload: unknown,
   headers: Record<string, string> = {},
 ): void {
+  if (res.headersSent || res.writableEnded || res.destroyed) return;
   const body = JSON.stringify(payload);
   securityHeaders(res);
   res.statusCode = status;
@@ -149,6 +191,7 @@ function sendText(
   contentType: string,
   headers: Record<string, string> = {},
 ): void {
+  if (res.headersSent || res.writableEnded || res.destroyed) return;
   securityHeaders(res);
   res.statusCode = status;
   res.setHeader("Content-Type", contentType);
@@ -177,14 +220,21 @@ function declaresBody(req: IncomingMessage): boolean {
  * Consumes a declared request body under `limit` and discards it. The declared
  * `Content-Length` is rejected before a single byte is buffered, and a chunked
  * body is counted as it arrives; crossing either bound stops the read and the
- * caller answers 413 with `Connection: close`. Nothing accumulates past
- * `limit`, which is the point: the entry point owns the bound even though no
- * route consumes the bytes.
+ * caller answers 413 with `Connection: close`. A body still streaming when
+ * `deadlineMs` elapses is aborted: the socket is destroyed and the caller
+ * sends nothing. Nothing accumulates past `limit`, which is the point: the
+ * entry point owns the bound even though no route consumes the bytes.
+ *
+ * Request errors are sunk twice on purpose. One listener settles this promise
+ * and is removed with it; a second, permanent no-op listener keeps a late
+ * reset (after the response, while the socket closes) from surfacing as an
+ * uncaught exception.
  */
 function drainBody(
   req: IncomingMessage,
   limit: number,
-): Promise<"ok" | "too_large"> {
+  deadlineMs: number,
+): Promise<"ok" | "too_large" | "timeout"> {
   return new Promise((resolve) => {
     const declared = Number(req.headers["content-length"]);
     if (Number.isFinite(declared) && declared > limit) {
@@ -193,9 +243,17 @@ function drainBody(
     }
     let total = 0;
     let settled = false;
-    function settle(result: "ok" | "too_large"): void {
+    const deadline = setTimeout(() => {
+      // Stop reading and drop the connection: trickling bytes cannot hold a
+      // socket or this handler open indefinitely.
+      req.destroy();
+      settle("timeout");
+    }, deadlineMs);
+    deadline.unref();
+    function settle(result: "ok" | "too_large" | "timeout"): void {
       if (settled) return;
       settled = true;
+      clearTimeout(deadline);
       req.off("data", onData);
       req.off("end", onEnd);
       req.off("error", onError);
@@ -215,17 +273,112 @@ function drainBody(
     function onError(): void {
       settle("ok");
     }
+    // Permanent sink, never removed by settle(): see the doc comment above.
+    req.on("error", () => {});
     req.on("data", onData);
     req.once("end", onEnd);
     req.once("error", onError);
   });
 }
 
+export interface RateLimiterOptions {
+  /** Tokens a fresh client may spend at once. */
+  burst?: number;
+  /** Tokens added per minute, spread evenly over the minute. */
+  refillPerMinute?: number;
+  /** Injectable clock, used by the tests. */
+  now?: () => number;
+  /** Tracked addresses before idle buckets are swept. */
+  maxClients?: number;
+}
+
+export interface RateLimitVerdict {
+  allowed: boolean;
+  /** Whole seconds a limited client should wait before retrying. */
+  retryAfterSeconds: number;
+}
+
+/**
+ * In-process token bucket, keyed by remote address and consulted before
+ * routing. It is deliberately generous (see `RATE_LIMIT_BURST` and
+ * `RATE_LIMIT_REFILL_PER_MINUTE`): the real UI never notices it, while a local
+ * loop cannot drive the filesystem-backed handlers without bound.
+ */
+export class ClientRateLimiter {
+  readonly #burst: number;
+  readonly #refillPerMs: number;
+  readonly #maxClients: number;
+  readonly #now: () => number;
+  readonly #buckets = new Map<string, { tokens: number; updatedAt: number }>();
+
+  constructor(options: RateLimiterOptions = {}) {
+    this.#burst = options.burst ?? RATE_LIMIT_BURST;
+    const refillPerMinute = options.refillPerMinute ?? RATE_LIMIT_REFILL_PER_MINUTE;
+    this.#refillPerMs = refillPerMinute / 60_000;
+    this.#maxClients = options.maxClients ?? RATE_LIMIT_MAX_CLIENTS;
+    this.#now = options.now ?? Date.now;
+    if (!Number.isFinite(this.#burst) || this.#burst <= 0) {
+      throw new Error("rate limit burst must be a positive number");
+    }
+    if (!Number.isFinite(this.#refillPerMs) || this.#refillPerMs <= 0) {
+      throw new Error("rate limit refill must be a positive number");
+    }
+  }
+
+  take(key: string): RateLimitVerdict {
+    const now = this.#now();
+    const stored = this.#buckets.get(key);
+    const available =
+      stored === undefined
+        ? this.#burst
+        : Math.min(
+            this.#burst,
+            stored.tokens + (now - stored.updatedAt) * this.#refillPerMs,
+          );
+    if (available < 1) {
+      this.#buckets.set(key, { tokens: available, updatedAt: now });
+      // Whole seconds, at least one: `Retry-After` has second precision.
+      const waitMs = (1 - available) / this.#refillPerMs;
+      return {
+        allowed: false,
+        retryAfterSeconds: Math.max(1, Math.ceil(waitMs / 1000)),
+      };
+    }
+    this.#buckets.set(key, { tokens: available - 1, updatedAt: now });
+    this.#sweep(now);
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+
+  /**
+   * Drops buckets that have refilled completely; they behave exactly like a
+   * fresh entry, so removing them costs nothing. A bounded map is what keeps
+   * the limiter itself out of the resource story.
+   */
+  #sweep(now: number): void {
+    if (this.#buckets.size < this.#maxClients) return;
+    for (const [key, bucket] of this.#buckets) {
+      const tokens = bucket.tokens + (now - bucket.updatedAt) * this.#refillPerMs;
+      if (tokens >= this.#burst) this.#buckets.delete(key);
+    }
+  }
+}
+
+/**
+ * IPv4-mapped IPv6 addresses key the same bucket as their IPv4 form, so a
+ * client cannot double its budget by alternating representations.
+ */
+function clientKey(req: IncomingMessage): string {
+  const address = req.socket.remoteAddress ?? "unknown";
+  return address.startsWith("::ffff:")
+    ? address.slice("::ffff:".length)
+    : address;
+}
+
 /**
  * Maps an exception to a wire response. Only the status and code carry
  * exception identity: every message is a fixed string, so neither an error
- * object nor a request path can reach the response body (alerts 13 and 14).
- * Exported so the regression tests can drive the mapping directly.
+ * object nor a request path can reach the response body. Exported so the
+ * regression tests can drive the mapping directly.
  */
 export function errorBody(error: unknown): {
   status: number;
@@ -555,42 +708,13 @@ export async function createObservabilityServer(
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
-      // No route reads a payload, but the entry point still owns the bound on
-      // what a client may push: the declared length is rejected up front and a
-      // chunked body is counted as it arrives, so nothing grows unbounded
-      // before the router answers (alert 12).
-      if (declaresBody(req)) {
-        const verdict = await drainBody(req, MAX_BODY_BYTES);
-        if (verdict === "too_large") {
-          sendJson(
-            req,
-            res,
-            413,
-            {
-              error: "payload_too_large",
-              message: "Request body is too large.",
-            },
-            { Connection: "close" },
-          );
-          return;
-        }
-      }
-      if (!requestAllowed(req, host, boundPort)) {
-        sendJson(req, res, 403, {
-          error: "forbidden_host",
-          message: "Request host is not allowed.",
-        });
-        return;
-      }
-      if (req.method !== "GET" && req.method !== "HEAD") {
-        sendJson(req, res, 405, {
-          error: "method_not_allowed",
-          message: "Only GET and HEAD are supported.",
-        });
-        return;
-      }
-      // The base only resolves origin-form request targets; it must be a
-      // syntactically valid authority even when --host is an IPv6 literal.
+      // Gate order matters: a request that fails a cheap check is answered
+      // before any body work, so an unauthenticated or forged upload never
+      // holds a socket or a handler.
+      //
+      // (a) The request target. The base only resolves origin-form request
+      // targets; it must be a syntactically valid authority even when --host
+      // is an IPv6 literal.
       const requestUrl = new URL(req.url ?? "/", "http://localhost");
       const path = decodeURIComponent(requestUrl.pathname);
       if (path.includes("\0")) {
@@ -600,7 +724,28 @@ export async function createObservabilityServer(
         });
         return;
       }
+      // (b) Host/Origin allowlist, before the router can act on the path.
+      if (!requestAllowed(req, host, boundPort)) {
+        sendJson(req, res, 403, {
+          error: "forbidden_host",
+          message: "Request host is not allowed.",
+        });
+        return;
+      }
+      const bodyBearing = declaresBody(req);
+      // (c) A request without a body can be refused from its method alone. One
+      // that frames a body keeps its answer until the bytes are bounded below,
+      // which is what preserves the existing 405/413 mappings.
+      if (!bodyBearing && req.method !== "GET" && req.method !== "HEAD") {
+        sendJson(req, res, 405, {
+          error: "method_not_allowed",
+          message: "Only GET and HEAD are supported.",
+        });
+        return;
+      }
       const search = requestUrl.searchParams;
+      // (d) Authentication, before any body work: an unauthenticated upload is
+      // answered 401 and the connection closes without the payload being read.
       if (
         authToken !== undefined &&
         path.startsWith("/api/") &&
@@ -615,7 +760,46 @@ export async function createObservabilityServer(
             error: "unauthorized",
             message: "A valid access token is required.",
           },
-          { "WWW-Authenticate": 'Bearer realm="opencode-observability"' },
+          {
+            "WWW-Authenticate": 'Bearer realm="opencode-observability"',
+            ...(bodyBearing ? { Connection: "close" } : {}),
+          },
+        );
+        return;
+      }
+      // (e) The declared body is bounded here, after the gates that can reject
+      // the request without consuming it. Only an /api target can consume a
+      // payload, so a body sent to a static path is never drained: it is
+      // refused by the method gate below and its socket closed.
+      if (bodyBearing && path.startsWith("/api/")) {
+        const verdict = await drainBody(req, MAX_BODY_BYTES, DRAIN_DEADLINE_MS);
+        if (verdict === "timeout") return; // the deadline destroyed the socket
+        if (verdict === "too_large") {
+          sendJson(
+            req,
+            res,
+            413,
+            {
+              error: "payload_too_large",
+              message: "Request body is too large.",
+            },
+            { Connection: "close" },
+          );
+          return;
+        }
+      }
+      // (f) A body-bearing request reaches the method gate only after its body
+      // is bounded, so 413 keeps priority over 405 exactly as before.
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        sendJson(
+          req,
+          res,
+          405,
+          {
+            error: "method_not_allowed",
+            message: "Only GET and HEAD are supported.",
+          },
+          bodyBearing ? { Connection: "close" } : {},
         );
         return;
       }
@@ -650,6 +834,7 @@ export async function createObservabilityServer(
           revealAllowed: allowReveal,
           authRequired,
           readOnly: true,
+          // Process-static CLI config, read once per server process.
           theme: readOpenCodeTheme(),
         });
         return;
@@ -914,10 +1099,21 @@ export async function createObservabilityServer(
       sendJson(req, res, 404, {
         error: "not_found",
         // Fixed text: the request path is attacker-controlled and must never
-        // travel into a response body (alerts 13/14).
+        // travel into a response body.
         message: "No route for this request.",
       });
     } catch (error) {
+      // A response may already be partly committed when a later stage fails; a
+      // second send would throw ERR_HTTP_HEADERS_SENT and take the process down,
+      // so an already-committed response is simply finished.
+      if (res.headersSent) {
+        try {
+          res.end();
+        } catch {
+          // The socket is already gone.
+        }
+        return;
+      }
       const mapped = errorBody(error);
       sendJson(req, res, mapped.status, {
         error: mapped.code,
@@ -927,7 +1123,30 @@ export async function createObservabilityServer(
   };
 
   let inFlight = 0;
+  const limiter = new ClientRateLimiter(options.rateLimit);
   const server = createServer((req, res) => {
+    // A request error has no default listener. Sink it for every request before
+    // anything else, so a reset (a client aborting an upload, or a socket
+    // closed after a 401/413) can never become an uncaught exception. This
+    // listener is intentionally permanent.
+    req.on("error", () => {});
+    // The per-client budget is checked before routing: a flood never reaches a
+    // filesystem-backed handler.
+    const budget = limiter.take(clientKey(req));
+    if (!budget.allowed) {
+      sendText(
+        req,
+        res,
+        429,
+        RATE_LIMIT_BODY,
+        "application/json; charset=utf-8",
+        {
+          "Retry-After": String(budget.retryAfterSeconds),
+          ...(declaresBody(req) ? { Connection: "close" } : {}),
+        },
+      );
+      return;
+    }
     if (inFlight >= MAX_IN_FLIGHT_REQUESTS) {
       sendJson(
         req,
@@ -939,10 +1158,29 @@ export async function createObservabilityServer(
       return;
     }
     inFlight++;
-    void handle(req, res).finally(() => {
-      inFlight--;
-    });
+    // No rejection may escape: handle() maps its own errors, a failure after
+    // the response was committed is absorbed by the headersSent guard, and the
+    // stderr write is best-effort. The counter is decremented on every path.
+    void (async () => {
+      try {
+        await handle(req, res);
+      } catch (error) {
+        try {
+          process.stderr.write(
+            `opencode-observability: request failed: ${
+              error instanceof Error ? error.message : String(error)
+            }\n`,
+          );
+        } catch {
+          // A failing log sink must not become a crash either.
+        }
+      } finally {
+        inFlight -= 1;
+      }
+    })();
   });
+  // Explicit bound instead of Node's five-minute default.
+  server.requestTimeout = REQUEST_TIMEOUT_MS;
 
   await new Promise<void>((resolveListen, rejectListen) => {
     server.once("error", rejectListen);
@@ -979,7 +1217,7 @@ export async function createObservabilityServer(
  * the handle's own `stat` before any buffer is allocated, and the read stops
  * at that size, so the allocation is bounded by the cap even if the file grows
  * between the stat and the read. An oversized file is answered exactly like a
- * missing one: the response never reveals whether it exists (alerts 11/12).
+ * missing one: the response never reveals whether it exists.
  */
 async function serveFile(
   req: IncomingMessage,
@@ -1020,7 +1258,12 @@ async function serveFile(
       }
       res.end(offset === body.length ? body : body.subarray(0, offset));
     } finally {
-      await handle.close();
+      // A close failure is not a request failure: the bytes were already sent.
+      try {
+        await handle.close();
+      } catch {
+        // Nothing left to release.
+      }
     }
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;

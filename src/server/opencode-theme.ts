@@ -71,6 +71,30 @@ function parseTheme(value: unknown): CliTheme | null {
   return mode ? { name, mode } : { name };
 }
 
+/**
+ * The CLI theme is process-static configuration: OpenCode writes it once and a
+ * running server never needs to observe a mid-process change. The discovery
+ * result is therefore cached after the first lookup for a given candidate
+ * path list, and a failed lookup is cached exactly like a successful one (a
+ * malformed or absent config cannot become a per-request filesystem read).
+ */
+let cachedLookup: { key: string; theme: CliTheme | null } | null = null;
+let fileReads = 0;
+
+/** Drops the memo. Only the tests need this; production reads once. */
+export function resetOpenCodeThemeCache(): void {
+  cachedLookup = null;
+  fileReads = 0;
+}
+
+/**
+ * How many config files this process has actually read. Exposed so a test can
+ * prove the second lookup does not touch the filesystem.
+ */
+export function openCodeThemeReadCount(): number {
+  return fileReads;
+}
+
 /** Returns the theme currently selected in OpenCode 2, or null when unknown. */
 export function readOpenCodeTheme(
   options: ThemeDiscoveryOptions = {},
@@ -78,15 +102,22 @@ export function readOpenCodeTheme(
   const paths = options.configPath
     ? [resolve(options.configPath)]
     : candidateCliConfigPaths(options);
+  const key = paths.join("\n");
+  if (cachedLookup !== null && cachedLookup.key === key) {
+    return cachedLookup.theme;
+  }
+  let theme: CliTheme | null = null;
   for (const path of paths) {
     if (!existsSync(path)) continue;
     try {
+      fileReads += 1;
       const config = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-      const theme = parseTheme(config.theme);
-      if (theme) return theme;
+      theme = parseTheme(config.theme);
+      if (theme) break;
     } catch {
       // A malformed or unreadable config must not prevent the UI from starting.
     }
   }
-  return null;
+  cachedLookup = { key, theme };
+  return theme;
 }
