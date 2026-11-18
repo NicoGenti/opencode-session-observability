@@ -1382,7 +1382,7 @@ function evaluateGuardrails(analysis, thresholds = DEFAULT_GUARDRAILS) {
 		skipped
 	};
 }
-var DEFAULT_GUARDRAILS, LABELS, NONE;
+var DEFAULT_GUARDRAILS, GUARDRAIL_MAX, LABELS, NONE;
 var init_guardrails = __esmMin((() => {
 	init_health();
 	DEFAULT_GUARDRAILS = Object.freeze({
@@ -1393,6 +1393,15 @@ var init_guardrails = __esmMin((() => {
 		toolFailures: 5,
 		elapsedMinutes: 60
 	});
+	GUARDRAIL_MAX = Object.freeze({
+		tokensTotal: 0xe8d4a51000,
+		costTotal: 0xe8d4a51000,
+		contextRun: 0xe8d4a51000,
+		retries: 0xe8d4a51000,
+		toolFailures: 0xe8d4a51000,
+		elapsedMinutes: 1e5
+	});
+	GUARDRAIL_MAX.elapsedMinutes;
 	LABELS = Object.freeze({
 		"tokens-total": "Token budget",
 		"cost-total": "Cost budget",
