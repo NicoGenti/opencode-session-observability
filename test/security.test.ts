@@ -1,9 +1,34 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { readFile } from "node:fs/promises";
-import { createObservabilityServer } from "../src/server/http.ts";
-import { ObservabilityService } from "../src/core/service.ts";
+import net from "node:net";
+import { once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  ClientRateLimiter,
+  MAX_BODY_BYTES,
+  MAX_IN_FLIGHT_REQUESTS,
+  MAX_SERVED_FILE_BYTES,
+  RATE_LIMIT_BODY,
+  RATE_LIMIT_BURST,
+  RATE_LIMIT_REFILL_PER_MINUTE,
+  createObservabilityServer,
+  errorBody,
+} from "../src/server/http.ts";
+import {
+  openCodeThemeReadCount,
+  resetOpenCodeThemeCache,
+} from "../src/server/opencode-theme.ts";
+import {
+  EpisodeNotFoundError,
+  EventNotFoundError,
+  ObservabilityService,
+  SessionNotFoundError,
+} from "../src/core/service.ts";
+import { UnsupportedSchemaError } from "../src/core/adapters/sqlite.ts";
 import { preview, redactString, redactValue } from "../src/core/util.ts";
 // @ts-expect-error - plain browser module without type declarations
 import { renderMarkdown } from "../src/ui/markdown.js";
@@ -96,18 +121,84 @@ function request(
   port: number,
   pathname: string,
   headers: Record<string, string> = {},
-): Promise<{ status: number; body: string }> {
+): Promise<{ status: number; body: string; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const req = http.request(
       { host: "127.0.0.1", port, path: pathname, method: "GET", headers },
       (res) => {
         let body = "";
         res.on("data", (chunk) => (body += chunk));
-        res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+        res.on("end", () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            body,
+            headers: res.headers,
+          }),
+        );
       },
     );
     req.on("error", reject);
     req.end();
+  });
+}
+
+/**
+ * A POST with a real body. The server never reads a payload, so the socket can
+ * be closed right after the 413 lands. Once the response headers arrived, a
+ * reset is treated as the end of the exchange: the status is the answer, and
+ * the body is whatever was flushed before the connection dropped.
+ */
+function postWithBody(
+  port: number,
+  pathname: string,
+  body: Buffer,
+  chunked = false,
+  extraHeaders: Record<string, string> = {},
+): Promise<{ status: number; body: string; headers: http.IncomingHttpHeaders }> {
+  const headers: Record<string, string> = chunked
+    ? {}
+    : { "Content-Length": String(body.length) };
+  Object.assign(headers, extraHeaders);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let status: number | undefined;
+    let responseHeaders: http.IncomingHttpHeaders = {};
+    let text = "";
+    const done = (): void => {
+      if (settled) return;
+      settled = true;
+      resolve({ status: status ?? 0, body: text, headers: responseHeaders });
+    };
+    const fail = (error: Error): void => {
+      if (settled) return;
+      // Headers already arrived: the exchange has an answer, so a reset while
+      // the body is still flushing is not a test failure.
+      if (status !== undefined) {
+        done();
+        return;
+      }
+      settled = true;
+      reject(error);
+    };
+    const req = http.request(
+      {
+        host: "127.0.0.1",
+        port,
+        path: pathname,
+        method: "POST",
+        headers,
+      },
+      (res) => {
+        status = res.statusCode ?? 0;
+        responseHeaders = res.headers;
+        res.on("data", (chunk) => (text += chunk));
+        res.on("end", done);
+        res.on("aborted", done);
+        res.on("error", fail);
+      },
+    );
+    req.on("error", fail);
+    req.end(body);
   });
 }
 
@@ -171,6 +262,449 @@ test("HTTP errors do not reflect absolute paths", async () => {
   } finally {
     await server.close();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Server response surface and resource bounds
+// (code-scanning alerts 11, 12, 13, 14 and their bundle mirror, 17)
+// ---------------------------------------------------------------------------
+
+test("error responses are generic JSON and never echo the request", async () => {
+  const { path } = writeFixtureDb(simpleFixture());
+  const server = await createObservabilityServer({ dbPath: path, port: 0 });
+  try {
+    const payload = "ses_<script>alert(1)";
+    const missing = await request(
+      server.port,
+      `/api/sessions/${encodeURIComponent(payload)}`,
+    );
+    assert.equal(missing.status, 404);
+    const missingBody = JSON.parse(missing.body) as {
+      error: string;
+      message: string;
+    };
+    assert.equal(missingBody.error, "session_not_found");
+    // Fixed text: the id from the request path never reaches the body.
+    assert.equal(missingBody.message, "Session not found.");
+    assert.doesNotMatch(missing.body, /script|alert/);
+    // Fixed JSON type plus the defensive headers on the same response.
+    assert.equal(
+      missing.headers["content-type"],
+      "application/json; charset=utf-8",
+    );
+    assert.equal(missing.headers["x-content-type-options"], "nosniff");
+    assert.equal(missing.headers["cache-control"], "no-store");
+
+    const unrouted = await request(
+      server.port,
+      `/no-route/${encodeURIComponent(payload)}`,
+    );
+    assert.equal(unrouted.status, 404);
+    assert.equal(
+      (JSON.parse(unrouted.body) as { message: string }).message,
+      "No route for this request.",
+    );
+    assert.doesNotMatch(unrouted.body, /script|alert|no-route/);
+  } finally {
+    await server.close();
+  }
+});
+
+test("every mapped error carries a fixed message, never the exception text", () => {
+  const secretPath = "C:\\Users\\alice\\.local\\share\\opencode\\opencode.db";
+  assert.deepEqual(errorBody(new Error(`read ${secretPath} failed`)), {
+    status: 500,
+    code: "internal_error",
+    message: "Internal error.",
+  });
+
+  const unsupported = errorBody(
+    new UnsupportedSchemaError(`Unrecognized database at ${secretPath}.`),
+  );
+  assert.equal(unsupported.status, 500);
+  assert.equal(unsupported.code, "unsupported_schema");
+  assert.doesNotMatch(unsupported.message, /opencode\.db|alice/);
+
+  const missing = errorBody(
+    new SessionNotFoundError("<script>alert(1)</script>"),
+  );
+  assert.equal(missing.status, 404);
+  assert.equal(missing.code, "session_not_found");
+  assert.doesNotMatch(missing.message, /script|alert/);
+
+  const missingEvent = errorBody(
+    new EventNotFoundError("<script>alert(1)</script>"),
+  );
+  assert.equal(missingEvent.status, 404);
+  assert.equal(missingEvent.code, "event_not_found");
+  assert.doesNotMatch(missingEvent.message, /script|alert/);
+
+  const missingEpisode = errorBody(
+    new EpisodeNotFoundError("<script>alert(1)</script>"),
+  );
+  assert.equal(missingEpisode.status, 404);
+  assert.equal(missingEpisode.code, "episode_not_found");
+  assert.doesNotMatch(missingEpisode.message, /script|alert/);
+
+  for (const mapped of [
+    errorBody(new EventNotFoundError("<script>alert(1)</script>")),
+    errorBody(new EpisodeNotFoundError("<script>alert(1)</script>")),
+    errorBody(new URIError("Failed to decode param '%'")),
+    errorBody(new SyntaxError(`Unexpected token < in ${secretPath}`)),
+    errorBody("a bare string"),
+    errorBody(undefined),
+  ]) {
+    assert.match(mapped.message, /^[A-Z][^<>]*\.$/, mapped.message);
+  }
+});
+
+test("oversized request bodies are rejected before they are buffered", async () => {
+  assert.equal(MAX_BODY_BYTES, 64 * 1024);
+  // The concurrency throttle keeps its existing value; only the per-request
+  // bounds are new.
+  assert.equal(MAX_IN_FLIGHT_REQUESTS, 32);
+  const { path } = writeFixtureDb(simpleFixture());
+  const server = await createObservabilityServer({ dbPath: path, port: 0 });
+  try {
+    // Declared length above the cap: rejected from the header alone.
+    const declared = await postWithBody(
+      server.port,
+      "/api/health",
+      Buffer.alloc(MAX_BODY_BYTES + 1),
+    );
+    assert.equal(declared.status, 413);
+    const body = JSON.parse(declared.body) as { error: string; message: string };
+    assert.equal(body.error, "payload_too_large");
+    assert.equal(body.message, "Request body is too large.");
+    assert.equal(declared.headers["x-content-type-options"], "nosniff");
+    assert.equal(declared.headers["cache-control"], "no-store");
+    // The connection is dropped with the answer: the unread tail is never
+    // allowed to linger on a keep-alive socket.
+    assert.equal(declared.headers["connection"], "close");
+
+    // Chunked framing without Content-Length: counted as it arrives.
+    const chunked = await postWithBody(
+      server.port,
+      "/api/health",
+      Buffer.alloc(MAX_BODY_BYTES + 1),
+      true,
+    );
+    assert.equal(chunked.status, 413);
+    assert.equal(chunked.headers["connection"], "close");
+    // A reset can arrive while the response body is still flushing; the status
+    // and headers above are the contract, and a flushed body must still map.
+    if (chunked.body.length > 0) {
+      assert.equal(
+        (JSON.parse(chunked.body) as { error: string }).error,
+        "payload_too_large",
+      );
+    }
+
+    // A small body still reaches the router and keeps its own mapping.
+    const small = await postWithBody(
+      server.port,
+      "/api/health",
+      Buffer.from("{}"),
+    );
+    assert.equal(small.status, 405);
+    assert.equal(
+      (JSON.parse(small.body) as { error: string }).error,
+      "method_not_allowed",
+    );
+
+    // The unbounded read is what changed: plain GETs are untouched.
+    const health = await request(server.port, "/api/health");
+    assert.equal(health.status, 200);
+  } finally {
+    await server.close();
+  }
+});
+
+test("the token bucket refills at the documented rate and never overspends", () => {
+  // Pinned so a change to the production budget is a deliberate edit here.
+  assert.equal(RATE_LIMIT_BURST, 300);
+  assert.equal(RATE_LIMIT_REFILL_PER_MINUTE, 300);
+
+  let now = 1_000_000;
+  const limiter = new ClientRateLimiter({
+    burst: 3,
+    refillPerMinute: 60, // one token per second
+    now: () => now,
+  });
+  for (let index = 0; index < 3; index += 1) {
+    assert.equal(limiter.take("127.0.0.1").allowed, true);
+  }
+  const limited = limiter.take("127.0.0.1");
+  assert.equal(limited.allowed, false);
+  assert.equal(limited.retryAfterSeconds, 1);
+  // Budgets are per client: another address still has its own bucket.
+  assert.equal(limiter.take("127.0.0.2").allowed, true);
+
+  // A tenth of a second is not a token yet; a full second is.
+  now += 100;
+  assert.equal(limiter.take("127.0.0.1").allowed, false);
+  now += 1_000;
+  assert.equal(limiter.take("127.0.0.1").allowed, true);
+});
+
+test("a flooding client gets 429 with Retry-After and is served after refill", async () => {
+  const { path } = writeFixtureDb(simpleFixture());
+  const server = await createObservabilityServer({
+    dbPath: path,
+    port: 0,
+    rateLimit: { burst: 4, refillPerMinute: 60 },
+  });
+  try {
+    for (let index = 0; index < 4; index += 1) {
+      assert.equal((await request(server.port, "/api/health")).status, 200);
+    }
+
+    const limited = await request(server.port, "/api/health");
+    assert.equal(limited.status, 429);
+    // A fixed body and a second-precision hint, both built before routing.
+    assert.equal(limited.body, RATE_LIMIT_BODY);
+    assert.equal(limited.headers["retry-after"], "1");
+    assert.equal(
+      limited.headers["content-type"],
+      "application/json; charset=utf-8",
+    );
+    assert.equal(limited.headers["cache-control"], "no-store");
+    // No route ran: the body carries no health payload at all.
+    assert.doesNotMatch(limited.body, /ok|dbPath|version/);
+
+    // Still limited while the bucket is empty, with the same fixed body.
+    const again = await request(server.port, "/api/health");
+    assert.equal(again.status, 429);
+    assert.equal(again.body, RATE_LIMIT_BODY);
+
+    // One token per second: after a second the client is served again.
+    await delay(1_100);
+    assert.equal((await request(server.port, "/api/health")).status, 200);
+  } finally {
+    await server.close();
+  }
+});
+
+test("the OpenCode theme is read once at server creation, never while serving", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "observability-theme-"));
+  const previousConfig = process.env.OPENCODE_CLI_CONFIG;
+  const { path: dbPath } = writeFixtureDb(simpleFixture());
+  let first: Awaited<ReturnType<typeof createObservabilityServer>> | undefined;
+  let second: Awaited<ReturnType<typeof createObservabilityServer>> | undefined;
+  try {
+    const configPath = join(dir, "cli.json");
+    await writeFile(
+      configPath,
+      JSON.stringify({ theme: { name: "nightowl", mode: "dark" } }),
+      "utf8",
+    );
+    process.env.OPENCODE_CLI_CONFIG = configPath;
+    resetOpenCodeThemeCache();
+
+    first = await createObservabilityServer({ dbPath, port: 0 });
+    // The server resolves the theme while it is being created: a fresh process
+    // has exactly one config read before any request is served.
+    assert.equal(openCodeThemeReadCount(), 1);
+
+    // Rewriting the config cannot change what is reported. Every served request
+    // answers from the value stored at creation and reads no file.
+    await writeFile(
+      configPath,
+      JSON.stringify({ theme: { name: "daylight" } }),
+      "utf8",
+    );
+    for (let index = 0; index < 3; index += 1) {
+      const health = JSON.parse((await request(first.port, "/api/health")).body);
+      assert.deepEqual(health.theme, { name: "nightowl", mode: "dark" });
+      assert.equal(openCodeThemeReadCount(), 1);
+    }
+
+    // A second server in the same process resolves the same candidate list
+    // through the memo: it still reports the theme and adds no file read.
+    second = await createObservabilityServer({ dbPath, port: 0 });
+    assert.equal(openCodeThemeReadCount(), 1);
+    const secondHealth = JSON.parse(
+      (await request(second.port, "/api/health")).body,
+    );
+    assert.deepEqual(secondHealth.theme, { name: "nightowl", mode: "dark" });
+    assert.equal(openCodeThemeReadCount(), 1);
+  } finally {
+    await first?.close();
+    await second?.close();
+    resetOpenCodeThemeCache();
+    if (previousConfig === undefined) delete process.env.OPENCODE_CLI_CONFIG;
+    else process.env.OPENCODE_CLI_CONFIG = previousConfig;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an unauthenticated oversized upload is refused before it is drained", async () => {
+  const { path } = writeFixtureDb(simpleFixture());
+  const token = "test-token-0123456789abcdef";
+  const server = await createObservabilityServer({
+    dbPath: path,
+    port: 0,
+    authToken: token,
+  });
+  try {
+    // If the drain ran first this would be 413; auth answers without reading.
+    const refused = await postWithBody(
+      server.port,
+      "/api/sessions",
+      Buffer.alloc(MAX_BODY_BYTES + 1),
+    );
+    assert.equal(refused.status, 401);
+    assert.equal(
+      (JSON.parse(refused.body) as { error: string }).error,
+      "unauthorized",
+    );
+    assert.equal(refused.headers["connection"], "close");
+
+    // The same oversized upload with the token is bounded and answered 413.
+    const bounded = await postWithBody(
+      server.port,
+      "/api/sessions",
+      Buffer.alloc(MAX_BODY_BYTES + 1),
+      false,
+      { Authorization: `Bearer ${token}` },
+    );
+    assert.equal(bounded.status, 413);
+    assert.equal(bounded.headers["connection"], "close");
+
+    // Authentication still precedes the reveal policy gate.
+    const reveal = await request(server.port, "/api/sessions?reveal=1");
+    assert.equal(reveal.status, 401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("an aborted upload cannot crash the listener", async () => {
+  const { path } = writeFixtureDb(simpleFixture());
+  const server = await createObservabilityServer({ dbPath: path, port: 0 });
+  try {
+    // A declared body that never finishes keeps the drain waiting; destroying
+    // the socket makes the handler resume with a dead response object.
+    const socket = net.connect({ host: "127.0.0.1", port: server.port });
+    await once(socket, "connect");
+    socket.write(
+      `POST /api/health HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\nContent-Length: 16\r\n\r\nx`,
+    );
+    await delay(50);
+    socket.destroy();
+    await delay(150);
+
+    // The listener is still healthy: the aborted request left no uncaught
+    // error behind and its in-flight slot was released.
+    assert.equal((await request(server.port, "/api/health")).status, 200);
+  } finally {
+    await server.close();
+  }
+});
+
+test("the request pipeline ships a last-resort error sink and a headersSent guard", async () => {
+  const source = await readFile(
+    new URL("../src/server/http.ts", import.meta.url),
+    "utf8",
+  );
+  // A committed response is finished instead of sending a second time.
+  assert.match(source, /if \(res\.headersSent\) \{/);
+  // A permanent request error sink exists for every request...
+  assert.match(source, /req\.on\("error", \(\) => \{\}\)/);
+  // ...and the handle promise has no rejection path left open.
+  assert.doesNotMatch(source, /void handle\(req, res\)/);
+  assert.match(source, /inFlight -= 1/);
+});
+
+test("the in-flight cap answers 503 instead of starting more work", async () => {
+  const { path } = writeFixtureDb(simpleFixture());
+  const server = await createObservabilityServer({ dbPath: path, port: 0 });
+  const sockets: net.Socket[] = [];
+  try {
+    // Uploads that declare a body but never finish it hold one in-flight slot
+    // each without doing any work, which is what lets the test reach the cap.
+    for (let index = 0; index < MAX_IN_FLIGHT_REQUESTS; index += 1) {
+      const socket = net.connect({ host: "127.0.0.1", port: server.port });
+      sockets.push(socket);
+      await once(socket, "connect");
+      socket.write(
+        `POST /api/health HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\nContent-Length: 16\r\n\r\nx`,
+      );
+    }
+    await delay(200);
+
+    const busy = await request(server.port, "/api/health");
+    assert.equal(busy.status, 503);
+    assert.equal((JSON.parse(busy.body) as { error: string }).error, "busy");
+    assert.equal(busy.headers["retry-after"], "1");
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await server.close();
+  }
+});
+
+test("static files above the served-file cap answer exactly like missing ones", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "observability-ui-"));
+  try {
+    const okBody = "console.log('ok');";
+    await writeFile(join(dir, "ok.js"), okBody);
+    await writeFile(
+      join(dir, "huge.js"),
+      Buffer.alloc(MAX_SERVED_FILE_BYTES + 1, 0x61),
+    );
+    const { path } = writeFixtureDb(simpleFixture());
+    const server = await createObservabilityServer({
+      dbPath: path,
+      port: 0,
+      uiRoot: dir,
+    });
+    try {
+      const ok = await request(server.port, "/ui/ok.js");
+      assert.equal(ok.status, 200);
+      assert.equal(ok.body, okBody);
+      assert.match(ok.headers["content-type"] ?? "", /javascript/);
+      assert.equal(ok.headers["content-length"], String(okBody.length));
+
+      const huge = await request(server.port, "/ui/huge.js");
+      const missing = await request(server.port, "/ui/missing.js");
+      assert.equal(huge.status, 404);
+      assert.equal(missing.status, 404);
+      // Existence is not observable: oversized and absent answer identically.
+      assert.equal(huge.body, missing.body);
+      assert.equal(
+        (JSON.parse(huge.body) as { message: string }).message,
+        "Static file not found.",
+      );
+    } finally {
+      await server.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("every shipped UI asset fits under the served-file cap", async () => {
+  assert.equal(MAX_SERVED_FILE_BYTES, 8 * 1024 * 1024);
+  const root = new URL("../src/ui/", import.meta.url);
+  const entries = await readdir(root, { recursive: true, withFileTypes: true });
+  let count = 0;
+  let largest = 0;
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const info = await stat(join(entry.parentPath, entry.name));
+    count += 1;
+    largest = Math.max(largest, info.size);
+    assert.ok(
+      info.size <= MAX_SERVED_FILE_BYTES,
+      `${entry.name} is ${info.size} bytes, above the cap`,
+    );
+  }
+  assert.ok(count > 10, `expected the UI tree, saw ${count} files`);
+  // The cap keeps at least 4x headroom over the largest real asset.
+  assert.ok(
+    MAX_SERVED_FILE_BYTES >= largest * 4,
+    `largest asset ${largest} leaves less than 4x headroom`,
+  );
 });
 
 test("redaction covers token formats and truncated preview tails", () => {

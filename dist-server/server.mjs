@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -636,17 +636,35 @@ function parseTheme(value) {
 		mode
 	} : { name };
 }
+/**
+* The CLI theme is process-static configuration: OpenCode writes it once and a
+* running server never needs to observe a mid-process change. The server
+* therefore resolves it exactly once, while it is being created, so no request
+* handler reads a config file. The discovery result is memoised per candidate
+* path list and a failed lookup is cached exactly like a successful one (a
+* malformed or absent config cannot become a per-request filesystem read).
+*/
+var cachedLookup = null;
+var fileReads = 0;
 /** Returns the theme currently selected in OpenCode 2, or null when unknown. */
 function readOpenCodeTheme(options = {}) {
 	const paths = options.configPath ? [resolve(options.configPath)] : candidateCliConfigPaths(options);
+	const key = paths.join("\n");
+	if (cachedLookup !== null && cachedLookup.key === key) return cachedLookup.theme;
+	let theme = null;
 	for (const path of paths) {
 		if (!existsSync(path)) continue;
 		try {
-			const theme = parseTheme(JSON.parse(readFileSync(path, "utf8")).theme);
-			if (theme) return theme;
+			fileReads += 1;
+			theme = parseTheme(JSON.parse(readFileSync(path, "utf8")).theme);
+			if (theme) break;
 		} catch {}
 	}
-	return null;
+	cachedLookup = {
+		key,
+		theme
+	};
+	return theme;
 }
 // src/core/types.ts
 var EMPTY_TOKENS = {
@@ -6294,6 +6312,29 @@ function evaluateGuardrails(analysis, thresholds = DEFAULT_GUARDRAILS) {
 var UI_ROOT = fileURLToPath(new URL("../src/ui/", import.meta.url));
 var VERSION$1 = "0.1.0";
 /**
+* Hard ceiling for a request body. The API is read-only and every action
+* travels in the URL, so no route consumes a payload; the cap still bounds
+* what a client can push at a socket. A declared `Content-Length` is rejected
+* from the header alone, chunked framing is counted as it arrives, and the
+* drain only starts after the Host and token gates accepted the request.
+*/
+var MAX_BODY_BYTES = 65536;
+/** Tracked addresses before idle buckets are swept. */
+var RATE_LIMIT_MAX_CLIENTS = 1024;
+/**
+* The 429 body is a fixed byte string: the limiter runs before routing, so no
+* request-provided value can reach it.
+*/
+var RATE_LIMIT_BODY = "{\"error\":\"rate_limited\",\"message\":\"Too many requests. Retry later.\"}";
+/**
+* Node's own request timeout default is five minutes; the listener answers well
+* before that, and the drain deadline below bounds a body that trickles in
+* after its headers were accepted.
+*/
+var REQUEST_TIMEOUT_MS = 3e4;
+/** A body still streaming after this long is aborted and its socket dropped. */
+var DRAIN_DEADLINE_MS = 1e4;
+/**
 * `/api/sessions/{id}/diagnostics`. Exported so tests build requests from the
 * same shape the router matches instead of re-typing the pattern.
 */
@@ -6320,6 +6361,7 @@ function securityHeaders(res) {
 	res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
 }
 function sendJson(req, res, status, payload, headers = {}) {
+	if (res.headersSent || res.writableEnded || res.destroyed) return;
 	const body = JSON.stringify(payload);
 	securityHeaders(res);
 	res.statusCode = status;
@@ -6333,6 +6375,7 @@ function sendJson(req, res, status, payload, headers = {}) {
 	res.end(body);
 }
 function sendText(req, res, status, body, contentType, headers = {}) {
+	if (res.headersSent || res.writableEnded || res.destroyed) return;
 	securityHeaders(res);
 	res.statusCode = status;
 	res.setHeader("Content-Type", contentType);
@@ -6344,21 +6387,155 @@ function sendText(req, res, status, body, contentType, headers = {}) {
 	}
 	res.end(body);
 }
+/**
+* True when the request declares a body through either HTTP/1.1 framing
+* header. No route reads a payload, but a declared body still has to be
+* bounded before the router can ignore it.
+*/
+function declaresBody(req) {
+	return req.headers["content-length"] !== void 0 || req.headers["transfer-encoding"] !== void 0;
+}
+/**
+* Consumes a declared request body under `limit` and discards it. The declared
+* `Content-Length` is rejected before a single byte is buffered, and a chunked
+* body is counted as it arrives; crossing either bound stops the read and the
+* caller answers 413 with `Connection: close`. A body still streaming when
+* `deadlineMs` elapses is aborted: the socket is destroyed and the caller
+* sends nothing. Nothing accumulates past `limit`, which is the point: the
+* entry point owns the bound even though no route consumes the bytes.
+*
+* Request errors are sunk twice on purpose. One listener settles this promise
+* and is removed with it; a second, permanent no-op listener keeps a late
+* reset (after the response, while the socket closes) from surfacing as an
+* uncaught exception.
+*/
+function drainBody(req, limit, deadlineMs) {
+	return new Promise((resolve) => {
+		const declared = Number(req.headers["content-length"]);
+		if (Number.isFinite(declared) && declared > limit) {
+			resolve("too_large");
+			return;
+		}
+		let total = 0;
+		let settled = false;
+		const deadline = setTimeout(() => {
+			req.destroy();
+			settle("timeout");
+		}, deadlineMs);
+		deadline.unref();
+		function settle(result) {
+			if (settled) return;
+			settled = true;
+			clearTimeout(deadline);
+			req.off("data", onData);
+			req.off("end", onEnd);
+			req.off("error", onError);
+			resolve(result);
+		}
+		function onData(chunk) {
+			total += chunk.length;
+			if (total > limit) {
+				req.pause();
+				settle("too_large");
+			}
+		}
+		function onEnd() {
+			settle("ok");
+		}
+		function onError() {
+			settle("ok");
+		}
+		req.on("error", () => {});
+		req.on("data", onData);
+		req.once("end", onEnd);
+		req.once("error", onError);
+	});
+}
+/**
+* In-process token bucket, keyed by remote address and consulted before
+* routing. It is deliberately generous (see `RATE_LIMIT_BURST` and
+* `RATE_LIMIT_REFILL_PER_MINUTE`): the real UI never notices it, while a local
+* loop cannot drive the filesystem-backed handlers without bound.
+*/
+var ClientRateLimiter = class {
+	#burst;
+	#refillPerMs;
+	#maxClients;
+	#now;
+	#buckets = /* @__PURE__ */ new Map();
+	constructor(options = {}) {
+		this.#burst = options.burst ?? 300;
+		const refillPerMinute = options.refillPerMinute ?? 300;
+		this.#refillPerMs = refillPerMinute / 6e4;
+		this.#maxClients = options.maxClients ?? RATE_LIMIT_MAX_CLIENTS;
+		this.#now = options.now ?? Date.now;
+		if (!Number.isFinite(this.#burst) || this.#burst <= 0) throw new Error("rate limit burst must be a positive number");
+		if (!Number.isFinite(this.#refillPerMs) || this.#refillPerMs <= 0) throw new Error("rate limit refill must be a positive number");
+	}
+	take(key) {
+		const now = this.#now();
+		const stored = this.#buckets.get(key);
+		const available = stored === void 0 ? this.#burst : Math.min(this.#burst, stored.tokens + (now - stored.updatedAt) * this.#refillPerMs);
+		if (available < 1) {
+			this.#buckets.set(key, {
+				tokens: available,
+				updatedAt: now
+			});
+			const waitMs = (1 - available) / this.#refillPerMs;
+			return {
+				allowed: false,
+				retryAfterSeconds: Math.max(1, Math.ceil(waitMs / 1e3))
+			};
+		}
+		this.#buckets.set(key, {
+			tokens: available - 1,
+			updatedAt: now
+		});
+		this.#sweep(now);
+		return {
+			allowed: true,
+			retryAfterSeconds: 0
+		};
+	}
+	/**
+	* Drops buckets that have refilled completely; they behave exactly like a
+	* fresh entry, so removing them costs nothing. A bounded map is what keeps
+	* the limiter itself out of the resource story.
+	*/
+	#sweep(now) {
+		if (this.#buckets.size < this.#maxClients) return;
+		for (const [key, bucket] of this.#buckets) if (bucket.tokens + (now - bucket.updatedAt) * this.#refillPerMs >= this.#burst) this.#buckets.delete(key);
+	}
+};
+/**
+* IPv4-mapped IPv6 addresses key the same bucket as their IPv4 form, so a
+* client cannot double its budget by alternating representations.
+*/
+function clientKey(req) {
+	const address = req.socket.remoteAddress ?? "unknown";
+	return address.startsWith("::ffff:") ? address.slice(7) : address;
+}
+/**
+* Maps an exception to a wire response. Only the status and code carry
+* exception identity: every message is a fixed string, so neither an error
+* object nor a request path can reach the response body. Exported so the
+* regression tests can drive the mapping directly.
+*/
 function errorBody(error) {
 	if (error instanceof SessionNotFoundError) return {
 		status: 404,
 		code: "session_not_found",
-		message: error.message
+		message: "Session not found."
 	};
 	if (error instanceof EventNotFoundError) return {
 		status: 404,
 		code: "event_not_found",
-		message: error.message
+		message: "Event not found."
 	};
 	if (error instanceof EpisodeNotFoundError) return {
 		status: 404,
 		code: "episode_not_found",
-		message: error.message
+		message: "Episode not found."
 	};
 	if (error instanceof DatabaseBusyError) return {
 		status: 503,
@@ -6368,7 +6545,7 @@ function errorBody(error) {
 	if (error instanceof UnsupportedSchemaError) return {
 		status: 500,
 		code: "unsupported_schema",
-		message: error.message
+		message: "The database schema is not supported by this build."
 	};
 	if (error instanceof URIError) return {
 		status: 400,
@@ -6622,6 +6799,7 @@ async function createObservabilityServer(options = {}) {
 	const port = options.port ?? 4517;
 	const allowReveal = options.allowReveal === true;
 	const uiRoot = resolve(options.uiRoot ?? UI_ROOT);
+	const theme = readOpenCodeTheme();
 	const dbPath = options.dbPath ?? discoverDatabase().path;
 	const source = openWorkerSqliteSource(dbPath);
 	try {
@@ -6634,20 +6812,6 @@ async function createObservabilityServer(options = {}) {
 	let boundPort = port;
 	const handle = async (req, res) => {
 		try {
-			if (!requestAllowed(req, host, boundPort)) {
-				sendJson(req, res, 403, {
-					error: "forbidden_host",
-					message: "Request host is not allowed."
-				});
-				return;
-			}
-			if (req.method !== "GET" && req.method !== "HEAD") {
-				sendJson(req, res, 405, {
-					error: "method_not_allowed",
-					message: "Only GET and HEAD are supported."
-				});
-				return;
-			}
 			const requestUrl = new URL(req.url ?? "/", "http://localhost");
 			const path = decodeURIComponent(requestUrl.pathname);
 			if (path.includes("\0")) {
@@ -6657,12 +6821,48 @@ async function createObservabilityServer(options = {}) {
 				});
 				return;
 			}
+			if (!requestAllowed(req, host, boundPort)) {
+				sendJson(req, res, 403, {
+					error: "forbidden_host",
+					message: "Request host is not allowed."
+				});
+				return;
+			}
+			const bodyBearing = declaresBody(req);
+			if (!bodyBearing && req.method !== "GET" && req.method !== "HEAD") {
+				sendJson(req, res, 405, {
+					error: "method_not_allowed",
+					message: "Only GET and HEAD are supported."
+				});
+				return;
+			}
 			const search = requestUrl.searchParams;
 			if (authToken !== void 0 && path.startsWith("/api/") && path !== "/api/health" && !isAuthorized(req, authToken)) {
 				sendJson(req, res, 401, {
 					error: "unauthorized",
 					message: "A valid access token is required."
-				}, { "WWW-Authenticate": "Bearer realm=\"opencode-observability\"" });
+				}, {
+					"WWW-Authenticate": "Bearer realm=\"opencode-observability\"",
+					...bodyBearing ? { Connection: "close" } : {}
+				});
+				return;
+			}
+			if (bodyBearing && path.startsWith("/api/")) {
+				const verdict = await drainBody(req, MAX_BODY_BYTES, DRAIN_DEADLINE_MS);
+				if (verdict === "timeout") return;
+				if (verdict === "too_large") {
+					sendJson(req, res, 413, {
+						error: "payload_too_large",
+						message: "Request body is too large."
+					}, { Connection: "close" });
+					return;
+				}
+			}
+			if (req.method !== "GET" && req.method !== "HEAD") {
+				sendJson(req, res, 405, {
+					error: "method_not_allowed",
+					message: "Only GET and HEAD are supported."
+				}, bodyBearing ? { Connection: "close" } : {});
 				return;
 			}
 			const revealRequested = bool(search, "reveal");
@@ -6685,7 +6885,7 @@ async function createObservabilityServer(options = {}) {
 					revealAllowed: allowReveal,
 					authRequired,
 					readOnly: true,
-					theme: readOpenCodeTheme()
+					theme
 				});
 				return;
 			}
@@ -6938,9 +7138,15 @@ async function createObservabilityServer(options = {}) {
 			}
 			sendJson(req, res, 404, {
 				error: "not_found",
-				message: `No route for ${path}`
+				message: "No route for this request."
 			});
 		} catch (error) {
+			if (res.headersSent) {
+				try {
+					res.end();
+				} catch {}
+				return;
+			}
 			const mapped = errorBody(error);
 			sendJson(req, res, mapped.status, {
 				error: mapped.code,
@@ -6949,9 +7155,18 @@ async function createObservabilityServer(options = {}) {
 		}
 	};
 	let inFlight = 0;
-	const MAX_IN_FLIGHT = 32;
+	const limiter = new ClientRateLimiter(options.rateLimit);
 	const server = createServer((req, res) => {
-		if (inFlight >= MAX_IN_FLIGHT) {
+		req.on("error", () => {});
+		const budget = limiter.take(clientKey(req));
+		if (!budget.allowed) {
+			sendText(req, res, 429, RATE_LIMIT_BODY, "application/json; charset=utf-8", {
+				"Retry-After": String(budget.retryAfterSeconds),
+				...declaresBody(req) ? { Connection: "close" } : {}
+			});
+			return;
+		}
+		if (inFlight >= 32) {
 			sendJson(req, res, 503, {
 				error: "busy",
 				message: "Too many concurrent requests."
@@ -6959,10 +7174,19 @@ async function createObservabilityServer(options = {}) {
 			return;
 		}
 		inFlight++;
-		handle(req, res).finally(() => {
-			inFlight--;
-		});
+		(async () => {
+			try {
+				await handle(req, res);
+			} catch (error) {
+				try {
+					process.stderr.write(`opencode-observability: request failed: ${error instanceof Error ? error.message : String(error)}\n`);
+				} catch {}
+			} finally {
+				inFlight -= 1;
+			}
+		})();
 	});
+	server.requestTimeout = REQUEST_TIMEOUT_MS;
 	await new Promise((resolveListen, rejectListen) => {
 		server.once("error", rejectListen);
 		server.listen(port, host, () => {
@@ -6989,18 +7213,47 @@ async function createObservabilityServer(options = {}) {
 		}
 	};
 }
+/**
+* Serves one static file under `MAX_SERVED_FILE_BYTES`. The size is read from
+* the handle's own `stat` before any buffer is allocated, and the read stops
+* at that size, so the allocation is bounded by the cap even if the file grows
+* between the stat and the read. An oversized file is answered exactly like a
+* missing one: the response never reveals whether it exists.
+*/
 async function serveFile(req, res, path) {
 	try {
-		const body = await readFile(path);
-		securityHeaders(res);
-		res.statusCode = 200;
-		res.setHeader("Content-Type", MIME[extname(path).toLowerCase()] ?? "application/octet-stream");
-		res.setHeader("Cache-Control", "no-cache");
-		if (req.method === "HEAD") {
-			res.end();
-			return;
+		const handle = await open(path, "r");
+		try {
+			const info = await handle.stat();
+			if (!info.isFile() || info.size > 8388608) {
+				sendJson(req, res, 404, {
+					error: "not_found",
+					message: "Static file not found."
+				});
+				return;
+			}
+			const body = Buffer.alloc(info.size);
+			let offset = 0;
+			while (offset < body.length) {
+				const { bytesRead } = await handle.read(body, offset, body.length - offset, offset);
+				if (bytesRead === 0) break;
+				offset += bytesRead;
+			}
+			securityHeaders(res);
+			res.statusCode = 200;
+			res.setHeader("Content-Type", MIME[extname(path).toLowerCase()] ?? "application/octet-stream");
+			res.setHeader("Cache-Control", "no-cache");
+			res.setHeader("Content-Length", String(offset));
+			if (req.method === "HEAD") {
+				res.end();
+				return;
+			}
+			res.end(offset === body.length ? body : body.subarray(0, offset));
+		} finally {
+			try {
+				await handle.close();
+			} catch {}
 		}
-		res.end(body);
 	} catch (error) {
 		const code = error.code;
 		if (code === "ENOENT" || code === "EISDIR") {
