@@ -2761,25 +2761,12 @@ export function clientExportFilename(displayName, format, now = new Date()) {
  * fallback (`exportSlug`). The session id is deliberately never a candidate —
  * the selected id arrives from the document location (`#/s/<id>/...`), and
  * letting it reach the download anchor is the dataflow Snyk reported as alert 1
- * (issue #56). The record comes from `state.sessions`, which `loadSessions()`
- * fills from the constant path `/api/sessions`.
+ * (issue #56). The record is the one `resolveExportTarget` matched in
+ * `state.sessions`, which `loadSessions()` and the export-time refresh fill from
+ * the constant path `/api/sessions`.
  */
 export function sessionExportName(record, format, now = new Date()) {
   return clientExportFilename(record?.title ?? record?.slug ?? "", format, now);
-}
-
-/**
- * The selected session as the server described it, or null.
- *
- * The record comes from `state.sessions`, which `loadSessions()` fills from the
- * constant path `/api/sessions`, so its `title`, `slug` and `id` are the
- * server's own metadata and not downstream of the document location. The
- * selected id is only the lookup key here.
- */
-function exportSessionRecord() {
-  const selected = state.sessionID;
-  if (!selected || !Array.isArray(state.sessions)) return null;
-  return state.sessions.find((session) => session.id === selected) ?? null;
 }
 
 /**
@@ -2814,32 +2801,44 @@ export function exportRequestPath(
   return `/api/sessions/${encodeURIComponent(sessionID)}/export?${params}`;
 }
 
-/** Shown when the selected session is in neither the loaded nor the refreshed list. */
+/**
+ * Shown when the selected session is in neither the loaded nor the refreshed
+ * list. The list is newest-first and the refresh asks for the server's maximum
+ * page (1000), so an absent session is older than what the list can carry.
+ */
 const EXPORT_SESSION_MISSING =
-  "Session not in the loaded list — reload and retry.";
+  "Session is not among the loaded sessions — it may be older than the most recent ones.";
 
 /**
  * Re-reads the session list from the constant `/api/sessions` path, unfiltered:
  * the same call shape `loadSessions()` makes, without the search term, so a
- * session the sidebar query filtered out is still found.
+ * session the sidebar query filtered out is still found. The limit is the
+ * server's maximum — it clamps at 1000 — so the refreshed list is as deep as
+ * the API allows.
  */
 async function refreshSessionList() {
-  const data = await api("/api/sessions", { limit: 300 });
+  const data = await api("/api/sessions", { limit: 1000 });
   state.sessions = data.sessions ?? [];
   renderSessionList();
   return state.sessions;
 }
 
 /**
- * Resolves the id an export or digest request may target.
+ * Resolves the target an export or digest request may use: the matching session
+ * record from the `/api/sessions` list, plus the id to put in the request path.
  *
  * `sourceID` is the selected session — the value that arrives from the document
- * location (`#/s/<id>/...`) — and it is only ever a lookup key. The returned id
- * is the `id` of the matching record in the `/api/sessions` list: first the
- * list already in memory, then, when the record is absent, a single unfiltered
- * refresh of that same constant path. A session the server does not return
- * aborts the operation with the UI's toast instead of issuing a request whose
- * target came from the route (Snyk alert 23 / issue #81).
+ * location (`#/s/<id>/...`) — and it is only ever a lookup key. The record is
+ * looked up first in the list already in memory, then, when absent, in a single
+ * unfiltered refresh of that same constant path. A session the server does not
+ * return aborts the operation with the UI's toast instead of issuing a request
+ * whose target came from the route (Snyk alert 23 / issue #81).
+ *
+ * The matched record travels back with the id so callers name the download from
+ * the very record they target: re-reading the selection after the awaits would
+ * let a route change pair one session's bytes with another session's name. A
+ * falsy `sourceID` has nothing to look up, so it returns null without notifying
+ * or refreshing.
  */
 export async function resolveExportTarget(
   sourceID = state.sessionID,
@@ -2849,27 +2848,27 @@ export async function resolveExportTarget(
     notify = toast,
   } = {},
 ) {
+  if (!sourceID) return null;
   const lookup = (list) =>
-    exportRequestID(
-      Array.isArray(list)
-        ? (list.find((session) => session.id === sourceID) ?? null)
-        : null,
-    );
-  let requestID = lookup(sessions);
-  if (!requestID) requestID = lookup(await refresh());
-  if (!requestID) {
+    Array.isArray(list)
+      ? (list.find((session) => session.id === sourceID) ?? null)
+      : null;
+  let record = lookup(sessions);
+  if (!record) record = lookup(await refresh());
+  if (!record) {
     notify(EXPORT_SESSION_MISSING);
     return null;
   }
-  return requestID;
+  return { id: exportRequestID(record), record };
 }
 
 async function exportCurrent(format) {
+  if (!state.sessionID) return;
   try {
-    const requestID = await resolveExportTarget();
-    if (!requestID) return;
+    const target = await resolveExportTarget();
+    if (!target) return;
     const response = await fetch(
-      exportRequestPath(requestID, {
+      exportRequestPath(target.id, {
         format,
         includeEvents: true,
         reveal: state.reveal,
@@ -2888,13 +2887,14 @@ async function exportCurrent(format) {
       );
     }
     const blob = await response.blob();
-    // Read after resolution, so a session found by the refresh contributes its
-    // server metadata too.
-    const record = exportSessionRecord();
-    // Named from the server-provided session metadata and the client clock,
-    // never from the response header or the document location: the anchor name
-    // must not be downstream of either (Snyk alert 1 / issue #56).
-    const filename = safeDownloadName(sessionExportName(record, format));
+    // Named from the record the request was resolved against — the same
+    // server-provided metadata, read once, so a route change during the awaits
+    // cannot pair one session's bytes with another session's name — and the
+    // client clock. Never from the response header or the document location
+    // (Snyk alert 1 / issue #56).
+    const filename = safeDownloadName(
+      sessionExportName(target.record, format),
+    );
     downloadBlob(filename, blob);
 
     toast(
@@ -2925,10 +2925,10 @@ async function copyDigest({ prompt }) {
     // Same clean target as the export flow: the id is resolved from the server
     // session list, so no document location value reaches the path (DOM-XSS
     // alert 1 / issue #56, alert 23 / issue #81).
-    const requestID = await resolveExportTarget();
-    if (!requestID) return;
+    const target = await resolveExportTarget();
+    if (!target) return;
     const response = await fetch(
-      exportRequestPath(requestID, {
+      exportRequestPath(target.id, {
         format: "digest",
         prompt,
         reveal,

@@ -77,8 +77,8 @@ test("the digest copy path reuses the shared export request helper", async () =>
   // Both the digest copy and the download resolve their target through the same
   // server-list helper, so the digest copy gets the same provenance guarantees
   // (no origin, no document location) and the two paths cannot drift.
-  assert.match(copyDigest, /const requestID = await resolveExportTarget\(\);/);
-  assert.match(copyDigest, /exportRequestPath\(requestID, \{/);
+  assert.match(copyDigest, /const target = await resolveExportTarget\(\);/);
+  assert.match(copyDigest, /exportRequestPath\(target\.id, \{/);
   assert.match(copyDigest, /format: "digest"/);
   assert.doesNotMatch(copyDigest, /exportRequestPath\(state\.sessionID/);
   // The selected id survives only as the early no-op guard.

@@ -468,31 +468,34 @@ test("the export download name is built from server metadata, never the route or
   const source = await uiAppSource();
   const exportCurrent = uiFunctionBody(source, "async function exportCurrent(format)");
 
-  // The name is derived from the record the `/api/sessions` list supplies, then
-  // the shared allowlist, then the sink.
-  assert.match(exportCurrent, /sessionExportName\(record, format\)/);
+  // The name is derived from the record the resolver matched against the
+  // `/api/sessions` list, then the shared allowlist, then the sink. The same
+  // record feeds the request path, so name and bytes cannot diverge.
+  assert.match(exportCurrent, /sessionExportName\(target\.record, format\)/);
   assert.match(exportCurrent, /const filename = safeDownloadName\(/);
   assert.match(exportCurrent, /downloadBlob\(filename, blob\)/);
-  // The location-derived id may not appear in the flow at all; the two
-  // resolvers below are the only places it is read, and only as a lookup key
-  // and a request fallback.
-  assert.doesNotMatch(exportCurrent, /state\.sessionID/);
+  // The location-derived id may appear only as the early no-op guard, exactly
+  // as in `copyDigest`; it is never read into the request path or the name.
+  assert.equal([...exportCurrent.matchAll(/state\.sessionID/g)].length, 1);
+  assert.match(exportCurrent, /if \(!state\.sessionID\) return;/);
   // The response supplies bytes only: its header must not reach the anchor.
   assert.doesNotMatch(exportCurrent, /Content-Disposition/i);
   assert.doesNotMatch(exportCurrent, /response\.headers/);
   assert.doesNotMatch(exportCurrent, /parseFilename/);
   assert.doesNotMatch(exportCurrent, /location\./);
-  // The request target is the relative helper, fed by the resolved request id.
-  assert.match(exportCurrent, /exportRequestPath\(requestID, \{/);
+  // The request target is the relative helper, fed by the resolved target id.
+  assert.match(exportCurrent, /exportRequestPath\(target\.id, \{/);
 
   // The record lookup reads the server list and nothing else; it never falls
-  // back to the selected id for a display name.
-  const record = uiFunctionBody(source, "function exportSessionRecord()");
-  assert.match(
-    record,
-    /state\.sessions\.find\(\(session\) => session\.id === selected\)/,
+  // back to the selected id for a display name, and the old second read of the
+  // selection is gone for good.
+  const resolver = uiFunctionBody(
+    source,
+    "export async function resolveExportTarget(",
   );
-  assert.doesNotMatch(record, /title|slug/);
+  assert.match(resolver, /session\.id === sourceID/);
+  assert.doesNotMatch(resolver, /title|slug/);
+  assert.doesNotMatch(source, /function exportSessionRecord\(/);
 
   // The request id is the server record's own id and nothing else: the selected
   // (location-derived) id is never a fallback (alert 23 / issue #81).
@@ -511,9 +514,10 @@ test("every export and digest request id is resolved through the server session 
   const source = await uiAppSource();
 
   // The one refresh the resolver performs asks the constant path once, with no
-  // search term, so a session the sidebar query filtered out is still found.
+  // search term, and at the server's maximum page depth (it clamps at 1000), so
+  // the resolved set is as complete as the API allows.
   const refresh = uiFunctionBody(source, "async function refreshSessionList()");
-  assert.match(refresh, /api\("\/api\/sessions", \{ limit: 300 \}\)/);
+  assert.match(refresh, /api\("\/api\/sessions", \{ limit: 1000 \}\)/);
   assert.match(refresh, /state\.sessions = data\.sessions \?\? \[\]/);
   assert.doesNotMatch(refresh, /\bq:/);
 
@@ -525,11 +529,15 @@ test("every export and digest request id is resolved through the server session 
   assert.equal([...resolver.matchAll(/await refresh\(\)/g)].length, 1);
   assert.doesNotMatch(resolver, /\bwhile\s*\(|\bfor\s*\(/);
   // The selection is a lookup key only; the value handed back is the matched
-  // server record's id, through the same null-safe extractor as before.
+  // server record plus its id, through the same null-safe extractor as before.
   assert.match(resolver, /session\.id === sourceID/);
   assert.match(resolver, /exportRequestID\(/);
+  assert.match(resolver, /return \{ id: exportRequestID\(record\), record \};/);
   assert.match(resolver, /notify\(EXPORT_SESSION_MISSING\)/);
   assert.match(resolver, /return null;/);
+  // A falsy selection is a silent no-op: nothing is looked up, so nothing is
+  // refreshed and no toast is shown.
+  assert.match(resolver, /if \(!sourceID\) return null;/);
   // No request target is built here: the caller hands the result to the path
   // helper, so no other value can be spliced in.
   assert.doesNotMatch(resolver, /exportRequestPath|fetch\(/);
@@ -539,54 +547,64 @@ test("every export and digest request id is resolved through the server session 
     source,
     "async function exportCurrent(format)",
   );
-  assert.match(exportCurrent, /const requestID = await resolveExportTarget\(\);/);
+  assert.match(exportCurrent, /const target = await resolveExportTarget\(\);/);
   const copyDigest = uiFunctionBody(source, "async function copyDigest(");
-  assert.match(copyDigest, /const requestID = await resolveExportTarget\(\);/);
+  assert.match(copyDigest, /const target = await resolveExportTarget\(\);/);
   assert.doesNotMatch(copyDigest, /exportRequestPath\(state\.sessionID/);
 });
 
-test("resolveExportTarget returns one clean id, refreshing the list at most once", async () => {
+test("resolveExportTarget returns the matched record with its id, refreshing at most once", async () => {
   const routeID = "ses_route_<script>alert(1)</script>";
   const other = "ses_other";
+  const loadedRecord = { id: routeID, title: "Loaded" };
 
-  // Happy path: the record is already in the loaded list, so no refresh at all.
+  // Happy path: the record is already in the loaded list, so no refresh at all,
+  // and the exact record object comes back for the caller to name the download.
   let refreshes = 0;
   const missing: string[] = [];
   const loaded = await resolveExportTarget(routeID, {
-    sessions: [{ id: other }, { id: routeID, title: "Loaded" }],
+    sessions: [{ id: other }, loadedRecord],
     refresh: async () => {
       refreshes += 1;
       return [];
     },
     notify: (message: string) => missing.push(message),
   });
-  assert.equal(loaded, routeID);
+  assert.equal(loaded?.id, routeID);
+  assert.equal(loaded?.record, loadedRecord);
   assert.equal(refreshes, 0);
   assert.equal(missing.length, 0);
-  // The target reaches the shared path helper as one encoded path segment.
+  // The resolved id reaches the shared path helper as one encoded path segment.
   assert.equal(
-    exportRequestPath(loaded, { format: "digest" }),
+    exportRequestPath(loaded?.id, { format: "digest" }),
     `/api/sessions/${encodeURIComponent(routeID)}/export?format=digest`,
   );
 
   // Refresh path: absent from the loaded list, present in the refreshed one —
-  // exactly one extra list fetch, then the refreshed record's id.
+  // exactly one extra list fetch, and the refreshed record comes back with it.
   const refreshCalls: string[] = [];
+  const refreshedRecord = { id: routeID, title: "Refreshed" };
   const refreshed = await resolveExportTarget(routeID, {
     sessions: [{ id: other }],
     refresh: async () => {
       refreshes += 1;
       refreshCalls.push("fetch");
-      return [{ id: routeID, title: "Refreshed" }];
+      return [refreshedRecord];
     },
     notify: (message: string) => missing.push(message),
   });
-  assert.equal(refreshed, routeID);
+  assert.equal(refreshed?.id, routeID);
+  assert.equal(refreshed?.record, refreshedRecord);
   assert.equal(refreshes, 1);
   assert.deepEqual(refreshCalls, ["fetch"]);
+  // That refresh is the constant path at the server's maximum depth.
+  const source = await uiAppSource();
+  const refresh = uiFunctionBody(source, "async function refreshSessionList()");
+  assert.match(refresh, /api\("\/api\/sessions", \{ limit: 1000 \}\)/);
 
-  // Abort path: absent from both lists — no id comes back, so no request can be
-  // issued, and the toast carries the documented message.
+  // Abort path: absent from both lists — no target comes back, so no request can
+  // be issued, and the toast explains the depth constraint instead of asking for
+  // a blind reload.
   const aborted = await resolveExportTarget(routeID, {
     sessions: [{ id: other }],
     refresh: async () => {
@@ -598,9 +616,67 @@ test("resolveExportTarget returns one clean id, refreshing the list at most once
   assert.equal(aborted, null);
   assert.equal(refreshes, 2);
   assert.equal(missing.length, 1);
-  assert.match(missing[0], /not in the loaded list/i);
-  assert.match(missing[0], /reload and retry/i);
-  assert.notEqual(aborted, routeID);
+  assert.equal(
+    missing[0],
+    "Session is not among the loaded sessions — it may be older than the most recent ones.",
+  );
+
+  // Falsy selection: nothing to look up, so null comes back with no refresh and
+  // no toast — the belt-and-braces guard for callers without a selection.
+  let silentRefreshes = 0;
+  const notified: string[] = [];
+  const silent = await resolveExportTarget("", {
+    sessions: [{ id: routeID }],
+    refresh: async () => {
+      silentRefreshes += 1;
+      return [{ id: routeID }];
+    },
+    notify: (message: string) => notified.push(message),
+  });
+  assert.equal(silent, null);
+  assert.equal(silentRefreshes, 0);
+  assert.equal(notified.length, 0);
+});
+
+test("the download name follows the resolved record even if the route changes mid-flow", async () => {
+  const source = await uiAppSource();
+  const exportCurrent = uiFunctionBody(
+    source,
+    "async function exportCurrent(format)",
+  );
+
+  // Structural half: the flow names the download from the target the resolver
+  // returned and never re-reads the current selection after the awaits, so a
+  // hash navigation during fetch/blob cannot swap the name.
+  assert.match(exportCurrent, /sessionExportName\(target\.record, format\)/);
+  assert.doesNotMatch(exportCurrent, /exportSessionRecord/);
+  assert.doesNotMatch(exportCurrent, /state\.sessions/);
+  assert.equal([...exportCurrent.matchAll(/state\.sessionID/g)].length, 1);
+
+  // Behavioural half: the resolver hands back the exact matched record, so the
+  // name is a pure function of it — whatever the selection becomes later.
+  const now = new Date("2026-01-02T03:04:05Z");
+  const target = await resolveExportTarget("ses_alpha", {
+    sessions: [{ id: "ses_alpha", title: "Alpha review" }],
+    refresh: async () => {
+      throw new Error("refresh must not run for a loaded record");
+    },
+    notify: () => {
+      throw new Error("notify must not run for a loaded record");
+    },
+  });
+  assert.ok(target);
+  assert.equal(target.id, "ses_alpha");
+  assert.equal(
+    sessionExportName(target.record, "json", now),
+    sessionExportName({ id: "ses_alpha", title: "Alpha review" }, "json", now),
+  );
+  // A record for another session (what a re-read could have picked up) would
+  // have produced a different name.
+  assert.notEqual(
+    sessionExportName(target.record, "json", now),
+    sessionExportName({ id: "ses_beta", title: "Beta review" }, "json", now),
+  );
 });
 
 test("the export request is a relative path with the documented query flags", () => {
