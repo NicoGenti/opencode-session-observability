@@ -66,20 +66,26 @@ import { mergePages } from "./paging.js";
 import {
   THEMES,
   VIEW_MODES,
+  GUARDRAIL_FIELDS,
   applyPalette,
   applyTheme,
   applyViewMode,
   get,
+  getGuardrails,
   getTheme,
   getViewMode,
+  guardrailParams,
   migrate,
   readPaletteFromHash,
   readThemeFromHash,
   reset as resetSettings,
+  resetGuardrails,
   set as setSetting,
+  setGuardrail,
   setTheme,
   setViewMode,
 } from "./settings.js";
+import { guardrailsHtml } from "./guardrails.js";
 import { VirtualList } from "./virtual.js";
 
 const eventKinds = [
@@ -118,6 +124,9 @@ const state = {
   session: null,
   family: null,
   analysis: null,
+  // Route-level guardrail sibling of the analysis response (never an Analysis
+  // rider). Advisory only; recomputed by the server from the browser's budgets.
+  guardrails: null,
   facets: null,
   view: "trajectory",
   filters: defaultFilters(),
@@ -392,6 +401,7 @@ async function selectSession(sessionID, view = state.view, eventID = null) {
     state.live = null;
     state.liveError = null;
     state.liveSince = null;
+    state.guardrails = null;
     liveWarningsMarkup = null;
     liveRequestSeq += 1;
     setDiagnosticHighlight([]);
@@ -418,12 +428,16 @@ async function loadSessionData(options = {}) {
         // Only a forced refresh asks the server to drop its dataset cache; the
         // live poll relies on the requestKey/session.time.updated coherence.
         refresh: options.force === true ? 1 : undefined,
+        // The browser owns the advisory budgets; the server evaluates them.
+        // All six are always sent, in the documented order.
+        ...guardrailParams(),
       }),
     ]);
     if (state.sessionID !== requestedSession) return;
     state.session = sessionData.session;
     state.family = sessionData.family;
     state.analysis = analysisData.analysis;
+    state.guardrails = analysisData.guardrails ?? null;
     state.facets = buildFacets(state.analysis);
     // The cursor is derived from the analysis just replaced; keeping the old
     // one would replay or skip events of the previous session/frame.
@@ -436,6 +450,7 @@ async function loadSessionData(options = {}) {
     if (highlightAnchor) applyIncidentHighlight(highlightAnchor);
     renderHeader();
     renderFamily();
+    renderGuardrails();
     await loadEvents({ reset: true, preserveScroll: options.preserveScroll });
     if (options.openEventID) {
       await ensureEventLoaded(options.openEventID);
@@ -1127,6 +1142,27 @@ function renderLive() {
   liveWarningsMarkup = markup;
   dom.liveWarnings.innerHTML = markup;
   dom.liveWarnings.hidden = markup.length === 0;
+}
+
+/**
+ * Renders the advisory guardrail block from the route-level `guardrails`
+ * sibling of the analysis response. The container sits directly below
+ * `#live-warnings` and above the active pane, so both Trajectory and Statistics
+ * show it in Basic mode too — guardrails apply app-wide, unlike the
+ * Advanced-only statistics sections.
+ *
+ * The container is an `aria-live` region refreshed after every analysis load,
+ * so identical markup is left in place instead of being announced again.
+ */
+let guardrailsMarkup = null;
+
+function renderGuardrails() {
+  if (!dom.guardrails) return;
+  const markup = guardrailsHtml(state.guardrails);
+  if (markup === guardrailsMarkup) return;
+  guardrailsMarkup = markup;
+  dom.guardrails.innerHTML = markup;
+  dom.guardrails.hidden = markup.length === 0;
 }
 
 function tile(label, value, sub = "") {
@@ -2862,6 +2898,7 @@ function renderSettingsForm() {
   );
   const viewMode = getViewMode();
   const responseLimit = responseLimitSetting();
+  const guardrails = getGuardrails();
   dom.settingsBody.innerHTML = `<div class="settings-group">
       <h3>Appearance</h3>
       <div class="settings-field">
@@ -2913,6 +2950,24 @@ function renderSettingsForm() {
         state.showEventRows ? " checked" : ""
       }> Show event rows in Statistics</label>
     </div>
+    <div class="settings-group">
+      <h3>Guardrails</h3>
+      <p class="small muted">Advisory budgets evaluated by the server from this browser's settings. They never block anything, and session health keeps its own frozen thresholds.</p>
+      ${GUARDRAIL_FIELDS.map(
+        (field) => `<div class="settings-field">
+        <label for="setting-guardrail-${field.key}">${escapeHtml(field.label)}</label>
+        <input id="setting-guardrail-${field.key}" type="number" inputmode="decimal" min="${field.min}" max="${field.max}" step="${field.step}" value="${escapeAttr(
+          String(guardrails[field.key]),
+        )}" data-guardrail="${escapeAttr(
+          field.key,
+        )}" aria-describedby="setting-guardrail-error-${field.key}">
+        <p class="settings-field-error small" id="setting-guardrail-error-${field.key}" role="alert" hidden></p>
+      </div>`,
+      ).join("")}
+      <div class="settings-actions">
+        <button type="button" class="btn ghost" id="guardrails-reset">Reset guardrail defaults</button>
+      </div>
+    </div>
     <div class="settings-actions">
       <button type="button" class="btn ghost" id="settings-reset">Restore defaults</button>
       <button type="button" class="btn" data-close-settings>Done</button>
@@ -2934,6 +2989,36 @@ function bindSettingsForm() {
       applySettingToState(key, value);
     });
   }
+  for (const input of dom.settingsBody.querySelectorAll("[data-guardrail]")) {
+    input.addEventListener("change", () => {
+      const key = input.dataset.guardrail;
+      const result = setGuardrail(key, input.value);
+      const error = $(`#setting-guardrail-error-${key}`);
+      if (!result.ok) {
+        // Invalid input is rejected inline and never stored or sent.
+        if (error) {
+          error.textContent = result.message;
+          error.hidden = false;
+        }
+        input.value = String(getGuardrails()[key] ?? "");
+        return;
+      }
+      if (error) {
+        error.textContent = "";
+        error.hidden = true;
+      }
+      input.value = String(result.value);
+      // The budgets are evaluated server-side, so a change re-asks the analysis
+      // endpoint instead of re-deriving anything in the browser.
+      if (state.sessionID) void loadSessionData({ preserveScroll: true });
+    });
+  }
+  $("#guardrails-reset")?.addEventListener("click", () => {
+    resetGuardrails();
+    renderSettingsForm();
+    if (state.sessionID) void loadSessionData({ preserveScroll: true });
+    toast("Guardrail defaults restored");
+  });
   $("#settings-reset")?.addEventListener("click", () => {
     resetSettings();
     state.viewMode = "basic";
@@ -2949,7 +3034,9 @@ function bindSettingsForm() {
     renderHeader();
     renderSessionList();
     renderView();
-    if (state.sessionID) void loadEvents({ reset: true });
+    // Guardrails are server-evaluated from these settings, so the analysis is
+    // re-requested rather than left holding the previous budgets.
+    if (state.sessionID) void loadSessionData({ preserveScroll: true });
     toast("Settings restored to defaults");
   });
 }
@@ -3719,6 +3806,7 @@ async function enterBenchmark(filters = {}) {
   state.live = null;
   state.liveError = null;
   state.liveSince = null;
+  state.guardrails = null;
   liveWarningsMarkup = null;
   liveRequestSeq += 1;
   setDiagnosticHighlight([]);
@@ -3727,6 +3815,7 @@ async function enterBenchmark(filters = {}) {
   renderTabs();
   renderCompareButton();
   renderLive();
+  renderGuardrails();
   renderSessionList();
   renderFamily();
   await renderBenchmark(filters);
@@ -3866,6 +3955,12 @@ function bindStaticEvents() {
   });
   dom.liveToggle?.addEventListener("change", toggleLive);
   dom.liveWarnings?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-event-id]");
+    if (!button) return;
+    const eventID = button.dataset.eventId;
+    if (eventID) void jumpToEvent(eventID);
+  });
+  dom.guardrails?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-event-id]");
     if (!button) return;
     const eventID = button.dataset.eventId;
@@ -4138,6 +4233,7 @@ function collectDom() {
   dom.exportNote = $("#export-note");
   dom.liveToggle = $("#live-toggle");
   dom.liveWarnings = $("#live-warnings");
+  dom.guardrails = $("#guardrails");
   dom.dbInfo = $("#db-info");
 }
 
