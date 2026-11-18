@@ -40,6 +40,7 @@ import {
   healthBreakdownHtml,
   missingHealth,
 } from "./health.js";
+import { liveBadgeHtml, liveWarningsHtml } from "./live.js";
 import {
   authHeaders,
   consumeTokenFromLocation,
@@ -134,6 +135,11 @@ const state = {
   ledger: null,
   detailEvent: null,
   liveTimer: null,
+  // Latest live snapshot from GET /api/sessions/:id/live. `stale` marks a kept
+  // frame whose newest poll failed (including the 503 database-busy path).
+  live: null,
+  // Last orderKey the live poll has already accounted for.
+  liveSince: null,
   sessionQuery: "",
   responseLimit: responseLimitSetting(),
   groupByProject: get("groupByProject") !== false,
@@ -365,6 +371,9 @@ async function selectSession(sessionID, view = state.view, eventID = null) {
     state.scrollTop = 0;
     state.detailEvent = null;
     state.drawerOpener = null;
+    state.live = null;
+    state.liveSince = null;
+    liveRequestSeq += 1;
     setDiagnosticHighlight([]);
     closeDrawer();
   }
@@ -418,6 +427,7 @@ async function loadSessionData(options = {}) {
 }
 
 let eventRequestSeq = 0;
+let liveRequestSeq = 0;
 
 async function loadEvents(options = {}) {
   if (!state.sessionID) return;
@@ -1041,10 +1051,27 @@ function renderHeader() {
           )}</span></span>
           <span>Source <code>${escapeHtml(analysis.capabilities.source)}</code></span>
           <span><span class="badge">${escapeHtml(scope)}</span></span>
+          <span id="live-badge-slot" class="live-badge-slot"></span>
         </div>
       </div>
     </div>
     <div class="stat-strip">${tiles}</div>`;
+  renderLive();
+}
+
+/**
+ * Renders the live badge and the warning list from `state.live`. The badge
+ * lives in the session header; the warning container sits above the active
+ * pane so both Trajectory and Statistics show the same frame.
+ */
+function renderLive() {
+  const slot = $("#live-badge-slot");
+  if (slot) slot.innerHTML = state.live ? liveBadgeHtml(state.live) : "";
+  if (!dom.liveWarnings) return;
+  const warnings = state.live?.warnings ?? [];
+  const markup = state.live ? liveWarningsHtml(warnings) : "";
+  dom.liveWarnings.innerHTML = markup;
+  dom.liveWarnings.hidden = markup.length === 0;
 }
 
 function tile(label, value, sub = "") {
@@ -3479,18 +3506,80 @@ function focusCompareInput(direction) {
   return true;
 }
 
-function toggleLive() {
+/** The last orderKey the UI has already loaded for the current session. */
+function lastSeenOrderKey() {
+  const events = state.analysis?.events ?? [];
+  return events.length > 0 ? events[events.length - 1].orderKey : undefined;
+}
+
+/**
+ * One live tick: fetch the compact snapshot, then decide whether the heavy
+ * `refreshCurrent()` is needed. The heavy pass runs only when the open turn
+ * changed, the session recorded more events, or the liveness state moved; the
+ * cheap snapshot itself re-renders the badge and warnings every tick.
+ *
+ * A failed poll (including the 503 database-busy mapping) keeps the previous
+ * frame and marks it stale instead of blanking the view.
+ */
+async function pollLive() {
+  if (!state.sessionID) return;
+  const requestedSession = state.sessionID;
+  const ticket = ++liveRequestSeq;
+  const since = state.liveSince ?? lastSeenOrderKey();
+  try {
+    const data = await api(
+      `/api/sessions/${encodeURIComponent(requestedSession)}/live`,
+      { since },
+    );
+    if (ticket !== liveRequestSeq || state.sessionID !== requestedSession) return;
+    const previous = state.live;
+    const openTurnChanged = (data.openTurn?.id ?? null) !== (previous?.openTurn?.id ?? null);
+    const grew = (data.totalInSession ?? 0) > (previous?.totalInSession ?? 0);
+    const stateChanged = data.state !== previous?.state;
+    state.live = data;
+    if (Array.isArray(data.newEvents) && data.newEvents.length > 0) {
+      state.liveSince = data.newEvents[data.newEvents.length - 1].orderKey;
+    } else if (state.liveSince === null || state.liveSince === undefined) {
+      state.liveSince = since ?? lastSeenOrderKey() ?? null;
+    }
+    renderLive();
+    // No previous frame: the session is already loaded for the toggle, so the
+    // first tick only establishes the live frame.
+    if (previous && (openTurnChanged || grew || stateChanged)) {
+      await refreshCurrent();
+    }
+  } catch (error) {
+    if (ticket !== liveRequestSeq) return;
+    if (state.live) {
+      state.live = { ...state.live, stale: true, staleError: error.message };
+    }
+    renderLive();
+  }
+}
+
+function stopLive() {
   if (state.liveTimer) {
     clearInterval(state.liveTimer);
     state.liveTimer = null;
   }
-  if (dom.liveToggle?.checked) {
-    state.liveTimer = setInterval(() => {
-      if (document.visibilityState === "visible" && !state.loading) {
-        void refreshCurrent();
-      }
-    }, 10_000);
+  liveRequestSeq += 1;
+}
+
+function toggleLive() {
+  stopLive();
+  if (!dom.liveToggle?.checked) {
+    state.live = null;
+    state.liveSince = null;
+    renderLive();
+    return;
   }
+  state.liveSince = lastSeenOrderKey() ?? null;
+  void pollLive();
+  state.liveTimer = setInterval(() => {
+    if (document.visibilityState === "visible" && !state.loading && !state.refreshing) {
+      void pollLive();
+    }
+  }, 5_000);
 }
 
 // ---------------------------------------------------------------------------
@@ -3592,6 +3681,12 @@ function bindStaticEvents() {
   }
   $("#refresh")?.addEventListener("click", () => void refreshCurrent());
   dom.liveToggle?.addEventListener("change", toggleLive);
+  dom.liveWarnings?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-event-id]");
+    if (!button) return;
+    const eventID = button.dataset.eventId;
+    if (eventID) void jumpToEvent(eventID);
+  });
   dom.revealToggle?.addEventListener("click", () => void toggleReveal());
   $("#settings-btn")?.addEventListener("click", openSettings);
   for (const button of document.querySelectorAll("[data-view-mode-option]")) {
@@ -3858,6 +3953,7 @@ function collectDom() {
   dom.exportMenu = $("#export-menu");
   dom.exportNote = $("#export-note");
   dom.liveToggle = $("#live-toggle");
+  dom.liveWarnings = $("#live-warnings");
   dom.dbInfo = $("#db-info");
 }
 
