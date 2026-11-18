@@ -2632,6 +2632,581 @@ function evaluateSessionHealth(analysis) {
 		triggeredCount: watch + strong
 	};
 }
+var PATTERN_KINDS = [
+	"no-child-failure",
+	"child-failed-no-parent-reaction",
+	"parent-retried-same-agent",
+	"parent-retried-identical-delegation-input",
+	"parent-retried-with-changed-delegation-input",
+	"parent-fallback-to-other-agent",
+	"parent-reaction-unclear",
+	"insufficient-data"
+];
+/**
+* True when the event is a recorded delegation call. The three signals are
+* ORed on purpose: the tool name, the normalized subagent flag, or a recorded
+* child session id is each sufficient on its own.
+*/
+function isDelegationToolEvent(event) {
+	if (!event || event.kind !== "tool") return false;
+	const tool = event.tool;
+	if (!tool) return false;
+	const childIDs = Array.isArray(tool.childSessionIDs) ? tool.childSessionIDs : [];
+	return tool.name === "subagent" || event.flags?.subagent === true || childIDs.length > 0;
+}
+function delegatedAgentOf(event) {
+	const meta = event.meta;
+	if (!meta || typeof meta !== "object") return null;
+	const value = meta["delegatedAgent"];
+	return typeof value === "string" && value.length > 0 ? value : null;
+}
+function childSessionIDsOf(event) {
+	const tool = event.tool;
+	if (!tool || !Array.isArray(tool.childSessionIDs)) return [];
+	return tool.childSessionIDs.filter((id) => typeof id === "string");
+}
+function turnOfEvent(turns, eventID) {
+	for (const turn of turns) if (Array.isArray(turn.eventIDs) && turn.eventIDs.includes(eventID)) return turn;
+	return null;
+}
+function emptyPatternCounts() {
+	const counts = {};
+	for (const kind of PATTERN_KINDS) counts[kind] = 0;
+	return counts;
+}
+function parentTurnsOf(analysis) {
+	if (!analysis) return [];
+	return Array.isArray(analysis.turns) ? analysis.turns : [];
+}
+function parentComplete(analysis) {
+	return analysis?.coverage?.complete === true;
+}
+function childTurnsOf(child) {
+	return Array.isArray(child.analysis?.turns) ? child.analysis.turns : [];
+}
+function childEventsOf(child) {
+	return Array.isArray(child.analysis?.events) ? child.analysis.events : [];
+}
+function childTimeCreated(child) {
+	const created = child.analysis?.session?.time?.created;
+	if (typeof created === "number" && Number.isFinite(created)) return created;
+	return earliestChildTimestamp(child);
+}
+function earliestChildTimestamp(child) {
+	let earliest = Number.POSITIVE_INFINITY;
+	const events = Array.isArray(child.events) ? child.events : [];
+	for (const event of events) if (typeof event.timestamp === "number" && Number.isFinite(event.timestamp) && event.timestamp < earliest) earliest = event.timestamp;
+	const created = child.analysis?.session?.time?.created;
+	if (typeof created === "number" && Number.isFinite(created) && created < earliest) earliest = created;
+	return Number.isFinite(earliest) ? earliest : 0;
+}
+function deriveAnchor(child, parentEvents, parentTurns) {
+	let anchorIndex = -1;
+	for (let index = 0; index < parentEvents.length; index += 1) {
+		const event = parentEvents[index];
+		if (!isDelegationToolEvent(event)) continue;
+		if (!childSessionIDsOf(event).includes(child.sessionID)) continue;
+		anchorIndex = index;
+		break;
+	}
+	if (anchorIndex >= 0) {
+		const event = parentEvents[anchorIndex];
+		const tool = event.tool;
+		const turn = turnOfEvent(parentTurns, event.id);
+		return {
+			anchorIndex,
+			anchorEvent: event,
+			uncertainty: [],
+			link: {
+				childSessionID: child.sessionID,
+				parentEventID: event.id,
+				parentTurnID: turn ? turn.id : null,
+				parentTurnIndex: turn ? turn.index : null,
+				delegatedAgent: delegatedAgentOf(event),
+				anchorTimestamp: event.timestamp,
+				inputComparability: classifyInput(tool ? tool.input : null)
+			}
+		};
+	}
+	return {
+		anchorIndex: -1,
+		anchorEvent: null,
+		uncertainty: [`no recorded delegation event links child ${child.sessionID}; its earliest timestamp was used as the anchor`],
+		link: {
+			childSessionID: child.sessionID,
+			parentEventID: null,
+			parentTurnID: null,
+			parentTurnIndex: null,
+			delegatedAgent: null,
+			anchorTimestamp: earliestChildTimestamp(child),
+			inputComparability: "absent"
+		}
+	};
+}
+function providedAnchor(link, parentEvents) {
+	let anchorIndex = -1;
+	if (typeof link.parentEventID === "string") anchorIndex = parentEvents.findIndex((event) => event.id === link.parentEventID);
+	const anchorEvent = anchorIndex >= 0 ? parentEvents[anchorIndex] : null;
+	const uncertainty = [];
+	if (typeof link.parentEventID === "string" && anchorEvent === null) uncertainty.push(`recorded delegation event ${link.parentEventID} is absent from the parent stream`);
+	return {
+		anchorIndex,
+		anchorEvent,
+		uncertainty,
+		link: {
+			childSessionID: link.childSessionID,
+			parentEventID: link.parentEventID,
+			parentTurnID: link.parentTurnID,
+			parentTurnIndex: link.parentTurnIndex,
+			delegatedAgent: link.delegatedAgent,
+			anchorTimestamp: Number.isFinite(link.anchorTimestamp) ? link.anchorTimestamp : 0,
+			inputComparability: link.inputComparability
+		}
+	};
+}
+function buildReaction(anchor, parentEvents, complete, child) {
+	const later = (anchor.anchorIndex >= 0 ? parentEvents.slice(anchor.anchorIndex + 1) : parentEvents.filter((event) => event.timestamp > anchor.link.anchorTimestamp)).filter((event) => isDelegationToolEvent(event));
+	const eventIDs = later.map((event) => event.id);
+	const agents = [];
+	for (const event of later) {
+		const agent = delegatedAgentOf(event);
+		if (agent !== null) agents.push(agent);
+	}
+	const uncertainty = [...anchor.uncertainty];
+	if (later.length > 1) uncertainty.push(`${later.length} later delegation events recorded; reaction reflects the first`);
+	const originalAgent = anchor.link.delegatedAgent;
+	const originalTool = anchor.anchorEvent?.tool ?? null;
+	let chosenLater = null;
+	for (const event of later) if (delegatedAgentOf(event) !== null) {
+		chosenLater = event;
+		break;
+	}
+	let kind;
+	if (later.length === 0) kind = "none";
+	else if (originalAgent === null) {
+		kind = "unclear";
+		uncertainty.push("the recorded original delegation carries no delegated agent");
+	} else if (chosenLater === null) {
+		kind = "unclear";
+		uncertainty.push("later delegation events carry no recorded delegated agent");
+	} else if (delegatedAgentOf(chosenLater) === originalAgent) kind = "retry-same-agent";
+	else kind = "fallback-to-other-agent";
+	let inputChanged = false;
+	let inputChangeBasis = "unavailable";
+	const laterTool = chosenLater === null ? null : chosenLater.tool;
+	if (chosenLater !== null && originalTool !== null && laterTool !== null) {
+		const originalState = classifyInput(originalTool.input);
+		const laterState = classifyInput(laterTool.input);
+		if (originalState === "comparable" && laterState === "comparable") {
+			inputChanged = compareInputs(originalTool.input, laterTool.input).verdict !== "identical";
+			inputChangeBasis = "derived";
+		} else uncertainty.push(`delegation inputs are not comparable (original ${originalState}, later ${laterState})`);
+	}
+	const basis = anchor.anchorEvent === null || !complete ? "unavailable" : "derived";
+	if (anchor.anchorEvent !== null && !complete) uncertainty.push("the parent stream is incomplete; the reaction is not classified from a full record");
+	if (anchor.anchorEvent === null) uncertainty.push(`child ${child.sessionID} has no recorded delegation anchor`);
+	return {
+		kind,
+		basis,
+		eventIDs,
+		agents,
+		inputChanged,
+		inputChangeBasis,
+		uncertainty
+	};
+}
+function childFailureEvidence(child) {
+	const incidents = child.diagnostics && Array.isArray(child.diagnostics.incidents) ? child.diagnostics.incidents.length : 0;
+	const sessionOutcome = child.analysis?.session?.outcome;
+	const failedOrInterruptedTurns = childTurnsOf(child).filter((turn) => turn.status === "error" || turn.status === "interrupted").length;
+	const failedOrInterruptedIdles = childEventsOf(child).filter((event) => event.kind === "idle" && (event.status === "failed" || event.status === "interrupted")).length;
+	return {
+		repeatedToolFailureIncidents: incidents,
+		sessionOutcome,
+		failedOrInterruptedTurns,
+		failedOrInterruptedIdles,
+		hasFailureEvidence: incidents > 0 || sessionOutcome === "failed" || sessionOutcome === "interrupted" || failedOrInterruptedTurns > 0 || failedOrInterruptedIdles > 0,
+		basis: child.analysis?.coverage?.complete === true ? "measured" : "unavailable"
+	};
+}
+function classifyPattern(childFailed, anchor, reaction, complete) {
+	if (childFailed.basis !== "measured") return {
+		kind: "insufficient-data",
+		inputChangeProxy: false
+	};
+	if (anchor.anchorEvent === null) return {
+		kind: "insufficient-data",
+		inputChangeProxy: false
+	};
+	if (!complete) return {
+		kind: "insufficient-data",
+		inputChangeProxy: false
+	};
+	if (!childFailed.hasFailureEvidence) return {
+		kind: "no-child-failure",
+		inputChangeProxy: false
+	};
+	switch (reaction.kind) {
+		case "none": return {
+			kind: "child-failed-no-parent-reaction",
+			inputChangeProxy: false
+		};
+		case "unclear": return {
+			kind: "parent-reaction-unclear",
+			inputChangeProxy: false
+		};
+		case "fallback-to-other-agent": return {
+			kind: "parent-fallback-to-other-agent",
+			inputChangeProxy: false
+		};
+		case "retry-same-agent":
+			if (reaction.inputChangeBasis !== "derived") return {
+				kind: "parent-retried-same-agent",
+				inputChangeProxy: false
+			};
+			return reaction.inputChanged ? {
+				kind: "parent-retried-with-changed-delegation-input",
+				inputChangeProxy: true
+			} : {
+				kind: "parent-retried-identical-delegation-input",
+				inputChangeProxy: false
+			};
+	}
+}
+function assessChild(child, parentEvents, parentTurns, complete, provided) {
+	const anchor = provided === void 0 ? deriveAnchor(child, parentEvents, parentTurns) : providedAnchor(provided, parentEvents);
+	const childFailed = childFailureEvidence(child);
+	const parentReaction = buildReaction(anchor, parentEvents, complete, child);
+	const classification = classifyPattern(childFailed, anchor, parentReaction, complete);
+	const pattern = {
+		kind: classification.kind,
+		basis: classification.kind === "insufficient-data" ? "unavailable" : "derived",
+		inputChangeProxy: classification.inputChangeProxy
+	};
+	const summary = child.diagnostics && child.diagnostics.summary ? { ...child.diagnostics.summary } : null;
+	return {
+		assessment: {
+			link: anchor.link,
+			childFailed,
+			parentReaction,
+			pattern,
+			childDiagnosticsSummary: summary
+		},
+		uncertainty: parentReaction.uncertainty
+	};
+}
+/**
+* Evaluates delegation recovery for the direct children of one parent session.
+*
+* Pure and deterministic: no input is mutated and the returned DTO is fresh.
+* It never throws on a malformed input shape; missing pieces degrade to
+* `insufficient-data` plus deterministic `notes`/`uncertainty` entries.
+*/
+function evaluateDelegationRecovery(input) {
+	const rootSessionID = typeof input.rootSessionID === "string" ? input.rootSessionID : "";
+	const parentEvents = Array.isArray(input.parentEvents) ? input.parentEvents : [];
+	const parentTurns = parentTurnsOf(input.parentAnalysis);
+	const complete = parentComplete(input.parentAnalysis);
+	const children = Array.isArray(input.children) ? input.children : [];
+	const precomputedLinks = Array.isArray(input.delegationLinks) ? input.delegationLinks : [];
+	const seen = input.seen instanceof Set ? input.seen : /* @__PURE__ */ new Set([rootSessionID]);
+	const notes = [];
+	const uncertainty = [];
+	const sorted = [...children].sort((left, right) => {
+		const delta = childTimeCreated(left) - childTimeCreated(right);
+		if (delta !== 0) return delta;
+		return left.sessionID < right.sessionID ? -1 : left.sessionID > right.sessionID ? 1 : 0;
+	});
+	const candidates = [];
+	for (const child of sorted) {
+		if (child.sessionID === rootSessionID || seen.has(child.sessionID)) {
+			notes.push(`cycle detected: ${child.sessionID}`);
+			continue;
+		}
+		candidates.push(child);
+	}
+	const assessed = candidates.slice(0, 8);
+	if (assessed.length < candidates.length) notes.push(`${candidates.length - assessed.length} children not assessed (cap 8)`);
+	const patternCounts = emptyPatternCounts();
+	const assessments = [];
+	for (const child of assessed) {
+		const result = assessChild(child, parentEvents, parentTurns, complete, precomputedLinks.find((link) => link.childSessionID === child.sessionID));
+		assessments.push(result.assessment);
+		patternCounts[result.assessment.pattern.kind] += 1;
+		for (const note of result.uncertainty) uncertainty.push(`child ${child.sessionID}: ${note}`);
+	}
+	const classified = assessments.some((assessment) => assessment.pattern.kind !== "insufficient-data");
+	return {
+		schemaVersion: 1,
+		rootSessionID,
+		depth: 1,
+		redacted: input.reveal !== true,
+		totalChildren: children.length,
+		childrenCapped: candidates.length > 8,
+		assessments,
+		patternCounts,
+		basis: classified ? "derived" : "unavailable",
+		notes,
+		uncertainty
+	};
+}
+/**
+* The standing basis notes. Deterministic phrases only: they restate where each
+* value comes from and which linkage the recorder cannot supply.
+*/
+var BASIS_NOTES = Object.freeze([
+	"File paths are measured: they come from recorded tool inputs and write-tool file lists.",
+	"Per-file cost shares are derived: each step's recorded cost is divided evenly across its tool calls, then across the files a call touched; calls that touch no file are not allocated.",
+	"Command names are derived: the first recorded shell token only; full command text is never included.",
+	"Commit linkage is unavailable: the session database records no git data (see docs/DATA-SOURCES.md)."
+]);
+/** Tool names whose `input` path fields name a write target. */
+var WRITE_TOOL_NAMES = /* @__PURE__ */ new Set([
+	"write",
+	"edit",
+	"patch",
+	"multiedit",
+	"apply_patch",
+	"create"
+]);
+/** Tools whose input carries the shell command line. */
+var SHELL_TOOL_NAMES = /* @__PURE__ */ new Set(["shell", "bash"]);
+/** Input keys that carry a path verbatim. */
+var PATH_KEYS = [
+	"path",
+	"filePath",
+	"file",
+	"dir",
+	"directory"
+];
+/** Input keys that carry prose; only accepted when the value is path-shaped. */
+var DESCRIPTION_KEYS = ["description"];
+/**
+* A first token we are willing to publish: no whitespace, no `=`, no quotes —
+* so an inline credential assignment or a `--flag=secret` pair can never become
+* a command name.
+*/
+var COMMAND_TOKEN = /^[A-Za-z0-9_./:\\-]+$/;
+/** A leading `NAME=value` environment assignment is not the executable. */
+var ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+function recordOf(value) {
+	return typeof value === "object" && value !== null && !Array.isArray(value) ? value : {};
+}
+/** Deduplicates, drops empty ids and caps the list in recorded order. */
+function capEvidenceIDs(ids, limit) {
+	const out = [];
+	const seen = /* @__PURE__ */ new Set();
+	for (const id of ids) {
+		if (typeof id !== "string" || id.length === 0 || seen.has(id)) continue;
+		seen.add(id);
+		out.push(id);
+		if (out.length >= limit) break;
+	}
+	return out;
+}
+function cleanPath(value) {
+	if (typeof value !== "string") return null;
+	const trimmed = value.trim();
+	if (trimmed.length === 0 || trimmed.length > 400) return null;
+	if (/[\u0000-\u001f\u007f]/.test(trimmed)) return null;
+	return trimmed;
+}
+/**
+* A prose `description` is only treated as a path when it cannot be prose: one
+* token, and shaped like a path. This keeps free text out of the DTO while
+* still accepting the description-shaped path some tools record.
+*/
+function pathShaped(value) {
+	return !/\s/.test(value) && /[\\/.]/.test(value) && value.length <= 400;
+}
+/**
+* Paths a single tool call touched. `input` path keys are read or write
+* depending on the tool family; a write tool's `metadata.files[].file` list is
+* always a write. `metadata.files[].patch` is deliberately never read.
+*/
+function toolPaths(tool) {
+	const out = [];
+	const seen = /* @__PURE__ */ new Set();
+	const input = recordOf(tool.input);
+	const op = WRITE_TOOL_NAMES.has(tool.name) ? "write" : "read";
+	const push = (value, kind) => {
+		const path = cleanPath(value);
+		if (path === null || seen.has(path)) return;
+		seen.add(path);
+		out.push({
+			path,
+			op: kind
+		});
+	};
+	for (const key of PATH_KEYS) push(input[key], op);
+	for (const key of DESCRIPTION_KEYS) {
+		const value = input[key];
+		if (typeof value === "string" && pathShaped(value)) push(value, op);
+	}
+	const metadata = recordOf(tool.metadata);
+	const files = Array.isArray(metadata.files) ? metadata.files : [];
+	for (const entry of files) {
+		const record = recordOf(entry);
+		push(record.file ?? record.path ?? record.filePath, "write");
+	}
+	return out;
+}
+/**
+* First executable token of a recorded shell command. Leading `KEY=value`
+* assignments are skipped so a credential assignment cannot become the name;
+* a first token that is not shell-token shaped yields no row at all.
+*/
+function firstCommandToken(input) {
+	const record = recordOf(input);
+	const command = record.command ?? record.script ?? record.cmd;
+	if (typeof command !== "string") return null;
+	for (const raw of command.trim().split(/\s+/)) {
+		const token = raw.replace(/^["']|["']$/g, "");
+		if (token.length === 0) continue;
+		if (ENV_ASSIGNMENT.test(token)) continue;
+		if (token.length > 64) return null;
+		return COMMAND_TOKEN.test(token) ? token : null;
+	}
+	return null;
+}
+/**
+* Tool-call event ids of a step, in recorded order. `Step.toolCalls` and the
+* step's `tool` events are both built from the same recorded content-block
+* order, so index `i` of each list names the same call.
+*/
+function toolEventIDs(step, eventByID) {
+	const out = [];
+	for (const eventID of step.eventIDs) if (eventByID.get(eventID)?.kind === "tool") out.push(eventID);
+	return out;
+}
+function shareOf(cost, toolCalls, filesInCall) {
+	if (cost === null || toolCalls <= 0 || filesInCall <= 0) return null;
+	return cost / toolCalls / filesInCall;
+}
+function fileRows(files) {
+	const rows = [];
+	for (const item of files.values()) rows.push({
+		path: item.path,
+		ops: {
+			read: item.read,
+			write: item.write
+		},
+		costShare: item.cost === null ? metric(null, "unavailable", "no step that touched this path recorded a cost") : metric(item.cost, "derived", "step cost divided evenly across the step's tool calls and the files each call touched"),
+		basis: "measured",
+		eventIDs: capEvidenceIDs(item.eventIDs, 6)
+	});
+	rows.sort((left, right) => (right.costShare.value ?? 0) - (left.costShare.value ?? 0) || (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+	return rows.slice(0, 12);
+}
+function commandRows(commands) {
+	const rows = [...commands.values()].map((item) => ({
+		name: item.name,
+		count: item.count,
+		basis: "derived",
+		eventIDs: capEvidenceIDs(item.eventIDs, 6)
+	}));
+	rows.sort((left, right) => right.count - left.count || (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+	return rows.slice(0, 8);
+}
+function attributeTurn(turn, eventByID) {
+	const files = /* @__PURE__ */ new Map();
+	const commands = /* @__PURE__ */ new Map();
+	const subtasks = [];
+	const seenSubtasks = /* @__PURE__ */ new Set();
+	for (const step of turn.steps) {
+		const cost = typeof step.cost === "number" && Number.isFinite(step.cost) ? step.cost : null;
+		const callCount = step.toolCalls.length;
+		const callEvents = toolEventIDs(step, eventByID);
+		for (let index = 0; index < callCount; index += 1) {
+			const tool = step.toolCalls[index];
+			if (!tool) continue;
+			const eventID = callEvents[index] ?? null;
+			const paths = toolPaths(tool);
+			const share = shareOf(cost, callCount, paths.length);
+			for (const item of paths) {
+				let accumulator = files.get(item.path);
+				if (!accumulator) {
+					accumulator = {
+						path: item.path,
+						read: 0,
+						write: 0,
+						cost: null,
+						eventIDs: []
+					};
+					files.set(item.path, accumulator);
+				}
+				if (item.op === "write") accumulator.write += 1;
+				else accumulator.read += 1;
+				if (share !== null) accumulator.cost = (accumulator.cost ?? 0) + share;
+				if (eventID !== null) accumulator.eventIDs.push(eventID);
+			}
+			if (SHELL_TOOL_NAMES.has(tool.name)) {
+				const name = firstCommandToken(tool.input);
+				if (name !== null) {
+					let accumulator = commands.get(name);
+					if (!accumulator) {
+						accumulator = {
+							name,
+							count: 0,
+							eventIDs: []
+						};
+						commands.set(name, accumulator);
+					}
+					accumulator.count += 1;
+					if (eventID !== null) accumulator.eventIDs.push(eventID);
+				}
+			}
+			for (const sessionID of tool.childSessionIDs) {
+				if (seenSubtasks.has(sessionID)) continue;
+				seenSubtasks.add(sessionID);
+				if (subtasks.length >= 8) continue;
+				const agent = recordOf(tool.input).agent;
+				subtasks.push({
+					sessionID,
+					agent: typeof agent === "string" && agent.length > 0 ? agent : null,
+					basis: "measured"
+				});
+			}
+		}
+	}
+	const attributedFiles = fileRows(files);
+	const attributedCommands = commandRows(commands);
+	if (attributedFiles.length === 0 && attributedCommands.length === 0 && subtasks.length === 0) return null;
+	return {
+		turnID: turn.id,
+		turnIndex: turn.index,
+		taskID: turn.id,
+		trigger: {
+			kind: turn.trigger.kind,
+			eventID: turn.trigger.eventID,
+			label: turn.trigger.label
+		},
+		files: attributedFiles,
+		commands: attributedCommands,
+		subtasks,
+		eventIDs: capEvidenceIDs(turn.eventIDs, 10)
+	};
+}
+/**
+* Primary entry point. Pure, deterministic and local.
+*
+* Returns `null` when no turn recorded a file, a shell command or a delegated
+* child: the rider then stays absent instead of asserting an empty
+* attribution, mirroring the diagnostics precedent.
+*/
+function evaluateAttribution(analysis) {
+	const eventByID = new Map(analysis.events.map((event) => [event.id, event]));
+	const turns = [];
+	for (const turn of analysis.turns) {
+		const attributed = attributeTurn(turn, eventByID);
+		if (attributed !== null) turns.push(attributed);
+	}
+	if (turns.length === 0) return null;
+	return {
+		turns,
+		basisNotes: [...BASIS_NOTES]
+	};
+}
 /**
 * The five operational rules a live poll reports. `error-rate` is a
 * retrospective aggregate and `unfinished-outcome` would fire on every
@@ -4183,324 +4758,6 @@ function compareEpisodeData(leftInput, rightInput) {
 		notes
 	};
 }
-var PATTERN_KINDS = [
-	"no-child-failure",
-	"child-failed-no-parent-reaction",
-	"parent-retried-same-agent",
-	"parent-retried-identical-delegation-input",
-	"parent-retried-with-changed-delegation-input",
-	"parent-fallback-to-other-agent",
-	"parent-reaction-unclear",
-	"insufficient-data"
-];
-/**
-* True when the event is a recorded delegation call. The three signals are
-* ORed on purpose: the tool name, the normalized subagent flag, or a recorded
-* child session id is each sufficient on its own.
-*/
-function isDelegationToolEvent(event) {
-	if (!event || event.kind !== "tool") return false;
-	const tool = event.tool;
-	if (!tool) return false;
-	const childIDs = Array.isArray(tool.childSessionIDs) ? tool.childSessionIDs : [];
-	return tool.name === "subagent" || event.flags?.subagent === true || childIDs.length > 0;
-}
-function delegatedAgentOf(event) {
-	const meta = event.meta;
-	if (!meta || typeof meta !== "object") return null;
-	const value = meta["delegatedAgent"];
-	return typeof value === "string" && value.length > 0 ? value : null;
-}
-function childSessionIDsOf(event) {
-	const tool = event.tool;
-	if (!tool || !Array.isArray(tool.childSessionIDs)) return [];
-	return tool.childSessionIDs.filter((id) => typeof id === "string");
-}
-function turnOfEvent(turns, eventID) {
-	for (const turn of turns) if (Array.isArray(turn.eventIDs) && turn.eventIDs.includes(eventID)) return turn;
-	return null;
-}
-function emptyPatternCounts() {
-	const counts = {};
-	for (const kind of PATTERN_KINDS) counts[kind] = 0;
-	return counts;
-}
-function parentTurnsOf(analysis) {
-	if (!analysis) return [];
-	return Array.isArray(analysis.turns) ? analysis.turns : [];
-}
-function parentComplete(analysis) {
-	return analysis?.coverage?.complete === true;
-}
-function childTurnsOf(child) {
-	return Array.isArray(child.analysis?.turns) ? child.analysis.turns : [];
-}
-function childEventsOf(child) {
-	return Array.isArray(child.analysis?.events) ? child.analysis.events : [];
-}
-function childTimeCreated(child) {
-	const created = child.analysis?.session?.time?.created;
-	if (typeof created === "number" && Number.isFinite(created)) return created;
-	return earliestChildTimestamp(child);
-}
-function earliestChildTimestamp(child) {
-	let earliest = Number.POSITIVE_INFINITY;
-	const events = Array.isArray(child.events) ? child.events : [];
-	for (const event of events) if (typeof event.timestamp === "number" && Number.isFinite(event.timestamp) && event.timestamp < earliest) earliest = event.timestamp;
-	const created = child.analysis?.session?.time?.created;
-	if (typeof created === "number" && Number.isFinite(created) && created < earliest) earliest = created;
-	return Number.isFinite(earliest) ? earliest : 0;
-}
-function deriveAnchor(child, parentEvents, parentTurns) {
-	let anchorIndex = -1;
-	for (let index = 0; index < parentEvents.length; index += 1) {
-		const event = parentEvents[index];
-		if (!isDelegationToolEvent(event)) continue;
-		if (!childSessionIDsOf(event).includes(child.sessionID)) continue;
-		anchorIndex = index;
-		break;
-	}
-	if (anchorIndex >= 0) {
-		const event = parentEvents[anchorIndex];
-		const tool = event.tool;
-		const turn = turnOfEvent(parentTurns, event.id);
-		return {
-			anchorIndex,
-			anchorEvent: event,
-			uncertainty: [],
-			link: {
-				childSessionID: child.sessionID,
-				parentEventID: event.id,
-				parentTurnID: turn ? turn.id : null,
-				parentTurnIndex: turn ? turn.index : null,
-				delegatedAgent: delegatedAgentOf(event),
-				anchorTimestamp: event.timestamp,
-				inputComparability: classifyInput(tool ? tool.input : null)
-			}
-		};
-	}
-	return {
-		anchorIndex: -1,
-		anchorEvent: null,
-		uncertainty: [`no recorded delegation event links child ${child.sessionID}; its earliest timestamp was used as the anchor`],
-		link: {
-			childSessionID: child.sessionID,
-			parentEventID: null,
-			parentTurnID: null,
-			parentTurnIndex: null,
-			delegatedAgent: null,
-			anchorTimestamp: earliestChildTimestamp(child),
-			inputComparability: "absent"
-		}
-	};
-}
-function providedAnchor(link, parentEvents) {
-	let anchorIndex = -1;
-	if (typeof link.parentEventID === "string") anchorIndex = parentEvents.findIndex((event) => event.id === link.parentEventID);
-	const anchorEvent = anchorIndex >= 0 ? parentEvents[anchorIndex] : null;
-	const uncertainty = [];
-	if (typeof link.parentEventID === "string" && anchorEvent === null) uncertainty.push(`recorded delegation event ${link.parentEventID} is absent from the parent stream`);
-	return {
-		anchorIndex,
-		anchorEvent,
-		uncertainty,
-		link: {
-			childSessionID: link.childSessionID,
-			parentEventID: link.parentEventID,
-			parentTurnID: link.parentTurnID,
-			parentTurnIndex: link.parentTurnIndex,
-			delegatedAgent: link.delegatedAgent,
-			anchorTimestamp: Number.isFinite(link.anchorTimestamp) ? link.anchorTimestamp : 0,
-			inputComparability: link.inputComparability
-		}
-	};
-}
-function buildReaction(anchor, parentEvents, complete, child) {
-	const later = (anchor.anchorIndex >= 0 ? parentEvents.slice(anchor.anchorIndex + 1) : parentEvents.filter((event) => event.timestamp > anchor.link.anchorTimestamp)).filter((event) => isDelegationToolEvent(event));
-	const eventIDs = later.map((event) => event.id);
-	const agents = [];
-	for (const event of later) {
-		const agent = delegatedAgentOf(event);
-		if (agent !== null) agents.push(agent);
-	}
-	const uncertainty = [...anchor.uncertainty];
-	if (later.length > 1) uncertainty.push(`${later.length} later delegation events recorded; reaction reflects the first`);
-	const originalAgent = anchor.link.delegatedAgent;
-	const originalTool = anchor.anchorEvent?.tool ?? null;
-	let chosenLater = null;
-	for (const event of later) if (delegatedAgentOf(event) !== null) {
-		chosenLater = event;
-		break;
-	}
-	let kind;
-	if (later.length === 0) kind = "none";
-	else if (originalAgent === null) {
-		kind = "unclear";
-		uncertainty.push("the recorded original delegation carries no delegated agent");
-	} else if (chosenLater === null) {
-		kind = "unclear";
-		uncertainty.push("later delegation events carry no recorded delegated agent");
-	} else if (delegatedAgentOf(chosenLater) === originalAgent) kind = "retry-same-agent";
-	else kind = "fallback-to-other-agent";
-	let inputChanged = false;
-	let inputChangeBasis = "unavailable";
-	const laterTool = chosenLater === null ? null : chosenLater.tool;
-	if (chosenLater !== null && originalTool !== null && laterTool !== null) {
-		const originalState = classifyInput(originalTool.input);
-		const laterState = classifyInput(laterTool.input);
-		if (originalState === "comparable" && laterState === "comparable") {
-			inputChanged = compareInputs(originalTool.input, laterTool.input).verdict !== "identical";
-			inputChangeBasis = "derived";
-		} else uncertainty.push(`delegation inputs are not comparable (original ${originalState}, later ${laterState})`);
-	}
-	const basis = anchor.anchorEvent === null || !complete ? "unavailable" : "derived";
-	if (anchor.anchorEvent !== null && !complete) uncertainty.push("the parent stream is incomplete; the reaction is not classified from a full record");
-	if (anchor.anchorEvent === null) uncertainty.push(`child ${child.sessionID} has no recorded delegation anchor`);
-	return {
-		kind,
-		basis,
-		eventIDs,
-		agents,
-		inputChanged,
-		inputChangeBasis,
-		uncertainty
-	};
-}
-function childFailureEvidence(child) {
-	const incidents = child.diagnostics && Array.isArray(child.diagnostics.incidents) ? child.diagnostics.incidents.length : 0;
-	const sessionOutcome = child.analysis?.session?.outcome;
-	const failedOrInterruptedTurns = childTurnsOf(child).filter((turn) => turn.status === "error" || turn.status === "interrupted").length;
-	const failedOrInterruptedIdles = childEventsOf(child).filter((event) => event.kind === "idle" && (event.status === "failed" || event.status === "interrupted")).length;
-	return {
-		repeatedToolFailureIncidents: incidents,
-		sessionOutcome,
-		failedOrInterruptedTurns,
-		failedOrInterruptedIdles,
-		hasFailureEvidence: incidents > 0 || sessionOutcome === "failed" || sessionOutcome === "interrupted" || failedOrInterruptedTurns > 0 || failedOrInterruptedIdles > 0,
-		basis: child.analysis?.coverage?.complete === true ? "measured" : "unavailable"
-	};
-}
-function classifyPattern(childFailed, anchor, reaction, complete) {
-	if (childFailed.basis !== "measured") return {
-		kind: "insufficient-data",
-		inputChangeProxy: false
-	};
-	if (anchor.anchorEvent === null) return {
-		kind: "insufficient-data",
-		inputChangeProxy: false
-	};
-	if (!complete) return {
-		kind: "insufficient-data",
-		inputChangeProxy: false
-	};
-	if (!childFailed.hasFailureEvidence) return {
-		kind: "no-child-failure",
-		inputChangeProxy: false
-	};
-	switch (reaction.kind) {
-		case "none": return {
-			kind: "child-failed-no-parent-reaction",
-			inputChangeProxy: false
-		};
-		case "unclear": return {
-			kind: "parent-reaction-unclear",
-			inputChangeProxy: false
-		};
-		case "fallback-to-other-agent": return {
-			kind: "parent-fallback-to-other-agent",
-			inputChangeProxy: false
-		};
-		case "retry-same-agent":
-			if (reaction.inputChangeBasis !== "derived") return {
-				kind: "parent-retried-same-agent",
-				inputChangeProxy: false
-			};
-			return reaction.inputChanged ? {
-				kind: "parent-retried-with-changed-delegation-input",
-				inputChangeProxy: true
-			} : {
-				kind: "parent-retried-identical-delegation-input",
-				inputChangeProxy: false
-			};
-	}
-}
-function assessChild(child, parentEvents, parentTurns, complete, provided) {
-	const anchor = provided === void 0 ? deriveAnchor(child, parentEvents, parentTurns) : providedAnchor(provided, parentEvents);
-	const childFailed = childFailureEvidence(child);
-	const parentReaction = buildReaction(anchor, parentEvents, complete, child);
-	const classification = classifyPattern(childFailed, anchor, parentReaction, complete);
-	const pattern = {
-		kind: classification.kind,
-		basis: classification.kind === "insufficient-data" ? "unavailable" : "derived",
-		inputChangeProxy: classification.inputChangeProxy
-	};
-	const summary = child.diagnostics && child.diagnostics.summary ? { ...child.diagnostics.summary } : null;
-	return {
-		assessment: {
-			link: anchor.link,
-			childFailed,
-			parentReaction,
-			pattern,
-			childDiagnosticsSummary: summary
-		},
-		uncertainty: parentReaction.uncertainty
-	};
-}
-/**
-* Evaluates delegation recovery for the direct children of one parent session.
-*
-* Pure and deterministic: no input is mutated and the returned DTO is fresh.
-* It never throws on a malformed input shape; missing pieces degrade to
-* `insufficient-data` plus deterministic `notes`/`uncertainty` entries.
-*/
-function evaluateDelegationRecovery(input) {
-	const rootSessionID = typeof input.rootSessionID === "string" ? input.rootSessionID : "";
-	const parentEvents = Array.isArray(input.parentEvents) ? input.parentEvents : [];
-	const parentTurns = parentTurnsOf(input.parentAnalysis);
-	const complete = parentComplete(input.parentAnalysis);
-	const children = Array.isArray(input.children) ? input.children : [];
-	const precomputedLinks = Array.isArray(input.delegationLinks) ? input.delegationLinks : [];
-	const seen = input.seen instanceof Set ? input.seen : /* @__PURE__ */ new Set([rootSessionID]);
-	const notes = [];
-	const uncertainty = [];
-	const sorted = [...children].sort((left, right) => {
-		const delta = childTimeCreated(left) - childTimeCreated(right);
-		if (delta !== 0) return delta;
-		return left.sessionID < right.sessionID ? -1 : left.sessionID > right.sessionID ? 1 : 0;
-	});
-	const candidates = [];
-	for (const child of sorted) {
-		if (child.sessionID === rootSessionID || seen.has(child.sessionID)) {
-			notes.push(`cycle detected: ${child.sessionID}`);
-			continue;
-		}
-		candidates.push(child);
-	}
-	const assessed = candidates.slice(0, 8);
-	if (assessed.length < candidates.length) notes.push(`${candidates.length - assessed.length} children not assessed (cap 8)`);
-	const patternCounts = emptyPatternCounts();
-	const assessments = [];
-	for (const child of assessed) {
-		const result = assessChild(child, parentEvents, parentTurns, complete, precomputedLinks.find((link) => link.childSessionID === child.sessionID));
-		assessments.push(result.assessment);
-		patternCounts[result.assessment.pattern.kind] += 1;
-		for (const note of result.uncertainty) uncertainty.push(`child ${child.sessionID}: ${note}`);
-	}
-	const classified = assessments.some((assessment) => assessment.pattern.kind !== "insufficient-data");
-	return {
-		schemaVersion: 1,
-		rootSessionID,
-		depth: 1,
-		redacted: input.reveal !== true,
-		totalChildren: children.length,
-		childrenCapped: candidates.length > 8,
-		assessments,
-		patternCounts,
-		basis: classified ? "derived" : "unavailable",
-		notes,
-		uncertainty
-	};
-}
 // src/core/service.ts
 var SessionNotFoundError = class extends Error {
 	constructor(sessionID) {
@@ -4631,6 +4888,8 @@ var ObservabilityService = class {
 		const diagnostics = evaluateDiagnostics(assignedEvents, analysis);
 		if (diagnostics.incidents.length > 0) analysis.diagnostics = diagnostics;
 		analysis.health = evaluateSessionHealth(analysis);
+		const attribution = evaluateAttribution(analysis);
+		if (attribution !== null) analysis.attribution = attribution;
 		const dataset = {
 			session,
 			family,

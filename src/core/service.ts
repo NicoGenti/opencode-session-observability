@@ -3,6 +3,7 @@ import { projectSession } from "./project.ts";
 import { promptTokensMetric } from "./metrics.ts";
 import { evaluateDiagnostics } from "./diagnostics.ts";
 import { evaluateSessionHealth } from "./health.ts";
+import { evaluateAttribution } from "./attribution.ts";
 import { deriveLiveSnapshot } from "./live.ts";
 import { redactValue, truncate } from "./util.ts";
 import { exportSession } from "./export.ts";
@@ -246,6 +247,13 @@ export class ObservabilityService {
     // diagnostics because the tool-failure rule reads them. Computing it here
     // means every downstream path reads one cached, redaction-safe object.
     analysis.health = evaluateSessionHealth(analysis);
+    // Attribution reads the recorded tool calls of the same projection. It is
+    // attached only when at least one turn yields a file, command or subtask,
+    // so a session without tool signals keeps the field absent.
+    const attribution = evaluateAttribution(analysis);
+    if (attribution !== null) {
+      analysis.attribution = attribution;
+    }
     const dataset: Dataset = {
       session,
       family,
