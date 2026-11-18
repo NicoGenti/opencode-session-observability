@@ -31,6 +31,9 @@ export const SESSION_DIAGNOSTICS_PATTERN =
 export const SESSION_FAMILY_RECOVERY_PATTERN =
   /^\/api\/sessions\/([^/]+)\/family-recovery$/;
 
+/** `/api/sessions/{id}/live`, shared with the tests that call it. */
+export const SESSION_LIVE_PATTERN = /^\/api\/sessions\/([^/]+)\/live$/;
+
 /** Episode comparison endpoint, shared with the tests that call it. */
 export const EPISODE_COMPARE_PATH = "/api/episodes/compare";
 
@@ -460,6 +463,19 @@ export async function createObservabilityServer(
           reveal,
         });
         sendJson(req, res, 200, { ...page, revealAllowed: allowReveal });
+        return;
+      }
+
+      match = SESSION_LIVE_PATTERN.exec(path);
+      if (match) {
+        const sessionID = match[1]!;
+        const since = search.get("since");
+        const snapshot = await service.liveSnapshot(sessionID, {
+          reveal,
+          lastTurns: numberParam(search, "lastTurns"),
+          since: since === null || since === "" ? undefined : since,
+        });
+        sendJson(req, res, 200, { ...snapshot, revealAllowed: allowReveal });
         return;
       }
 

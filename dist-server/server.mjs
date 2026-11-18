@@ -5083,6 +5083,8 @@ var VERSION$1 = "0.1.0";
 var SESSION_DIAGNOSTICS_PATTERN = /^\/api\/sessions\/([^/]+)\/diagnostics$/;
 /** `/api/sessions/{id}/family-recovery`, shared with the tests that call it. */
 var SESSION_FAMILY_RECOVERY_PATTERN = /^\/api\/sessions\/([^/]+)\/family-recovery$/;
+/** `/api/sessions/{id}/live`, shared with the tests that call it. */
+var SESSION_LIVE_PATTERN = /^\/api\/sessions\/([^/]+)\/live$/;
 var MIME = {
 	".html": "text/html; charset=utf-8",
 	".css": "text/css; charset=utf-8",
@@ -5423,6 +5425,20 @@ async function createObservabilityServer(options = {}) {
 						around: search.get("around") ?? void 0,
 						direction,
 						reveal
+					}),
+					revealAllowed: allowReveal
+				});
+				return;
+			}
+			match = SESSION_LIVE_PATTERN.exec(path);
+			if (match) {
+				const sessionID = match[1];
+				const since = search.get("since");
+				sendJson(req, res, 200, {
+					...await service.liveSnapshot(sessionID, {
+						reveal,
+						lastTurns: numberParam(search, "lastTurns"),
+						since: since === null || since === "" ? void 0 : since
 					}),
 					revealAllowed: allowReveal
 				});
