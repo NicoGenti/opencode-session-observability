@@ -2457,12 +2457,12 @@ function rule(id, label, level, evaluable, note, eventIDs = [], turnIDs = []) {
 		level,
 		evaluable,
 		note,
-		eventIDs: capIDs(eventIDs, 10),
-		turnIDs: capIDs(turnIDs, 6)
+		eventIDs: capIDs$1(eventIDs, 10),
+		turnIDs: capIDs$1(turnIDs, 6)
 	};
 }
 /** Deduplicates, drops empty ids and caps the list in recorded order. */
-function capIDs(ids, limit) {
+function capIDs$1(ids, limit) {
 	const out = [];
 	const seen = /* @__PURE__ */ new Set();
 	for (const id of ids) {
@@ -2631,6 +2631,158 @@ function evaluateSessionHealth(analysis) {
 		rules,
 		triggeredCount: watch + strong
 	};
+}
+/**
+* The five operational rules a live poll reports. `error-rate` is a
+* retrospective aggregate and `unfinished-outcome` would fire on every
+* recorded failure or interrupt, so both stay out of the live vocabulary.
+*/
+var LIVE_WARNING_RULE_IDS = Object.freeze([
+	"retry-count",
+	"tool-failure-recurrence",
+	"context-growth",
+	"low-cache-hit",
+	"cost-per-turn"
+]);
+/** Mirrors `projectSession`'s `sessionActive` without re-deriving it. */
+function sessionActive(session) {
+	const { busy, idle } = session.time;
+	return busy !== void 0 && (idle === void 0 || busy > idle);
+}
+function isTerminalOutcome(status) {
+	return status === "succeeded" || status === "failed" || status === "interrupted";
+}
+/**
+* `ended` needs a recorded terminal outcome: the session outcome, or an idle
+* message attached to the last turn. A session that merely has no open steps
+* is not claimed as ended.
+*/
+function deriveState(analysis) {
+	if (analysis.session.outcome) return "ended";
+	const last = analysis.turns[analysis.turns.length - 1] ?? null;
+	if (last !== null && hasTerminalIdle(analysis, last)) return "ended";
+	if (sessionActive(analysis.session)) return "running";
+	const { busy, idle } = analysis.session.time;
+	if (busy !== void 0 && idle !== void 0) return "idle";
+	return "unknown";
+}
+function hasTerminalIdle(analysis, turn) {
+	const attached = new Set(turn.nonStepEventIDs);
+	return analysis.events.some((event) => attached.has(event.id) && event.kind === "idle" && isTerminalOutcome(event.status));
+}
+function openTurnOf(turns) {
+	for (let index = turns.length - 1; index >= 0; index -= 1) {
+		const turn = turns[index];
+		if (turn.status !== "running") continue;
+		return {
+			index: turn.index,
+			id: turn.id,
+			startedAt: turn.startTime,
+			steps: turn.steps.length,
+			tokens: { ...turn.tokens },
+			cost: turn.cost,
+			uncertainty: ["session-in-progress"]
+		};
+	}
+	return null;
+}
+/** Deduplicates, drops empty ids and caps the list in recorded order. */
+function capIDs(ids, limit) {
+	const out = [];
+	const seen = /* @__PURE__ */ new Set();
+	for (const id of ids) {
+		if (typeof id !== "string" || id.length === 0 || seen.has(id)) continue;
+		seen.add(id);
+		out.push(id);
+		if (out.length >= limit) break;
+	}
+	return out;
+}
+function eventTurnsByID(analysis) {
+	const map = /* @__PURE__ */ new Map();
+	for (const event of analysis.events) map.set(event.id, event.turnID);
+	return map;
+}
+/**
+* Triggered operational rules in the health order. When a turn window is
+* supplied, evidence outside it is dropped and a rule with no in-window
+* evidence is not reported: the snapshot describes the window, not the whole
+* session.
+*/
+function warningsOf(analysis, window) {
+	const rules = analysis.health?.rules ?? [];
+	const turnByEvent = window === null ? null : eventTurnsByID(analysis);
+	const out = [];
+	for (const rule of rules) {
+		if (!rule.triggered) continue;
+		if (!LIVE_WARNING_RULE_IDS.includes(rule.id)) continue;
+		const eventIDs = capIDs(rule.eventIDs, 10);
+		const turnIDs = capIDs(rule.turnIDs, 6);
+		const inWindowEvents = window === null || turnByEvent === null ? eventIDs : eventIDs.filter((id) => {
+			const turnID = turnByEvent.get(id) ?? null;
+			return turnID !== null && window.has(turnID);
+		});
+		const inWindowTurns = window === null ? turnIDs : turnIDs.filter((id) => window.has(id));
+		if (window !== null && inWindowEvents.length === 0 && inWindowTurns.length === 0) continue;
+		out.push({
+			...rule,
+			triggered: true,
+			eventIDs: inWindowEvents,
+			turnIDs: inWindowTurns,
+			basis: "derived",
+			uncertainty: ["session-in-progress"]
+		});
+	}
+	return out;
+}
+function newEventsOf(analysis, since) {
+	if (typeof since !== "string" || since.length === 0) return null;
+	const out = [];
+	for (const event of analysis.events) {
+		if (event.orderKey <= since) continue;
+		out.push(event);
+		if (out.length >= 50) break;
+	}
+	return out;
+}
+function asOf(analysis) {
+	const updated = analysis.session.time.updated;
+	if (typeof updated === "number") return updated;
+	const last = analysis.events[analysis.events.length - 1];
+	if (last) return last.timestamp;
+	return analysis.session.time.created;
+}
+function normalizeLastTurns(value) {
+	if (value === void 0 || !Number.isFinite(value)) return null;
+	const turns = Math.trunc(value);
+	return turns > 0 ? turns : null;
+}
+/**
+* Primary entry point. Pure, deterministic and local.
+*
+* `lastTurns > 0` bounds `openTurn` and the warning evidence to the turn
+* suffix and emits a `turnWindow` label; `since` turns the event tail into an
+* incremental page capped at `MAX_NEW_EVENTS`.
+*/
+function deriveLiveSnapshot(analysis, options = {}) {
+	const lastTurns = normalizeLastTurns(options.lastTurns);
+	const turns = lastTurns === null ? analysis.turns : analysis.turns.slice(-lastTurns);
+	const window = lastTurns === null ? null : new Set(turns.map((turn) => turn.id));
+	const snapshot = {
+		state: deriveState(analysis),
+		basis: "derived",
+		asOf: asOf(analysis),
+		openTurn: openTurnOf(turns),
+		warnings: warningsOf(analysis, window),
+		coverage: analysis.coverage,
+		totalInSession: analysis.events.length,
+		newEvents: newEventsOf(analysis, options.since)
+	};
+	if (lastTurns !== null) snapshot.turnWindow = {
+		last: turns.length,
+		of: analysis.turns.length
+	};
+	return snapshot;
 }
 // src/core/format.ts
 var numberFormat = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
@@ -4586,6 +4738,22 @@ var ObservabilityService = class {
 			events: reveal ? dataset.events : this.redactedFor(dataset),
 			redacted: !reveal
 		};
+	}
+	/**
+	* Compact live snapshot for an in-progress session.
+	*
+	* The dataset is loaded through the same requestKey-coherent cache as
+	* `analyze`; this method never clears it. The derive step is pure, so the
+	* live endpoint re-projects once per poll and re-shapes the result. Without
+	* `reveal` the whole snapshot passes through the same redaction path as the
+	* analysis payload.
+	*/
+	async liveSnapshot(sessionID, options = {}) {
+		const snapshot = deriveLiveSnapshot((await this.loadDataset(sessionID)).analysis, {
+			lastTurns: options.lastTurns,
+			since: options.since
+		});
+		return options.reveal === true ? snapshot : redactValue(snapshot);
 	}
 	/**
 	* Diagnostics plus the episodes derived from them.
