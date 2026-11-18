@@ -647,6 +647,50 @@ code, pre, .mono { font-family: var(--mono); }
 .live-warning { border-left: 3px solid var(--warning); }
 .live-warnings-note { margin: 8px 0 0; }
 
+/* ---------------------------------------------------------- recommendations */
+
+/* Facts stay plain; hypotheses carry the dashed uncertain cue plus their own
+   "not a diagnosis" copy, so the two kinds never rely on colour alone. */
+.recommendations-section {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); padding: 10px 12px; margin-bottom: 10px;
+}
+.recommendations-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.recommendation-counts { color: var(--text-2); font-size: 11px; }
+.recommendation-rows {
+  list-style: none; margin: 8px 0 0; padding: 0;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.recommendation-row {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); padding: 8px 10px;
+}
+.recommendation-hypothesis {
+  border-style: dashed;
+  background: var(--surface-2);
+}
+.recommendation-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.recommendation-head .grow { flex: 1; }
+.recommendation-kind {
+  display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface-2);
+  color: var(--text-2); font-size: 11px; line-height: 1.55; white-space: nowrap;
+}
+.recommendation-hypothesis .recommendation-kind {
+  border-color: color-mix(in srgb, var(--warning) 70%, transparent);
+  color: var(--text); background: color-mix(in srgb, var(--warning) 16%, var(--surface));
+}
+.recommendation-label { font-size: 12.5px; font-weight: 600; }
+.recommendation-source { color: var(--text-2); font-size: 11px; }
+.recommendation-disclaimer { color: var(--text-2); font-size: 11px; font-style: italic; }
+.recommendation-note { margin: 4px 0 0; }
+.recommendation-links { display: flex; flex-wrap: wrap; gap: 8px; }
+.recommendation-link { font-size: 11px; }
+.recommendation-standing { margin: 8px 0 0; color: var(--text-2); font-size: 11.5px; }
+.recommendation-notes {
+  margin: 4px 0 0; padding-left: 18px; color: var(--text-2); font-size: 11.5px;
+}
+
 /* --------------------------------------------------------------- drawer */
 
 .backdrop {
