@@ -1154,6 +1154,11 @@ function renderLive() {
  * show it in Basic mode too — guardrails apply app-wide, unlike the
  * Advanced-only statistics sections.
  *
+ * The already-loaded turns are passed so the event-only budgets (`tokens-total`,
+ * `cost-total`, `context-run`) can render their `Turn N` anchors; a session
+ * switch clears `state.guardrails` first, and an absent analysis only degrades
+ * those links, never the block.
+ *
  * The container is an `aria-live` region refreshed after every analysis load,
  * so identical markup is left in place instead of being announced again.
  */
@@ -1161,7 +1166,8 @@ let guardrailsMarkup = null;
 
 function renderGuardrails() {
   if (!dom.guardrails) return;
-  const markup = guardrailsHtml(state.guardrails);
+  const turns = state.analysis?.turns ?? [];
+  const markup = guardrailsHtml(state.guardrails, turns);
   if (markup === guardrailsMarkup) return;
   guardrailsMarkup = markup;
   dom.guardrails.innerHTML = markup;

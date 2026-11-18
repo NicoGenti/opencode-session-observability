@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import {
   DEFAULT_GUARDRAILS,
-  MAX_ELAPSED_MINUTES,
+  GUARDRAIL_MAX,
 } from "../src/core/guardrails.ts";
 // @ts-expect-error - plain browser module without type declarations
 import * as settings from "../src/ui/settings.js";
@@ -69,11 +69,15 @@ function warning(overrides: Record<string, unknown> = {}): Record<string, unknow
 // Settings store
 // ---------------------------------------------------------------------------
 
-test("the browser mirror matches the core defaults field for field", () => {
+test("the browser mirror matches the core defaults and bounds field for field", () => {
   assert.ok(Object.isFrozen(settings.GUARDRAIL_DEFAULTS));
   assert.deepEqual({ ...settings.GUARDRAIL_DEFAULTS }, { ...DEFAULT_GUARDRAILS });
-  assert.equal(settings.GUARDRAIL_MAX_ELAPSED_MINUTES, MAX_ELAPSED_MINUTES);
+  assert.ok(Object.isFrozen(settings.GUARDRAIL_MAX));
+  assert.deepEqual({ ...settings.GUARDRAIL_MAX }, { ...GUARDRAIL_MAX });
   assert.equal(settings.GUARDRAIL_FIELDS.length, 6);
+  for (const field of settings.GUARDRAIL_FIELDS) {
+    assert.equal(field.max, GUARDRAIL_MAX[field.key as keyof typeof GUARDRAIL_MAX]);
+  }
 });
 
 test("guardrail budgets round-trip through the per-browser store", () => {
@@ -96,12 +100,18 @@ test("invalid budgets are rejected with a message and never stored", () => {
     ["retries", -1],
     ["costTotal", "abc"],
     ["contextRun", Number.NaN],
-    ["elapsedMinutes", settings.GUARDRAIL_MAX_ELAPSED_MINUTES + 1],
+    ["elapsedMinutes", GUARDRAIL_MAX.elapsedMinutes + 1],
     ["tokensTotal", Number.POSITIVE_INFINITY],
+    // An emptied field must never read as a budget of 0.
+    ["costTotal", ""],
+    ["retries", "  "],
+    ["tokensTotal", null],
+    ["toolFailures", []],
+    ["toolFailures", true],
   ];
   for (const [key, value] of rejected) {
     const result = settings.setGuardrail(key, value);
-    assert.equal(result.ok, false, `${key}`);
+    assert.equal(result.ok, false, `${key}=${String(value)}`);
     assert.match(result.message, /must be a number between/);
   }
   const unknown = settings.setGuardrail("unknownBudget", 1);
@@ -110,6 +120,28 @@ test("invalid budgets are rejected with a message and never stored", () => {
 
   assert.deepEqual(settings.getGuardrails(), before);
   assert.equal(storage.getItem(STORAGE_KEY), null);
+});
+
+test("an emptied settings field normalizes to reject, not to zero", () => {
+  for (const key of ["costTotal", "retries", "tokensTotal", "elapsedMinutes"]) {
+    assert.equal(settings.normalizeGuardrailValue(key, ""), null, key);
+    assert.equal(settings.normalizeGuardrailValue(key, "   "), null, key);
+    assert.equal(settings.normalizeGuardrailValue(key, null), null, key);
+  }
+  // Explicit zero is still a legitimate budget.
+  assert.equal(settings.normalizeGuardrailValue("costTotal", 0), 0);
+  assert.equal(settings.normalizeGuardrailValue("retries", "0"), 0);
+});
+
+test("count budgets are whole numbers, cost and minutes stay fractional", () => {
+  for (const key of ["tokensTotal", "contextRun", "retries", "toolFailures"]) {
+    assert.equal(settings.normalizeGuardrailValue(key, 1.5), null, key);
+    assert.equal(settings.normalizeGuardrailValue(key, "2.25"), null, key);
+    assert.equal(settings.normalizeGuardrailValue(key, 3), 3, key);
+    assert.equal(settings.normalizeGuardrailValue(key, "3"), 3, key);
+  }
+  assert.equal(settings.normalizeGuardrailValue("costTotal", 12.75), 12.75);
+  assert.equal(settings.normalizeGuardrailValue("elapsedMinutes", 2.5), 2.5);
 });
 
 test("a hand-edited stored value degrades to the default", () => {
@@ -150,11 +182,14 @@ test("the analysis params carry exactly the six budgets in a fixed order", () =>
 
 test("the documented bounds are inclusive", () => {
   assert.equal(
-    settings.normalizeGuardrailValue("elapsedMinutes", MAX_ELAPSED_MINUTES),
-    MAX_ELAPSED_MINUTES,
+    settings.normalizeGuardrailValue("elapsedMinutes", GUARDRAIL_MAX.elapsedMinutes),
+    GUARDRAIL_MAX.elapsedMinutes,
   );
   assert.equal(
-    settings.normalizeGuardrailValue("elapsedMinutes", MAX_ELAPSED_MINUTES + 1),
+    settings.normalizeGuardrailValue(
+      "elapsedMinutes",
+      GUARDRAIL_MAX.elapsedMinutes + 1,
+    ),
     null,
   );
   assert.equal(settings.normalizeGuardrailValue("retries", 0), 0);
@@ -240,6 +275,88 @@ test("evidence links are capped at the health event cap", () => {
   assert.equal(MAX_EVENT_LINKS, 10);
 });
 
+const TURNS = [
+  { id: "trn_1", index: 1, trigger: { eventID: "evt_turn_1" }, eventIDs: ["evt_step_1"] },
+  { id: "trn_2", index: 2, trigger: { eventID: null }, eventIDs: ["evt_step_2"] },
+  { id: "trn_3", index: 3, trigger: {}, eventIDs: [] },
+];
+
+function eventLinks(markup: string): string[] {
+  return [...markup.matchAll(/data-event-id="([^"]*)"/g)].map((match) => match[1]);
+}
+
+test("an event-only budget renders Turn links from the loaded turns", () => {
+  // tokens-total carries no eventIDs: the turn anchors are its whole evidence.
+  const markup = guardrailsHtml(
+    {
+      warnings: [
+        warning({
+          eventIDs: [],
+          turnIDs: ["trn_1", "trn_2"],
+        }),
+      ],
+      skipped: [],
+    },
+    TURNS,
+  );
+  assert.match(markup, />Turn 1</);
+  assert.match(markup, />Turn 2</);
+  assert.match(markup, /data-budget="tokens-total"/);
+  assert.match(markup, /2500000 total token\(s\) recorded · budget 2,000,000/);
+});
+
+test("turn anchors follow the health order: trigger event, then turn event", () => {
+  const markup = guardrailsHtml(
+    {
+      warnings: [
+        warning({
+          id: "context-run",
+          label: "Context growth budget",
+          observed: "longest growth run 7 turn(s)",
+          threshold: 6,
+          eventIDs: ["evt_1"],
+          turnIDs: ["trn_1", "trn_2"],
+        }),
+      ],
+      skipped: [],
+    },
+    TURNS,
+  );
+  // Event links first, then the turn anchors in the health precedent's order.
+  assert.deepEqual(eventLinks(markup), ["evt_1", "evt_turn_1", "evt_step_2"]);
+});
+
+test("a turn with no resolvable anchor renders no link", () => {
+  const markup = guardrailsHtml(
+    {
+      warnings: [warning({ eventIDs: [], turnIDs: ["trn_3", "trn_missing"] })],
+      skipped: [],
+    },
+    TURNS,
+  );
+  assert.equal(eventLinks(markup).length, 0);
+  // The observation still renders: the budget is never hidden by thin evidence.
+  assert.match(markup, /budget 2,000,000/);
+});
+
+test("a fractional budget keeps its decimals instead of rounding up", () => {
+  const markup = guardrailsHtml({
+    warnings: [
+      warning({
+        id: "cost-total",
+        label: "Cost budget",
+        observed: "$15.45 total recorded cost",
+        threshold: 12.75,
+        eventIDs: [],
+        turnIDs: [],
+      }),
+    ],
+    skipped: [],
+  });
+  assert.match(markup, /budget 12\.75/);
+  assert.doesNotMatch(markup, /budget 13\b/);
+});
+
 test("identical input renders byte-identical markup", () => {
   const guardrails = { warnings: [warning()], skipped: [] };
   assert.equal(guardrailsHtml(guardrails), guardrailsHtml(guardrails));
@@ -286,7 +403,8 @@ test("loadSessionData sends the budgets and stores the sibling", async () => {
 test("guardrails render app-wide, never behind the Advanced gate", async () => {
   const source = await appSource();
   const render = functionBody(source, "function renderGuardrails()");
-  assert.match(render, /guardrailsHtml\(state\.guardrails\)/);
+  assert.match(render, /guardrailsHtml\(\s*state\.guardrails,\s*turns\s*\)/);
+  assert.match(render, /state\.analysis\?\.turns \?\? \[\]/);
   assert.doesNotMatch(render, /advanced|viewMode|statsTab/);
   assert.match(source, /dom\.guardrails = \$\("#guardrails"\)/);
 

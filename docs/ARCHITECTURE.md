@@ -188,7 +188,8 @@ Redaction parity: diagnostics are plain DTO fields, so `redactValue(analysis).di
 
 - Vanilla ES modules, no build step, no external assets.
 - `ui/app.js` owns state, routing (`#/s/<id>/<view>?event=…`), filters, views, drawer, export, theme, shortcuts.
-- `ui/settings.js` is the typed per-browser preference store (theme, view mode, grouping, statistics defaults). It tolerates unavailable storage.
+- `ui/settings.js` is the typed per-browser preference store (theme, view mode, grouping, statistics defaults) and the guardrail store: the six budgets, their validated bounds and the `gr.*` request params. It tolerates unavailable storage.
+- `ui/guardrails.js` holds the DOM-free advisory guardrail builders (imports `ui/format.js` only): the budget label, the `derived` basis, the `advisory` chip, the observation with its two-decimal threshold, and the capped `Event N` / `Turn N` evidence buttons that the existing `data-event-id` binding routes to `jumpToEvent`. It mirrors the health turn-anchor rule (trigger event, then first turn event) and imports no `src/core` module.
 - `server/opencode-theme.ts` reads OpenCode 2's CLI-selected theme (`cli.json`) so a direct page open matches the TUI; the UI applies it unless the user picked a theme or arrived through a palette deep link.
 - `ui/auth.js` consumes the fragment token, stores it per tab and adds the request header.
 - `ui/virtual.js` is a variable-height virtual list. Only visible rows (plus overscan) are in the DOM.

@@ -72,21 +72,44 @@ export const GUARDRAIL_DEFAULTS = Object.freeze({
   elapsedMinutes: 60,
 });
 
-/** Largest accepted elapsed budget; mirrors `MAX_ELAPSED_MINUTES` in core. */
-export const GUARDRAIL_MAX_ELAPSED_MINUTES = 100_000;
+/**
+ * The largest accepted value per budget, mirrored from `GUARDRAIL_MAX` in
+ * `src/core/guardrails.ts` (that table is the single source of truth). A test
+ * pins every `GUARDRAIL_FIELDS[].max` against it, so a drifted mirror fails
+ * the suite instead of the server disagreeing with the panel.
+ */
+export const GUARDRAIL_MAX = Object.freeze({
+  tokensTotal: 1e12,
+  costTotal: 1e12,
+  contextRun: 1e12,
+  retries: 1e12,
+  toolFailures: 1e12,
+  elapsedMinutes: 100_000,
+});
+
+/**
+ * The count budgets must be whole numbers: a fractional retry or token count is
+ * never a budget a user means. Cost and elapsed minutes stay fractional.
+ */
+const INTEGER_BUDGETS = new Set([
+  "tokensTotal",
+  "contextRun",
+  "retries",
+  "toolFailures",
+]);
 
 /** The closed, ordered budget vocabulary the settings panel renders. */
 export const GUARDRAIL_FIELDS = Object.freeze([
-  { key: "tokensTotal", label: "Total tokens", min: 0, max: 1e12, step: 1_000 },
-  { key: "costTotal", label: "Total cost (USD)", min: 0, max: 1e12, step: 0.5 },
-  { key: "contextRun", label: "Context growth run (turns)", min: 0, max: 1e12, step: 1 },
-  { key: "retries", label: "Retry events", min: 0, max: 1e12, step: 1 },
-  { key: "toolFailures", label: "Tool-failure incidents", min: 0, max: 1e12, step: 1 },
+  { key: "tokensTotal", label: "Total tokens", min: 0, max: GUARDRAIL_MAX.tokensTotal, step: 1_000 },
+  { key: "costTotal", label: "Total cost (USD)", min: 0, max: GUARDRAIL_MAX.costTotal, step: 0.5 },
+  { key: "contextRun", label: "Context growth run (turns)", min: 0, max: GUARDRAIL_MAX.contextRun, step: 1 },
+  { key: "retries", label: "Retry events", min: 0, max: GUARDRAIL_MAX.retries, step: 1 },
+  { key: "toolFailures", label: "Tool-failure incidents", min: 0, max: GUARDRAIL_MAX.toolFailures, step: 1 },
   {
     key: "elapsedMinutes",
     label: "Elapsed time (minutes)",
     min: 0,
-    max: GUARDRAIL_MAX_ELAPSED_MINUTES,
+    max: GUARDRAIL_MAX.elapsedMinutes,
     step: 5,
   },
 ]);
@@ -233,14 +256,25 @@ export function guardrailField(key) {
 }
 
 /**
- * One budget as a stored number: finite, non-negative and inside its field
- * bound. `null` means "reject" — the settings form shows the message and the
- * value never reaches localStorage or a request.
+ * One budget as a stored number: finite, non-negative, inside its field bound
+ * and, for the count budgets, a whole number. `null` means "reject" — the
+ * settings form shows the message and the value never reaches localStorage or a
+ * request.
+ *
+ * A number is used as given. A string is only accepted when it has
+ * non-whitespace content, and only through `Number()` — so an emptied field
+ * (`""` or `"  "`), `null`, an array or a boolean is rejected instead of
+ * silently becoming a budget of 0.
  */
 export function normalizeGuardrailValue(key, value) {
   const field = guardrailField(key);
   if (!field) return null;
-  const number = typeof value === "number" ? value : Number(value);
+  const number =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim().length > 0
+        ? Number(value)
+        : Number.NaN;
   if (
     !Number.isFinite(number) ||
     number < field.min ||
@@ -248,6 +282,7 @@ export function normalizeGuardrailValue(key, value) {
   ) {
     return null;
   }
+  if (INTEGER_BUDGETS.has(key) && !Number.isInteger(number)) return null;
   return number;
 }
 
@@ -312,7 +347,9 @@ export function guardrailParams(values = getGuardrails()) {
 
 export function isTheme(value) {
   return THEMES.some((theme) => theme.id === value);
-}export function normalizeTheme(value) {
+}
+
+export function normalizeTheme(value) {
   if (typeof value !== "string") return "auto";
   const normalized = value.trim().toLowerCase();
   if (isTheme(normalized)) return normalized;
