@@ -756,6 +756,17 @@ function statusMark(status) {
 function statusSymbol(status) {
 	return statusMark(status).symbol;
 }
+/**
+* The statistics panel's recommendation count line.
+*
+* The number counts `severity: "advisory"` rows — the hypotheses — and names
+* that vocabulary so the line can never read as a score, a priority or a
+* ranking. Non-finite and negative input degrades to `0 advisory`; the panel
+* has no recommendation detail surface, the browser is the primary one.
+*/
+function recommendationsStatusLine(count) {
+	return `Recommendations: ${Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0} advisory`;
+}
 var MARKS, FALLBACK;
 var init_status = __esmMin((() => {
 	MARKS = {
@@ -1452,6 +1463,18 @@ function asMetric(value) {
 	return value ?? UNAVAILABLE;
 }
 /**
+* Counts the advisory rows of the already-validated `analysis.recommendations`
+* rider. The TUI shows the count only: no detail surface, no ordering, and a
+* missing or malformed rider reads as `0`.
+*/
+function advisoryRecommendationCount(analysis) {
+	const rows = analysis?.recommendations?.rows;
+	if (!Array.isArray(rows)) return 0;
+	let count = 0;
+	for (const row of rows) if (row?.severity === "advisory") count += 1;
+	return count;
+}
+/**
 * Validates an export response the same way `parseAnalysisResponse` validates
 * the analysis: the payload crosses the RPC boundary, so it can arrive as the
 * raw envelope (`{ output: … }`), the handler result (`{ filename, content, … }`)
@@ -1504,7 +1527,8 @@ function createStatisticsState(client) {
 			totalContext: asMetric(source?.finalContext),
 			cacheHitRate: asMetric(source?.cacheHitRate),
 			cost: asMetric(source?.cost),
-			turns: typeof source?.turns === "number" ? source.turns : value.turns?.length ?? 0
+			turns: typeof source?.turns === "number" ? source.turns : value.turns?.length ?? 0,
+			recommendations: advisoryRecommendationCount(value)
 		};
 	};
 	const turns = () => analysis()?.turns ?? [];
@@ -1690,7 +1714,7 @@ function Banner(props) {
 	const sessionID = () => props.analysis.session?.id ?? "unknown session";
 	const turnCount = () => props.totals?.turns ?? props.analysis.turns?.length ?? 0;
 	return (() => {
-		var _el$ = createElement("box"), _el$2 = createElement("box"), _el$3 = createElement("text"), _el$5 = createElement("text"), _el$6 = createElement("text"), _el$9 = createElement("text"), _el$0 = createElement("box"), _el$1 = createElement("text"), _el$10 = createElement("text"), _el$11 = createElement("text");
+		var _el$ = createElement("box"), _el$2 = createElement("box"), _el$3 = createElement("text"), _el$5 = createElement("text"), _el$6 = createElement("text"), _el$9 = createElement("text"), _el$0 = createElement("box"), _el$1 = createElement("text"), _el$10 = createElement("text"), _el$11 = createElement("text"), _el$12 = createElement("text");
 		insertNode(_el$, _el$2);
 		insertNode(_el$, _el$0);
 		setProp(_el$, "flexDirection", "column");
@@ -1720,13 +1744,15 @@ function Banner(props) {
 		insertNode(_el$0, _el$1);
 		insertNode(_el$0, _el$10);
 		insertNode(_el$0, _el$11);
+		insertNode(_el$0, _el$12);
 		setProp(_el$0, "flexDirection", "row");
 		setProp(_el$0, "gap", 2);
 		insert(_el$1, () => `Context ${bannerMetric(props.totals?.totalContext, formatNumber)}`);
 		insert(_el$10, () => `Cache hit ${bannerMetric(props.totals?.cacheHitRate, formatPercent)}`);
 		insert(_el$11, () => `Cost ${bannerMetric(props.totals?.cost, formatCost)}`);
+		insert(_el$12, () => recommendationsStatusLine(props.totals?.recommendations ?? 0));
 		effect((_p$) => {
-			var _v$ = colorOf$1(props.palette, "text2"), _v$2 = colorOf$1(props.palette, "text"), _v$3 = colorOf$1(props.palette, status().paletteKey), _v$4 = colorOf$1(props.palette, "muted"), _v$5 = colorOf$1(props.palette, "text"), _v$6 = colorOf$1(props.palette, "text"), _v$7 = colorOf$1(props.palette, "text");
+			var _v$ = colorOf$1(props.palette, "text2"), _v$2 = colorOf$1(props.palette, "text"), _v$3 = colorOf$1(props.palette, status().paletteKey), _v$4 = colorOf$1(props.palette, "muted"), _v$5 = colorOf$1(props.palette, "text"), _v$6 = colorOf$1(props.palette, "text"), _v$7 = colorOf$1(props.palette, "text"), _v$8 = colorOf$1(props.palette, "text2");
 			_v$ !== _p$.e && (_p$.e = setProp(_el$3, "fg", _v$, _p$.e));
 			_v$2 !== _p$.t && (_p$.t = setProp(_el$5, "fg", _v$2, _p$.t));
 			_v$3 !== _p$.a && (_p$.a = setProp(_el$6, "fg", _v$3, _p$.a));
@@ -1734,6 +1760,7 @@ function Banner(props) {
 			_v$5 !== _p$.i && (_p$.i = setProp(_el$1, "fg", _v$5, _p$.i));
 			_v$6 !== _p$.n && (_p$.n = setProp(_el$10, "fg", _v$6, _p$.n));
 			_v$7 !== _p$.s && (_p$.s = setProp(_el$11, "fg", _v$7, _p$.s));
+			_v$8 !== _p$.h && (_p$.h = setProp(_el$12, "fg", _v$8, _p$.h));
 			return _p$;
 		}, {
 			e: void 0,
@@ -1742,59 +1769,60 @@ function Banner(props) {
 			o: void 0,
 			i: void 0,
 			n: void 0,
-			s: void 0
+			s: void 0,
+			h: void 0
 		});
 		return _el$;
 	})();
 }
 function StateMessage$1(props) {
 	return (() => {
-		var _el$12 = createElement("box");
-		setProp(_el$12, "flexDirection", "column");
-		setProp(_el$12, "flexGrow", 1);
-		setProp(_el$12, "justifyContent", "center");
-		setProp(_el$12, "alignItems", "center");
-		insert(_el$12, createComponent(Show, {
+		var _el$13 = createElement("box");
+		setProp(_el$13, "flexDirection", "column");
+		setProp(_el$13, "flexGrow", 1);
+		setProp(_el$13, "justifyContent", "center");
+		setProp(_el$13, "alignItems", "center");
+		insert(_el$13, createComponent(Show, {
 			get when() {
 				return props.state.loading();
 			},
 			get children() {
-				var _el$13 = createElement("text");
-				insertNode(_el$13, createTextNode(`Loading…`));
-				effect((_$p) => setProp(_el$13, "fg", colorOf$1(props.palette, "muted"), _$p));
-				return _el$13;
+				var _el$14 = createElement("text");
+				insertNode(_el$14, createTextNode(`Loading…`));
+				effect((_$p) => setProp(_el$14, "fg", colorOf$1(props.palette, "muted"), _$p));
+				return _el$14;
 			}
 		}), null);
-		insert(_el$12, createComponent(Show, {
+		insert(_el$13, createComponent(Show, {
 			get when() {
 				return memo(() => !!!props.state.loading())() && props.state.error();
 			},
 			get children() {
 				return [(() => {
-					var _el$15 = createElement("text");
-					insert(_el$15, () => props.state.error());
-					effect((_$p) => setProp(_el$15, "fg", colorOf$1(props.palette, "critical"), _$p));
-					return _el$15;
-				})(), (() => {
 					var _el$16 = createElement("text");
-					insertNode(_el$16, createTextNode(`Reopen the panel to retry.`));
-					effect((_$p) => setProp(_el$16, "fg", colorOf$1(props.palette, "muted"), _$p));
+					insert(_el$16, () => props.state.error());
+					effect((_$p) => setProp(_el$16, "fg", colorOf$1(props.palette, "critical"), _$p));
 					return _el$16;
+				})(), (() => {
+					var _el$17 = createElement("text");
+					insertNode(_el$17, createTextNode(`Reopen the panel to retry.`));
+					effect((_$p) => setProp(_el$17, "fg", colorOf$1(props.palette, "muted"), _$p));
+					return _el$17;
 				})()];
 			}
 		}), null);
-		insert(_el$12, createComponent(Show, {
+		insert(_el$13, createComponent(Show, {
 			get when() {
 				return memo(() => !!!props.state.loading())() && !props.state.error();
 			},
 			get children() {
-				var _el$18 = createElement("text");
-				insertNode(_el$18, createTextNode(`Preparing…`));
-				effect((_$p) => setProp(_el$18, "fg", colorOf$1(props.palette, "muted"), _$p));
-				return _el$18;
+				var _el$19 = createElement("text");
+				insertNode(_el$19, createTextNode(`Preparing…`));
+				effect((_$p) => setProp(_el$19, "fg", colorOf$1(props.palette, "muted"), _$p));
+				return _el$19;
 			}
 		}), null);
-		return _el$12;
+		return _el$13;
 	})();
 }
 function Table(props) {
@@ -1804,24 +1832,24 @@ function Table(props) {
 		},
 		get fallback() {
 			return (() => {
-				var _el$22 = createElement("text");
-				insertNode(_el$22, createTextNode(`No turns for this session.`));
-				effect((_$p) => setProp(_el$22, "fg", colorOf$1(props.palette, "muted"), _$p));
-				return _el$22;
+				var _el$23 = createElement("text");
+				insertNode(_el$23, createTextNode(`No turns for this session.`));
+				effect((_$p) => setProp(_el$23, "fg", colorOf$1(props.palette, "muted"), _$p));
+				return _el$23;
 			})();
 		},
 		get children() {
 			return [(() => {
-				var _el$20 = createElement("text");
-				setProp(_el$20, "wrapMode", "none");
-				insert(_el$20, () => formatHeader(props.layout.columns));
-				effect((_$p) => setProp(_el$20, "fg", colorOf$1(props.palette, "text2"), _$p));
-				return _el$20;
+				var _el$21 = createElement("text");
+				setProp(_el$21, "wrapMode", "none");
+				insert(_el$21, () => formatHeader(props.layout.columns));
+				effect((_$p) => setProp(_el$21, "fg", colorOf$1(props.palette, "text2"), _$p));
+				return _el$21;
 			})(), (() => {
-				var _el$21 = createElement("scrollbox");
-				setProp(_el$21, "flexGrow", 1);
-				setProp(_el$21, "scrollY", true);
-				insert(_el$21, createComponent(For, {
+				var _el$22 = createElement("scrollbox");
+				setProp(_el$22, "flexGrow", 1);
+				setProp(_el$22, "scrollY", true);
+				insert(_el$22, createComponent(For, {
 					get each() {
 						return props.turns;
 					},
@@ -1830,24 +1858,24 @@ function Table(props) {
 						const expanded = () => props.expanded.has(turn.id);
 						const row = () => formatRow(turn, props.layout.columns, selected(), expanded());
 						return [(() => {
-							var _el$24 = createElement("box"), _el$25 = createElement("text"), _el$26 = createElement("text");
-							insertNode(_el$24, _el$25);
-							insertNode(_el$24, _el$26);
-							setProp(_el$24, "flexDirection", "row");
-							setProp(_el$25, "wrapMode", "none");
-							insert(_el$25, () => row().prefix);
+							var _el$25 = createElement("box"), _el$26 = createElement("text"), _el$27 = createElement("text");
+							insertNode(_el$25, _el$26);
+							insertNode(_el$25, _el$27);
+							setProp(_el$25, "flexDirection", "row");
 							setProp(_el$26, "wrapMode", "none");
-							insert(_el$26, () => row().status);
+							insert(_el$26, () => row().prefix);
+							setProp(_el$27, "wrapMode", "none");
+							insert(_el$27, () => row().status);
 							effect((_p$) => {
-								var _v$8 = colorOf$1(props.palette, selected() ? "accent" : "text"), _v$9 = colorOf$1(props.palette, statusMark(turn.status).paletteKey);
-								_v$8 !== _p$.e && (_p$.e = setProp(_el$25, "fg", _v$8, _p$.e));
-								_v$9 !== _p$.t && (_p$.t = setProp(_el$26, "fg", _v$9, _p$.t));
+								var _v$9 = colorOf$1(props.palette, selected() ? "accent" : "text"), _v$0 = colorOf$1(props.palette, statusMark(turn.status).paletteKey);
+								_v$9 !== _p$.e && (_p$.e = setProp(_el$26, "fg", _v$9, _p$.e));
+								_v$0 !== _p$.t && (_p$.t = setProp(_el$27, "fg", _v$0, _p$.t));
 								return _p$;
 							}, {
 								e: void 0,
 								t: void 0
 							});
-							return _el$24;
+							return _el$25;
 						})(), createComponent(Show, {
 							get when() {
 								return memo(() => !!expanded())() && (turn.steps?.length ?? 0) > 0;
@@ -1860,24 +1888,24 @@ function Table(props) {
 									children: (step) => {
 										const stepRow = () => formatStepRow(step, props.layout.width);
 										return (() => {
-											var _el$27 = createElement("box"), _el$28 = createElement("text"), _el$29 = createElement("text");
-											insertNode(_el$27, _el$28);
-											insertNode(_el$27, _el$29);
-											setProp(_el$27, "flexDirection", "row");
-											setProp(_el$28, "wrapMode", "none");
-											insert(_el$28, () => stepRow().prefix);
+											var _el$28 = createElement("box"), _el$29 = createElement("text"), _el$30 = createElement("text");
+											insertNode(_el$28, _el$29);
+											insertNode(_el$28, _el$30);
+											setProp(_el$28, "flexDirection", "row");
 											setProp(_el$29, "wrapMode", "none");
-											insert(_el$29, () => stepRow().status);
+											insert(_el$29, () => stepRow().prefix);
+											setProp(_el$30, "wrapMode", "none");
+											insert(_el$30, () => stepRow().status);
 											effect((_p$) => {
-												var _v$0 = colorOf$1(props.palette, "text2"), _v$1 = colorOf$1(props.palette, statusMark(step.status).paletteKey);
-												_v$0 !== _p$.e && (_p$.e = setProp(_el$28, "fg", _v$0, _p$.e));
-												_v$1 !== _p$.t && (_p$.t = setProp(_el$29, "fg", _v$1, _p$.t));
+												var _v$1 = colorOf$1(props.palette, "text2"), _v$10 = colorOf$1(props.palette, statusMark(step.status).paletteKey);
+												_v$1 !== _p$.e && (_p$.e = setProp(_el$29, "fg", _v$1, _p$.e));
+												_v$10 !== _p$.t && (_p$.t = setProp(_el$30, "fg", _v$10, _p$.t));
 												return _p$;
 											}, {
 												e: void 0,
 												t: void 0
 											});
-											return _el$27;
+											return _el$28;
 										})();
 									}
 								});
@@ -1885,8 +1913,8 @@ function Table(props) {
 						})];
 					}
 				}));
-				effect((_$p) => setProp(_el$21, "backgroundColor", backgroundOf$1(props.palette), _$p));
-				return _el$21;
+				effect((_$p) => setProp(_el$22, "backgroundColor", backgroundOf$1(props.palette), _$p));
+				return _el$22;
 			})()];
 		}
 	});
@@ -1954,11 +1982,11 @@ function StatisticsPanel(props) {
 		state.startLivePolling(sessionID);
 	});
 	return (() => {
-		var _el$30 = createElement("box");
-		setProp(_el$30, "flexDirection", "column");
-		setProp(_el$30, "flexGrow", 1);
-		setProp(_el$30, "padding", 1);
-		insert(_el$30, createComponent(Show, {
+		var _el$31 = createElement("box");
+		setProp(_el$31, "flexDirection", "column");
+		setProp(_el$31, "flexGrow", 1);
+		setProp(_el$31, "padding", 1);
+		insert(_el$31, createComponent(Show, {
 			get when() {
 				return state.analysis();
 			},
@@ -2004,15 +2032,15 @@ function StatisticsPanel(props) {
 					});
 				},
 				get children() {
-					var _el$31 = createElement("text");
-					insertNode(_el$31, createTextNode(`Loading…`));
-					effect((_$p) => setProp(_el$31, "fg", colorOf$1(palette(), "muted"), _$p));
-					return _el$31;
+					var _el$32 = createElement("text");
+					insertNode(_el$32, createTextNode(`Loading…`));
+					effect((_$p) => setProp(_el$32, "fg", colorOf$1(palette(), "muted"), _$p));
+					return _el$32;
 				}
 			})]
 		}));
-		effect((_$p) => setProp(_el$30, "backgroundColor", backgroundOf$1(palette()), _$p));
-		return _el$30;
+		effect((_$p) => setProp(_el$31, "backgroundColor", backgroundOf$1(palette()), _$p));
+		return _el$31;
 	})();
 }
 function StatisticsView(props) {

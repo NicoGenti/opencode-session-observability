@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import type { StepStatus, TurnStatus } from "../src/core/types.ts";
 import {
+  recommendationsStatusLine,
   statusLabel,
   statusMark,
   statusPaletteKey,
@@ -73,4 +74,22 @@ test("status palette keys stay inside the themePalette vocabulary", () => {
   for (const status of TURN_STATUSES) {
     assert.equal(allowed.has(statusPaletteKey(status)), true, status);
   }
+});
+
+test("the recommendation status line names the advisory severity", () => {
+  assert.equal(recommendationsStatusLine(0), "Recommendations: 0 advisory");
+  assert.equal(recommendationsStatusLine(3), "Recommendations: 3 advisory");
+  assert.equal(recommendationsStatusLine(12), "Recommendations: 12 advisory");
+});
+
+test("the recommendation status line degrades hostile input to zero", () => {
+  assert.equal(recommendationsStatusLine(-4), "Recommendations: 0 advisory");
+  assert.equal(recommendationsStatusLine(Number.NaN), "Recommendations: 0 advisory");
+  assert.equal(
+    recommendationsStatusLine(Number.POSITIVE_INFINITY),
+    "Recommendations: 0 advisory",
+  );
+  assert.equal(recommendationsStatusLine(2.9), "Recommendations: 2 advisory");
+  // The line never carries a score, a rank or a priority.
+  assert.doesNotMatch(recommendationsStatusLine(3), /score|rank|priority|weight/i);
 });
