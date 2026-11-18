@@ -61,7 +61,11 @@ export function createRpcHandlers(
         reveal: revealOf(input),
         windowed: fromSeq !== undefined || toSeq !== undefined,
       });
-      return { analysis, revealAllowed: allowReveal };
+      // The TUI reads the analysis but has no attribution surface; the rider is
+      // stripped here so the RPC payload stays exactly what the consumer uses.
+      const rpcAnalysis = { ...analysis };
+      delete rpcAnalysis.attribution;
+      return { analysis: rpcAnalysis, revealAllowed: allowReveal };
     },
 
     eventPage: async (input: Input) => {

@@ -30,6 +30,8 @@ export const MAX_FILE_EVIDENCE = 6;
 export const MAX_COMMANDS_PER_TURN = 8;
 export const MAX_COMMAND_EVIDENCE = 6;
 export const MAX_SUBTASKS_PER_TURN = 8;
+/** Turn-head evidence links; the same cap as `MAX_EVENT_LINKS` in core. */
+export const MAX_TURN_EVIDENCE = 10;
 
 /**
  * The standing row: attribution never claims a commit link, because the
@@ -66,7 +68,7 @@ function cappedIDs(ids, limit) {
   return out;
 }
 
-function eventLinksHtml(ids, limit, label) {
+function eventLinksHtml(ids, limit, label, prefix) {
   const capped = cappedIDs(ids, limit);
   if (capped.length === 0) return "";
   const links = capped
@@ -76,7 +78,7 @@ function eventLinksHtml(ids, limit, label) {
           eventID,
         )}" aria-label="${escapeAttr(
           `Open event ${position + 1} of ${label} in Trajectory`,
-        )}">Event ${position + 1}</button>`,
+        )}">${escapeHtml(prefix)} · Event ${position + 1}</button>`,
     )
     .join("");
   return `<div class="attribution-links">${links}</div>`;
@@ -91,26 +93,43 @@ function opsText(ops) {
   return parts.join(" · ");
 }
 
-function fileRowHtml(file, turnIndex) {
+function moreText(label, dropped) {
+  const count = asCount(dropped);
+  return count > 0 ? `+${formatNumber(count)} more ${label}` : "";
+}
+
+function fileRowHtml(file, turnIndex, rowIndex) {
   const path = asText(file?.path);
   if (path.length === 0) return "";
   const ops = opsText(file?.ops);
+  const rowLabel = `File ${rowIndex}`;
   return `<li class="attribution-file">
         <span class="mono attribution-file-path">${escapeHtml(path)}</span>
         <span class="attribution-ops">${escapeHtml(ops)}</span>
         <span class="attribution-share">${metricHtml(file?.costShare, formatCost)}</span>
-        ${eventLinksHtml(file?.eventIDs, MAX_FILE_EVIDENCE, `a file in turn ${turnIndex}`)}
+        ${eventLinksHtml(
+          file?.eventIDs,
+          MAX_FILE_EVIDENCE,
+          `file ${rowIndex} in turn ${turnIndex}`,
+          rowLabel,
+        )}
       </li>`;
 }
 
-function commandRowHtml(command, turnIndex) {
+function commandRowHtml(command, turnIndex, rowIndex) {
   const name = asText(command?.name);
   if (name.length === 0) return "";
   const count = asCount(command?.count);
+  const rowLabel = `Command ${rowIndex}`;
   return `<li class="attribution-command">
         <code>${escapeHtml(name)}</code>
         <span class="attribution-ops">×${formatNumber(count)}</span>
-        ${eventLinksHtml(command?.eventIDs, MAX_COMMAND_EVIDENCE, `a command in turn ${turnIndex}`)}
+        ${eventLinksHtml(
+          command?.eventIDs,
+          MAX_COMMAND_EVIDENCE,
+          `command ${rowIndex} in turn ${turnIndex}`,
+          rowLabel,
+        )}
       </li>`;
 }
 
@@ -128,11 +147,16 @@ function subtaskRowHtml(subtask) {
       </li>`;
 }
 
-function groupHtml(label, rows) {
-  if (rows.length === 0) return "";
+function groupHtml(label, rows, more) {
+  if (rows.length === 0 && more.length === 0) return "";
+  const list =
+    rows.length > 0
+      ? `<ul class="attribution-${label.toLowerCase()}">${rows.join("")}</ul>`
+      : "";
   return `<div class="attribution-group">
         <span class="attribution-group-label">${escapeHtml(label)}</span>
-        <ul class="attribution-${label.toLowerCase()}">${rows.join("")}</ul>
+        ${list}
+        ${more ? `<span class="attribution-ops attribution-more">${escapeHtml(more)}</span>` : ""}
       </div>`;
 }
 
@@ -143,11 +167,13 @@ function turnHtml(turn) {
   const trigger = asText(turn?.trigger?.label);
   const files = asArray(turn?.files)
     .slice(0, MAX_FILES_PER_TURN)
-    .map((file) => fileRowHtml(file, rawIndex ?? "?"))
+    .map((file, position) => fileRowHtml(file, rawIndex ?? "?", position + 1))
     .filter(Boolean);
   const commands = asArray(turn?.commands)
     .slice(0, MAX_COMMANDS_PER_TURN)
-    .map((command) => commandRowHtml(command, rawIndex ?? "?"))
+    .map((command, position) =>
+      commandRowHtml(command, rawIndex ?? "?", position + 1),
+    )
     .filter(Boolean);
   const subtasks = asArray(turn?.subtasks)
     .slice(0, MAX_SUBTASKS_PER_TURN)
@@ -162,11 +188,20 @@ function turnHtml(turn) {
             : ""
         }
         <span class="grow"></span>
-        ${eventLinksHtml(turn?.eventIDs, 10, `${indexLabel} evidence`)}
+        ${eventLinksHtml(
+          turn?.eventIDs,
+          MAX_TURN_EVIDENCE,
+          `${indexLabel} evidence`,
+          indexLabel,
+        )}
       </div>
-      ${groupHtml("Files", files)}
-      ${groupHtml("Commands", commands)}
-      ${groupHtml("Subtasks", subtasks)}
+      ${groupHtml("Files", files, moreText("files not shown", turn?.filesTruncated))}
+      ${groupHtml(
+        "Commands",
+        commands,
+        moreText("commands not shown", turn?.commandsTruncated),
+      )}
+      ${groupHtml("Subtasks", subtasks, "")}
     </li>`;
 }
 

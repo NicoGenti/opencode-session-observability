@@ -232,15 +232,15 @@ Charts are projected from the already-loaded `Analysis`: no extra fetch and no r
 | Cost bar | derived | null → counted unavailable; all-zero marks nothing |
 | Step duration segment | derived | missing segment omitted; none recorded → "Not recorded" slot |
 
-### Session health
+## Session health
 
 Health is a derived signal computed from the already-produced `Analysis`; it carries no numeric score. Its state is one of `healthy` / `watch` / `degraded`, with a sufficiency gate that prevents a `healthy` claim when data is missing or the analysis is windowed. All seven rules, thresholds, caps, drill targets and the tuning policy are documented in [HEALTH.md](HEALTH.md) (linked, not duplicated here).
 
-### Live snapshot
+## Live snapshot
 
 The live endpoint re-shapes the same `Analysis`; it introduces no new metric formula. `openTurn` copies the turn's existing tokens/cost, `warnings` are the triggered health rules, and every value keeps its existing basis. The badge and warning vocabulary (states, the five rules, caps, `since`/`lastTurns`) is documented in [UI.md](UI.md#live-mode) and [ARCHITECTURE.md](ARCHITECTURE.md#live-snapshot).
 
-### Task attribution cost share — `D`
+## Task attribution cost share — `D`
 
 `analysis.attribution.turns[].files[].costShare` answers "what share of this turn's recorded cost went to this file". It is always `derived`, never `measured`, and it uses step costs only:
 
@@ -250,6 +250,8 @@ costShare(file)   = sum of share over every step and tool call that touched the 
 ```
 
 Even-allocation caveat: the split is not a measurement of where tokens were spent — the store records one cost per assistant step, not per tool call. A tool call that touches no file (a pattern-only `grep`, a `webfetch`, a subagent call) is not allocated at all, so a turn's shares can sum to less than its step costs. Allocation happens across the whole turn, so a file touched by two steps accumulates both shares. A file whose steps recorded no cost keeps `value: null` with basis `unavailable` instead of a zero.
+
+Each share is rounded to a 1e-12 grid before it is stored, so binary floating-point noise (`0.03 / 3 = 0.009999999…`) never reaches the DTO; a recorded zero stays a measured zero and renders `$0`, while an absent cost renders `—`.
 
 The session row's own cost (`Totals.recorded`, `session_v2.cost`) is never used as the basis: it can include auxiliary calls that are not attributable to a turn. Commands and subtasks carry no cost share for the same reason — nothing recorded can be divided for them.
 
@@ -312,3 +314,4 @@ A real session with parallel subagent tools shows the expected negative residual
 - No prompt semantics are inferred from the input-change proxy: `parent-retried-with-changed-delegation-input` reports that two recorded delegation inputs compared non-identical, never that a prompt was rewritten, re-scoped or improved.
 - No child failure is claimed from a windowed child stream: an incomplete child stream yields `insufficient-data` instead of a failure or recovery verdict.
 - No session total is presented as complete when a contributor is missing; it is labelled partial or unavailable.
+- No commit or git linkage is inferred: the session record contains no git data, so attribution reports commit linkage as `unavailable` and never matches files to commits.

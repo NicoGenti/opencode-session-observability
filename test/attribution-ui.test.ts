@@ -7,6 +7,7 @@ import {
   MAX_FILES_PER_TURN,
   MAX_FILE_EVIDENCE,
   MAX_SUBTASKS_PER_TURN,
+  MAX_TURN_EVIDENCE,
   attributionSectionHtml,
   // @ts-expect-error - plain browser module without type declarations
 } from "../src/ui/attribution.js";
@@ -50,6 +51,8 @@ interface TurnRow {
   }>;
   subtasks: Array<{ sessionID: string; agent: string | null; basis: "measured" }>;
   eventIDs: string[];
+  filesTruncated?: number;
+  commandsTruncated?: number;
 }
 
 function turn(overrides: Partial<TurnRow> = {}): TurnRow {
@@ -230,6 +233,68 @@ test("an unavailable cost share renders the em dash, never a zero", () => {
   assert.match(markup, /metric unavailable/);
   assert.match(markup, /—/);
   assert.doesNotMatch(markup, /\$0/);
+});
+
+test("a recorded zero share renders $0, not the unavailable dash", () => {
+  const markup = attributionSectionHtml(
+    attribution({
+      turns: [
+        turn({
+          files: [
+            file({
+              costShare: {
+                value: 0,
+                basis: "derived",
+                note: "step cost divided evenly across the step's tool calls and the files each call touched",
+              },
+            }),
+          ],
+        }),
+      ],
+    }),
+  );
+
+  assert.match(markup, /metric metric-derived/);
+  assert.match(markup, /\$0</);
+  assert.doesNotMatch(markup, /metric unavailable/);
+});
+
+test("capped turns surface a +N more note from the truncation counts", () => {
+  const markup = attributionSectionHtml(
+    attribution({
+      turns: [turn({ filesTruncated: 5, commandsTruncated: 3 })],
+    }),
+  );
+
+  assert.match(markup, /\+5 more files not shown/);
+  assert.match(markup, /\+3 more commands not shown/);
+  // An uncapped turn renders no note.
+  assert.doesNotMatch(attributionSectionHtml(attribution()), /more files/);
+});
+
+test("every evidence chip names its own row", () => {
+  const markup = attributionSectionHtml(attribution());
+
+  assert.match(markup, /File 1 · Event 1/);
+  assert.match(markup, /Command 1 · Event 1/);
+  assert.match(markup, /Turn 1 · Event 1/);
+});
+
+test("the turn evidence cap is named and enforced", () => {
+  const markup = attributionSectionHtml(
+    attribution({
+      turns: [
+        turn({
+          eventIDs: Array.from({ length: MAX_TURN_EVIDENCE + 5 }, (_, index) =>
+            `evt_${index}`,
+          ),
+        }),
+      ],
+    }),
+  );
+  const turnHead = markup.slice(0, markup.indexOf('class="attribution-group"'));
+
+  assert.equal((turnHead.match(/data-event-id="evt_/g) ?? []).length, MAX_TURN_EVIDENCE);
 });
 
 test("the builder module is DOM-free and only imports ./format.js", async () => {

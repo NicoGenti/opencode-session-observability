@@ -2960,6 +2960,16 @@ var BASIS_NOTES = Object.freeze([
 	"Command names are derived: the first recorded shell token only; full command text is never included.",
 	"Commit linkage is unavailable: the session database records no git data (see docs/DATA-SOURCES.md)."
 ]);
+/** Tool names whose `input` path fields name a read target. */
+var READ_TOOL_NAMES = /* @__PURE__ */ new Set([
+	"read",
+	"grep",
+	"glob",
+	"list",
+	"ls",
+	"view",
+	"search"
+]);
 /** Tool names whose `input` path fields name a write target. */
 var WRITE_TOOL_NAMES = /* @__PURE__ */ new Set([
 	"write",
@@ -2987,8 +2997,16 @@ var DESCRIPTION_KEYS = ["description"];
 * a command name.
 */
 var COMMAND_TOKEN = /^[A-Za-z0-9_./:\\-]+$/;
+/** Bare punctuation is never an executable name. */
+var BARE_PUNCTUATION = /* @__PURE__ */ new Set([
+	"--",
+	".",
+	"/"
+]);
 /** A leading `NAME=value` environment assignment is not the executable. */
 var ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+/** Path identity follows the recorded filesystem's case semantics. */
+var CASE_INSENSITIVE_PATHS = process.platform === "win32";
 function recordOf(value) {
 	return typeof value === "object" && value !== null && !Array.isArray(value) ? value : {};
 }
@@ -3017,57 +3035,115 @@ function cleanPath(value) {
 * still accepting the description-shaped path some tools record.
 */
 function pathShaped(value) {
-	return !/\s/.test(value) && /[\\/.]/.test(value) && value.length <= 400;
+	if (value.length === 0 || value.length > 400) return false;
+	if (/\s/.test(value)) return false;
+	if (value.endsWith(".")) return false;
+	if (/[\\/]/.test(value)) return true;
+	const dot = value.indexOf(".");
+	return dot > 0 && dot < value.length - 1;
 }
 /**
-* Paths a single tool call touched. `input` path keys are read or write
-* depending on the tool family; a write tool's `metadata.files[].file` list is
-* always a write. `metadata.files[].patch` is deliberately never read.
+* Accumulator identity for a path: separators unified to `/`, leading `./`
+* dropped, and case-folded where the recorded filesystem is case-insensitive.
+* The first spelling seen is what the DTO displays.
+*/
+function pathKey(path) {
+	let key = path.replace(/\\/g, "/");
+	while (key.startsWith("./")) key = key.slice(2);
+	return CASE_INSENSITIVE_PATHS ? key.toLowerCase() : key;
+}
+/**
+* Paths a single tool call touched. Every path key is shape-gated, not just
+* `description`: an MCP or plugin tool may emit any string there, and prose or
+* a credential-shaped token must not become a file row. A write tool's
+* `metadata.files[].file` list is a write; `metadata.files[].patch` is
+* deliberately never read.
 */
 function toolPaths(tool) {
 	const out = [];
 	const seen = /* @__PURE__ */ new Set();
 	const input = recordOf(tool.input);
-	const op = WRITE_TOOL_NAMES.has(tool.name) ? "write" : "read";
+	const writes = WRITE_TOOL_NAMES.has(tool.name);
+	const reads = READ_TOOL_NAMES.has(tool.name);
+	const op = writes ? "write" : "read";
 	const push = (value, kind) => {
+		if (typeof value !== "string" || !pathShaped(value)) return;
 		const path = cleanPath(value);
-		if (path === null || seen.has(path)) return;
-		seen.add(path);
+		if (path === null) return;
+		const key = pathKey(path);
+		if (seen.has(key)) return;
+		seen.add(key);
 		out.push({
 			path,
 			op: kind
 		});
 	};
 	for (const key of PATH_KEYS) push(input[key], op);
-	for (const key of DESCRIPTION_KEYS) {
-		const value = input[key];
-		if (typeof value === "string" && pathShaped(value)) push(value, op);
-	}
+	if (reads || writes) for (const key of DESCRIPTION_KEYS) push(input[key], op);
 	const metadata = recordOf(tool.metadata);
-	const files = Array.isArray(metadata.files) ? metadata.files : [];
-	for (const entry of files) {
-		const record = recordOf(entry);
-		push(record.file ?? record.path ?? record.filePath, "write");
+	if (writes) {
+		const files = Array.isArray(metadata.files) ? metadata.files : [];
+		for (const entry of files) {
+			const record = recordOf(entry);
+			push(record.file ?? record.path ?? record.filePath, "write");
+		}
 	}
 	return out;
 }
 /**
-* First executable token of a recorded shell command. Leading `KEY=value`
-* assignments are skipped so a credential assignment cannot become the name;
-* a first token that is not shell-token shaped yields no row at all.
+* Splits a recorded command line into tokens without breaking quoted segments.
+* A quoted value stays one token (its surrounding quotes removed), so
+* `PASSWORD="correct horse" npm test` tokenizes as the assignment, `npm`,
+* `test` — never as `horse` followed by `npm`.
+*/
+function commandTokens(command) {
+	const tokens = [];
+	let current = "";
+	let started = false;
+	let quote = null;
+	for (const char of command) {
+		if (quote !== null) {
+			if (char === quote) quote = null;
+			else current += char;
+			started = true;
+			continue;
+		}
+		if (char === "\"" || char === "'") {
+			quote = char;
+			started = true;
+			continue;
+		}
+		if (char === " " || char === "	" || char === "\n" || char === "\r") {
+			if (started) {
+				tokens.push(current);
+				current = "";
+				started = false;
+			}
+			continue;
+		}
+		current += char;
+		started = true;
+	}
+	if (started) tokens.push(current);
+	return tokens;
+}
+/**
+* First executable token of a recorded shell command. Only LEADING `KEY=value`
+* assignments are skipped so a credential assignment cannot become the name; a
+* first token that is not shell-token shaped yields no row at all.
 */
 function firstCommandToken(input) {
 	const record = recordOf(input);
 	const command = record.command ?? record.script ?? record.cmd;
 	if (typeof command !== "string") return null;
-	for (const raw of command.trim().split(/\s+/)) {
-		const token = raw.replace(/^["']|["']$/g, "");
-		if (token.length === 0) continue;
-		if (ENV_ASSIGNMENT.test(token)) continue;
-		if (token.length > 64) return null;
-		return COMMAND_TOKEN.test(token) ? token : null;
-	}
-	return null;
+	const tokens = commandTokens(command);
+	let index = 0;
+	while (index < tokens.length && ENV_ASSIGNMENT.test(tokens[index] ?? "")) index += 1;
+	const token = tokens[index];
+	if (token === void 0 || token.length === 0) return null;
+	if (token.length > 64) return null;
+	if (BARE_PUNCTUATION.has(token)) return null;
+	return COMMAND_TOKEN.test(token) ? token : null;
 }
 /**
 * Tool-call event ids of a step, in recorded order. `Step.toolCalls` and the
@@ -3076,12 +3152,17 @@ function firstCommandToken(input) {
 */
 function toolEventIDs(step, eventByID) {
 	const out = [];
-	for (const eventID of step.eventIDs) if (eventByID.get(eventID)?.kind === "tool") out.push(eventID);
+	const ids = Array.isArray(step.eventIDs) ? step.eventIDs : [];
+	for (const eventID of ids) if (eventByID.get(eventID)?.kind === "tool") out.push(eventID);
 	return out;
 }
 function shareOf(cost, toolCalls, filesInCall) {
 	if (cost === null || toolCalls <= 0 || filesInCall <= 0) return null;
 	return cost / toolCalls / filesInCall;
+}
+/** Rounds a share to a 1e-12 grid so binary float noise never reaches the DTO. */
+function roundShare(value) {
+	return Math.round(value * 0xe8d4a51000) / 0xe8d4a51000;
 }
 function fileRows(files) {
 	const rows = [];
@@ -3091,12 +3172,16 @@ function fileRows(files) {
 			read: item.read,
 			write: item.write
 		},
-		costShare: item.cost === null ? metric(null, "unavailable", "no step that touched this path recorded a cost") : metric(item.cost, "derived", "step cost divided evenly across the step's tool calls and the files each call touched"),
+		costShare: item.cost === null ? metric(null, "unavailable", "no step that touched this path recorded a cost") : metric(roundShare(item.cost), "derived", "step cost divided evenly across the step's tool calls and the files each call touched"),
 		basis: "measured",
 		eventIDs: capEvidenceIDs(item.eventIDs, 6)
 	});
 	rows.sort((left, right) => (right.costShare.value ?? 0) - (left.costShare.value ?? 0) || (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
-	return rows.slice(0, 12);
+	const kept = rows.slice(0, 12);
+	return {
+		rows: kept,
+		truncated: rows.length - kept.length
+	};
 }
 function commandRows(commands) {
 	const rows = [...commands.values()].map((item) => ({
@@ -3106,25 +3191,33 @@ function commandRows(commands) {
 		eventIDs: capEvidenceIDs(item.eventIDs, 6)
 	}));
 	rows.sort((left, right) => right.count - left.count || (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
-	return rows.slice(0, 8);
+	const kept = rows.slice(0, 8);
+	return {
+		rows: kept,
+		truncated: rows.length - kept.length
+	};
 }
 function attributeTurn(turn, eventByID) {
 	const files = /* @__PURE__ */ new Map();
 	const commands = /* @__PURE__ */ new Map();
 	const subtasks = [];
 	const seenSubtasks = /* @__PURE__ */ new Set();
-	for (const step of turn.steps) {
+	const steps = Array.isArray(turn.steps) ? turn.steps : [];
+	for (const step of steps) {
+		if (!step) continue;
 		const cost = typeof step.cost === "number" && Number.isFinite(step.cost) ? step.cost : null;
-		const callCount = step.toolCalls.length;
+		const toolCalls = Array.isArray(step.toolCalls) ? step.toolCalls : [];
+		const callCount = toolCalls.length;
 		const callEvents = toolEventIDs(step, eventByID);
 		for (let index = 0; index < callCount; index += 1) {
-			const tool = step.toolCalls[index];
+			const tool = toolCalls[index];
 			if (!tool) continue;
 			const eventID = callEvents[index] ?? null;
 			const paths = toolPaths(tool);
 			const share = shareOf(cost, callCount, paths.length);
 			for (const item of paths) {
-				let accumulator = files.get(item.path);
+				const key = pathKey(item.path);
+				let accumulator = files.get(key);
 				if (!accumulator) {
 					accumulator = {
 						path: item.path,
@@ -3133,11 +3226,11 @@ function attributeTurn(turn, eventByID) {
 						cost: null,
 						eventIDs: []
 					};
-					files.set(item.path, accumulator);
+					files.set(key, accumulator);
 				}
 				if (item.op === "write") accumulator.write += 1;
 				else accumulator.read += 1;
-				if (share !== null) accumulator.cost = (accumulator.cost ?? 0) + share;
+				if (share !== null) accumulator.cost = roundShare((accumulator.cost ?? 0) + share);
 				if (eventID !== null) accumulator.eventIDs.push(eventID);
 			}
 			if (SHELL_TOOL_NAMES.has(tool.name)) {
@@ -3156,7 +3249,9 @@ function attributeTurn(turn, eventByID) {
 					if (eventID !== null) accumulator.eventIDs.push(eventID);
 				}
 			}
-			for (const sessionID of tool.childSessionIDs) {
+			const childIDs = Array.isArray(tool.childSessionIDs) ? tool.childSessionIDs : [];
+			for (const sessionID of childIDs) {
+				if (typeof sessionID !== "string" || sessionID.length === 0) continue;
 				if (seenSubtasks.has(sessionID)) continue;
 				seenSubtasks.add(sessionID);
 				if (subtasks.length >= 8) continue;
@@ -3171,7 +3266,7 @@ function attributeTurn(turn, eventByID) {
 	}
 	const attributedFiles = fileRows(files);
 	const attributedCommands = commandRows(commands);
-	if (attributedFiles.length === 0 && attributedCommands.length === 0 && subtasks.length === 0) return null;
+	if (attributedFiles.rows.length === 0 && attributedCommands.rows.length === 0 && subtasks.length === 0) return null;
 	return {
 		turnID: turn.id,
 		turnIndex: turn.index,
@@ -3181,10 +3276,12 @@ function attributeTurn(turn, eventByID) {
 			eventID: turn.trigger.eventID,
 			label: turn.trigger.label
 		},
-		files: attributedFiles,
-		commands: attributedCommands,
+		files: attributedFiles.rows,
+		commands: attributedCommands.rows,
 		subtasks,
-		eventIDs: capEvidenceIDs(turn.eventIDs, 10)
+		eventIDs: capEvidenceIDs(Array.isArray(turn.eventIDs) ? turn.eventIDs : [], 10),
+		filesTruncated: attributedFiles.truncated,
+		commandsTruncated: attributedCommands.truncated
 	};
 }
 /**
@@ -3192,12 +3289,15 @@ function attributeTurn(turn, eventByID) {
 *
 * Returns `null` when no turn recorded a file, a shell command or a delegated
 * child: the rider then stays absent instead of asserting an empty
-* attribution, mirroring the diagnostics precedent.
+* attribution, mirroring the diagnostics precedent. A malformed analysis also
+* yields the absent rider instead of throwing, matching `delegation.ts`.
 */
 function evaluateAttribution(analysis) {
+	if (!analysis || !Array.isArray(analysis.events) || !Array.isArray(analysis.turns)) return null;
 	const eventByID = new Map(analysis.events.map((event) => [event.id, event]));
 	const turns = [];
 	for (const turn of analysis.turns) {
+		if (!turn) continue;
 		const attributed = attributeTurn(turn, eventByID);
 		if (attributed !== null) turns.push(attributed);
 	}
