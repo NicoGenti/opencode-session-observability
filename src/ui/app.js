@@ -40,6 +40,7 @@ import {
   healthBreakdownHtml,
   missingHealth,
 } from "./health.js";
+import { attributionSectionHtml } from "./attribution.js";
 import { liveBadgeHtml, liveUnavailableHtml, liveWarningsHtml, nextLiveCursor, shouldHeavyRefresh, shouldReplaceLiveWarnings, withStaleMarker } from "./live.js";
 import {
   authHeaders,
@@ -2139,6 +2140,7 @@ function renderStatistics() {
       </table>
     </div>`
     }
+    ${attributionSectionHtml(analysis.attribution)}
     <div class="basis-legend">
       <span>${badge("M", "neutral")} measured</span>
       <span>${badge("D", "neutral")} derived</span>
