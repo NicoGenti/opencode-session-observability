@@ -276,6 +276,21 @@ Windowed exclusion: a benchmark always loads the full message range, so in pract
 
 Rollups are descriptive: no score, no index, no ranking. Groups are ordered by their recorded key and patterns by kind and key.
 
+## Guardrail budgets — `D`
+
+`evaluateGuardrails(analysis, thresholds)` compares six budgets against the same `Analysis` and reports a warning only when `observed >= threshold`. Every observation is `derived` from existing metrics; nothing is re-recorded and nothing is a score.
+
+| Budget | Observed value | Basis | Evaluable when |
+|---|---|---|---|
+| `tokensTotal` | `input + output + reasoning + cacheRead + cacheWrite` from `totals.tokens` (steps + compactions) | `D` | token usage was recorded |
+| `costTotal` | `totals.cost.value` (computed step + compaction cost; never `session_v2.cost`) | `D` | a cost was recorded |
+| `contextRun` | longest run of consecutive turns with a positive `contextDelta`, compaction breaks included (the health rule's vocabulary) | `D` | at least two turns recorded a delta |
+| `retries` | `totals.retries` (derived retry events) | `D` | always |
+| `toolFailures` | diagnostics incident count | `D` | always (`0` without incidents) |
+| `elapsedMinutes` | `(last event timestamp − first event timestamp) / 60_000`, floored at 0 | `D` | `coverage.complete` is true |
+
+A budget that is not evaluable is returned in `skipped` with a note — never guessed. The default budgets are `DEFAULT_GUARDRAILS` (2,000,000 tokens, $5.00, 6 turns, 10 retries, 5 incidents, 60 minutes); the browser supplies per-user values through bounded `gr.*` GET parameters, and absent keys fall back to the defaults. The response carries `guardrails` as a sibling of `analysis`, and warnings keep the health event/turn caps. The full contract is in [HEALTH.md](HEALTH.md#guardrails).
+
 ## Session vs window totals
 
 - `Session total` — coverage includes the full message range (`fromSeq <= minSeq && toSeq >= maxSeq`).

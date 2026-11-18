@@ -32,7 +32,7 @@ import {
   resolveLayout,
   type StatisticsLayout,
 } from "./columns.ts";
-import { recommendationsStatusLine, statusMark } from "./status.ts";
+import { guardrailsStatusLine, recommendationsStatusLine, statusMark } from "./status.ts";
 import { formatStepRow } from "./stepRows.ts";
 import {
   createStatisticsState,
@@ -133,6 +133,9 @@ function Banner(props: {
         </text>
         <text fg={colorOf(props.palette, "text2")}>
           {recommendationsStatusLine(props.totals?.recommendations ?? 0)}
+        </text>
+        <text fg={colorOf(props.palette, "text2")}>
+          {guardrailsStatusLine(props.totals?.guardrails ?? 0)}
         </text>
       </box>
     </box>

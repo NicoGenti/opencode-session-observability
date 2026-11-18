@@ -64,3 +64,18 @@ export function recommendationsStatusLine(count: number): string {
   const value = Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0;
   return `Recommendations: ${value} advisory`;
 }
+
+/**
+ * The statistics panel's guardrail count line.
+ *
+ * The TUI evaluates the pure module with `DEFAULT_GUARDRAILS` — browser-owned
+ * thresholds are localStorage state and never cross the RPC — so the line names
+ * the defaults. The count is the number of crossed budgets; there is no detail
+ * surface here (the browser is the primary one) and the word "advisory" keeps
+ * the line from reading as a block, a score or a priority. Non-finite and
+ * negative input degrades to `0 advisory`.
+ */
+export function guardrailsStatusLine(count: number): string {
+  const value = Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0;
+  return `Guardrails (defaults): ${value} advisory`;
+}

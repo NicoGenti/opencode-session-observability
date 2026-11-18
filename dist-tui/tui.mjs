@@ -767,6 +767,19 @@ function statusSymbol(status) {
 function recommendationsStatusLine(count) {
 	return `Recommendations: ${Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0} advisory`;
 }
+/**
+* The statistics panel's guardrail count line.
+*
+* The TUI evaluates the pure module with `DEFAULT_GUARDRAILS` — browser-owned
+* thresholds are localStorage state and never cross the RPC — so the line names
+* the defaults. The count is the number of crossed budgets; there is no detail
+* surface here (the browser is the primary one) and the word "advisory" keeps
+* the line from reading as a block, a score or a priority. Non-finite and
+* negative input degrades to `0 advisory`.
+*/
+function guardrailsStatusLine(count) {
+	return `Guardrails (defaults): ${Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0} advisory`;
+}
 var MARKS, FALLBACK;
 var init_status = __esmMin((() => {
 	MARKS = {
@@ -1123,6 +1136,273 @@ var init_stepRows = __esmMin((() => {
 		"status"
 	];
 }));
+// src/core/health.ts
+/**
+* A compaction recorded inside the run's span ends the run. A turn that owns
+* the compaction is included in the run that it terminates; a compaction
+* recorded between two turns ends the run at the preceding turn.
+*/
+function compactionBreaks(previous, next, compactions) {
+	const previousEnd = previous.endTime ?? previous.startTime;
+	const nextEnd = next.endTime ?? next.startTime;
+	return compactions.some((item) => {
+		if (item.turnID === previous.id || item.turnID === next.id) return true;
+		return item.timestamp > previousEnd && item.timestamp <= nextEnd;
+	});
+}
+/**
+* Longest run of consecutive turns whose context delta is positive.
+*
+* Exported so the guardrail context-run budget shares the exact health
+* vocabulary (compaction breaks included) instead of reimplementing it.
+*/
+function longestGrowthRun(analysis) {
+	const runs = [];
+	let current = [];
+	const flush = () => {
+		if (current.length > 0) runs.push(current);
+		current = [];
+	};
+	for (const turn of analysis.turns) {
+		const delta = turn.contextDelta.value;
+		if (delta === null || delta <= 0) {
+			flush();
+			continue;
+		}
+		if (current.length > 0) {
+			const previous = current[current.length - 1];
+			if (compactionBreaks(previous, turn, analysis.compactions)) flush();
+		}
+		current.push(turn);
+		if (analysis.compactions.some((item) => item.turnID === turn.id)) flush();
+	}
+	flush();
+	let best = null;
+	for (const run of runs) if (best === null || run.length > best.length) best = run;
+	if (best === null) return null;
+	return {
+		first: best[0],
+		last: best[best.length - 1],
+		length: best.length
+	};
+}
+var init_health = __esmMin((() => {
+	Object.freeze({
+		errorRate: Object.freeze({
+			watchRate: .25,
+			watchErrors: 4,
+			strongRate: .6,
+			strongErrors: 6
+		}),
+		retryCount: Object.freeze({
+			watch: 8,
+			strong: 15
+		}),
+		toolFailureRecurrence: Object.freeze({
+			watchIncidents: 4,
+			strongIncidents: 7,
+			watchMaxAttempts: 5,
+			strongMaxAttempts: 9
+		}),
+		contextGrowth: Object.freeze({
+			watchRun: 5,
+			strongRun: 8,
+			watchFinalContext: 15e4,
+			strongFinalContext: 25e4
+		}),
+		costPerTurn: Object.freeze({
+			watch: 2,
+			strong: 10
+		}),
+		lowCacheHit: Object.freeze({
+			lowBelow: .2,
+			watchLowTurns: 5,
+			strongLowTurns: 9,
+			watchShare: .6,
+			strongShare: .8
+		}),
+		maxEventLinks: 10,
+		maxTurnLinks: 6
+	});
+}));
+// src/core/guardrails.ts
+/** A finite, non-negative threshold; anything else falls back to the default. */
+function limitFor(thresholds, key) {
+	const value = thresholds[key];
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : DEFAULT_GUARDRAILS[key];
+}
+/** Deduplicates, drops empty ids and caps the list in recorded order. */
+function capIDs(ids, limit) {
+	const out = [];
+	const seen = /* @__PURE__ */ new Set();
+	for (const id of ids) {
+		if (typeof id !== "string" || id.length === 0 || seen.has(id)) continue;
+		seen.add(id);
+		out.push(id);
+		if (out.length >= limit) break;
+	}
+	return out;
+}
+/** `input + output + reasoning + cache read + cache write`, like `sumTokens`. */
+function totalTokens(tokens) {
+	return tokens.input + tokens.output + tokens.reasoning + tokens.cacheRead + tokens.cacheWrite;
+}
+/** Highest-token turns, descending, ties resolved by recorded order. */
+function heaviestTurns(turns, limit) {
+	return [...turns].sort((left, right) => totalTokens(right.tokens) - totalTokens(left.tokens) || left.index - right.index).filter((turn) => totalTokens(turn.tokens) > 0).slice(0, limit).map((turn) => turn.id);
+}
+/** Highest-cost turns, descending, ties resolved by recorded order. */
+function costliestTurns(turns, limit) {
+	return [...turns].filter((turn) => turn.cost.value !== null).sort((left, right) => (right.cost.value ?? 0) - (left.cost.value ?? 0) || left.index - right.index).slice(0, limit).map((turn) => turn.id);
+}
+function warning(id, observed, threshold, eventIDs = [], turnIDs = []) {
+	return {
+		id,
+		label: LABELS[id],
+		observed,
+		threshold,
+		basis: "derived",
+		advisory: true,
+		eventIDs: capIDs(eventIDs, 10),
+		turnIDs: capIDs(turnIDs, 6)
+	};
+}
+function skip(id, note) {
+	return {
+		kind: "skip",
+		skip: {
+			id,
+			label: LABELS[id],
+			note
+		}
+	};
+}
+function tokensBudget(analysis, limit) {
+	const tokens = totalTokens(analysis.totals.tokens);
+	if (tokens === 0 && !analysis.capabilities.tokenUsage) return skip("tokens-total", "token usage was not recorded");
+	const observed = `${tokens} total token(s) recorded`;
+	if (tokens < limit) return NONE;
+	return {
+		kind: "warning",
+		warning: warning("tokens-total", observed, limit, [], heaviestTurns(analysis.turns, 3))
+	};
+}
+function costBudget(analysis, limit) {
+	const cost = analysis.totals.cost.value;
+	if (cost === null) return skip("cost-total", "cost was not recorded");
+	const observed = `$${cost.toFixed(2)} total recorded cost`;
+	if (cost < limit) return NONE;
+	return {
+		kind: "warning",
+		warning: warning("cost-total", observed, limit, [], costliestTurns(analysis.turns, 3))
+	};
+}
+function contextRunBudget(analysis, limit) {
+	const available = analysis.turns.filter((turn) => turn.contextDelta.value !== null).length;
+	if (available < 2) return skip("context-run", `${available} turn(s) recorded a context delta; at least 2 are required`);
+	const run = longestGrowthRun(analysis);
+	const length = run?.length ?? 0;
+	const observed = `longest growth run ${length} turn(s)`;
+	if (length < limit) return NONE;
+	return {
+		kind: "warning",
+		warning: warning("context-run", observed, limit, [], run ? [run.first.id, run.last.id] : [])
+	};
+}
+function retriesBudget(analysis, limit) {
+	const retries = analysis.totals.retries;
+	const observed = `${retries} retry event(s) recorded`;
+	if (retries < limit) return NONE;
+	return {
+		kind: "warning",
+		warning: warning("retries", observed, limit, analysis.events.filter((event) => event.kind === "retry").map((event) => event.id))
+	};
+}
+function toolFailuresBudget(analysis, limit) {
+	const incidents = analysis.diagnostics?.incidents ?? [];
+	const observed = `${incidents.length} tool-failure incident(s) recorded`;
+	if (incidents.length < limit) return NONE;
+	return {
+		kind: "warning",
+		warning: warning("tool-failures", observed, limit, incidents.map((incident) => incident.firstFailureEventID))
+	};
+}
+/**
+* Wall time between the first and the last recorded event. Only a complete
+* analysis bounds the whole session, so a windowed one is skipped rather than
+* timed from a partial event set.
+*/
+function elapsedBudget(analysis, limit) {
+	if (!analysis.coverage.complete) return skip("elapsed-minutes", "the analysis covers a window, not the full session");
+	const events = analysis.events;
+	if (events.length === 0) return skip("elapsed-minutes", "no events were recorded");
+	let first = events[0];
+	let last = events[0];
+	for (const event of events) {
+		if (event.timestamp < first.timestamp) first = event;
+		if (event.timestamp > last.timestamp) last = event;
+	}
+	const minutes = Math.max(0, last.timestamp - first.timestamp) / 6e4;
+	const observed = `${minutes.toFixed(1)} minute(s) from the first to the last recorded event`;
+	if (minutes < limit) return NONE;
+	return {
+		kind: "warning",
+		warning: warning("elapsed-minutes", observed, limit, [first.id, last.id])
+	};
+}
+/**
+* Primary entry point. Pure, deterministic and local; the default thresholds
+* are `DEFAULT_GUARDRAILS`. A malformed injected threshold (not finite or
+* negative) falls back to the default for that budget, so a hostile query
+* cannot disable a budget or make the evaluator throw.
+*/
+function evaluateGuardrails(analysis, thresholds = DEFAULT_GUARDRAILS) {
+	const limits = {
+		tokensTotal: limitFor(thresholds, "tokensTotal"),
+		costTotal: limitFor(thresholds, "costTotal"),
+		contextRun: limitFor(thresholds, "contextRun"),
+		retries: limitFor(thresholds, "retries"),
+		toolFailures: limitFor(thresholds, "toolFailures"),
+		elapsedMinutes: limitFor(thresholds, "elapsedMinutes")
+	};
+	const outcomes = [
+		tokensBudget(analysis, limits.tokensTotal),
+		costBudget(analysis, limits.costTotal),
+		contextRunBudget(analysis, limits.contextRun),
+		retriesBudget(analysis, limits.retries),
+		toolFailuresBudget(analysis, limits.toolFailures),
+		elapsedBudget(analysis, limits.elapsedMinutes)
+	];
+	const warnings = [];
+	const skipped = [];
+	for (const outcome of outcomes) if (outcome.kind === "skip") skipped.push(outcome.skip);
+	else if (outcome.kind === "warning") warnings.push(outcome.warning);
+	return {
+		warnings,
+		skipped
+	};
+}
+var DEFAULT_GUARDRAILS, LABELS, NONE;
+var init_guardrails = __esmMin((() => {
+	init_health();
+	DEFAULT_GUARDRAILS = Object.freeze({
+		tokensTotal: 2e6,
+		costTotal: 5,
+		contextRun: 6,
+		retries: 10,
+		toolFailures: 5,
+		elapsedMinutes: 60
+	});
+	LABELS = Object.freeze({
+		"tokens-total": "Token budget",
+		"cost-total": "Cost budget",
+		"context-run": "Context growth budget",
+		retries: "Retry budget",
+		"tool-failures": "Tool-failure budget",
+		"elapsed-minutes": "Elapsed-time budget"
+	});
+	NONE = { kind: "none" };
+}));
 // src/plugin/rpc-define.ts
 /**
 * `Rpc.define` only rejects error names that use the reserved `rpc.` prefix
@@ -1475,6 +1755,25 @@ function advisoryRecommendationCount(analysis) {
 	return count;
 }
 /**
+* Counts the advisory guardrail warnings the pure evaluator reports under
+* `DEFAULT_GUARDRAILS`.
+*
+* The TUI has no per-user settings store: the browser's budgets live in
+* localStorage and never travel across the RPC, so this panel deliberately
+* evaluates the defaults and the status line says so. Only a full analysis
+* shape is evaluated (the evaluator reads totals, turns, compactions, events
+* and coverage); a truncated or malformed payload reads as `0` instead of
+* throwing in the panel.
+*/
+function advisoryGuardrailCount(analysis) {
+	if (!analysis || !Array.isArray(analysis.turns) || !Array.isArray(analysis.events) || !Array.isArray(analysis.compactions) || !analysis.totals || typeof analysis.totals !== "object" || !analysis.coverage || typeof analysis.coverage !== "object") return 0;
+	try {
+		return evaluateGuardrails(analysis, DEFAULT_GUARDRAILS).warnings.length;
+	} catch {
+		return 0;
+	}
+}
+/**
 * Validates an export response the same way `parseAnalysisResponse` validates
 * the analysis: the payload crosses the RPC boundary, so it can arrive as the
 * raw envelope (`{ output: … }`), the handler result (`{ filename, content, … }`)
@@ -1528,7 +1827,8 @@ function createStatisticsState(client) {
 			cacheHitRate: asMetric(source?.cacheHitRate),
 			cost: asMetric(source?.cost),
 			turns: typeof source?.turns === "number" ? source.turns : value.turns?.length ?? 0,
-			recommendations: advisoryRecommendationCount(value)
+			recommendations: advisoryRecommendationCount(value),
+			guardrails: advisoryGuardrailCount(value)
 		};
 	};
 	const turns = () => analysis()?.turns ?? [];
@@ -1673,6 +1973,7 @@ function createStatisticsState(client) {
 }
 var LIVE_POLL_MS, UNAVAILABLE;
 var init_state$1 = __esmMin((() => {
+	init_guardrails();
 	init_rpc();
 	init_analysisResponse();
 	init_polling();
@@ -1714,7 +2015,7 @@ function Banner(props) {
 	const sessionID = () => props.analysis.session?.id ?? "unknown session";
 	const turnCount = () => props.totals?.turns ?? props.analysis.turns?.length ?? 0;
 	return (() => {
-		var _el$ = createElement("box"), _el$2 = createElement("box"), _el$3 = createElement("text"), _el$5 = createElement("text"), _el$6 = createElement("text"), _el$9 = createElement("text"), _el$0 = createElement("box"), _el$1 = createElement("text"), _el$10 = createElement("text"), _el$11 = createElement("text"), _el$12 = createElement("text");
+		var _el$ = createElement("box"), _el$2 = createElement("box"), _el$3 = createElement("text"), _el$5 = createElement("text"), _el$6 = createElement("text"), _el$9 = createElement("text"), _el$0 = createElement("box"), _el$1 = createElement("text"), _el$10 = createElement("text"), _el$11 = createElement("text"), _el$12 = createElement("text"), _el$13 = createElement("text");
 		insertNode(_el$, _el$2);
 		insertNode(_el$, _el$0);
 		setProp(_el$, "flexDirection", "column");
@@ -1745,14 +2046,16 @@ function Banner(props) {
 		insertNode(_el$0, _el$10);
 		insertNode(_el$0, _el$11);
 		insertNode(_el$0, _el$12);
+		insertNode(_el$0, _el$13);
 		setProp(_el$0, "flexDirection", "row");
 		setProp(_el$0, "gap", 2);
 		insert(_el$1, () => `Context ${bannerMetric(props.totals?.totalContext, formatNumber)}`);
 		insert(_el$10, () => `Cache hit ${bannerMetric(props.totals?.cacheHitRate, formatPercent)}`);
 		insert(_el$11, () => `Cost ${bannerMetric(props.totals?.cost, formatCost)}`);
 		insert(_el$12, () => recommendationsStatusLine(props.totals?.recommendations ?? 0));
+		insert(_el$13, () => guardrailsStatusLine(props.totals?.guardrails ?? 0));
 		effect((_p$) => {
-			var _v$ = colorOf$1(props.palette, "text2"), _v$2 = colorOf$1(props.palette, "text"), _v$3 = colorOf$1(props.palette, status().paletteKey), _v$4 = colorOf$1(props.palette, "muted"), _v$5 = colorOf$1(props.palette, "text"), _v$6 = colorOf$1(props.palette, "text"), _v$7 = colorOf$1(props.palette, "text"), _v$8 = colorOf$1(props.palette, "text2");
+			var _v$ = colorOf$1(props.palette, "text2"), _v$2 = colorOf$1(props.palette, "text"), _v$3 = colorOf$1(props.palette, status().paletteKey), _v$4 = colorOf$1(props.palette, "muted"), _v$5 = colorOf$1(props.palette, "text"), _v$6 = colorOf$1(props.palette, "text"), _v$7 = colorOf$1(props.palette, "text"), _v$8 = colorOf$1(props.palette, "text2"), _v$9 = colorOf$1(props.palette, "text2");
 			_v$ !== _p$.e && (_p$.e = setProp(_el$3, "fg", _v$, _p$.e));
 			_v$2 !== _p$.t && (_p$.t = setProp(_el$5, "fg", _v$2, _p$.t));
 			_v$3 !== _p$.a && (_p$.a = setProp(_el$6, "fg", _v$3, _p$.a));
@@ -1761,6 +2064,7 @@ function Banner(props) {
 			_v$6 !== _p$.n && (_p$.n = setProp(_el$10, "fg", _v$6, _p$.n));
 			_v$7 !== _p$.s && (_p$.s = setProp(_el$11, "fg", _v$7, _p$.s));
 			_v$8 !== _p$.h && (_p$.h = setProp(_el$12, "fg", _v$8, _p$.h));
+			_v$9 !== _p$.r && (_p$.r = setProp(_el$13, "fg", _v$9, _p$.r));
 			return _p$;
 		}, {
 			e: void 0,
@@ -1770,59 +2074,60 @@ function Banner(props) {
 			i: void 0,
 			n: void 0,
 			s: void 0,
-			h: void 0
+			h: void 0,
+			r: void 0
 		});
 		return _el$;
 	})();
 }
 function StateMessage$1(props) {
 	return (() => {
-		var _el$13 = createElement("box");
-		setProp(_el$13, "flexDirection", "column");
-		setProp(_el$13, "flexGrow", 1);
-		setProp(_el$13, "justifyContent", "center");
-		setProp(_el$13, "alignItems", "center");
-		insert(_el$13, createComponent(Show, {
+		var _el$14 = createElement("box");
+		setProp(_el$14, "flexDirection", "column");
+		setProp(_el$14, "flexGrow", 1);
+		setProp(_el$14, "justifyContent", "center");
+		setProp(_el$14, "alignItems", "center");
+		insert(_el$14, createComponent(Show, {
 			get when() {
 				return props.state.loading();
 			},
 			get children() {
-				var _el$14 = createElement("text");
-				insertNode(_el$14, createTextNode(`Loading…`));
-				effect((_$p) => setProp(_el$14, "fg", colorOf$1(props.palette, "muted"), _$p));
-				return _el$14;
+				var _el$15 = createElement("text");
+				insertNode(_el$15, createTextNode(`Loading…`));
+				effect((_$p) => setProp(_el$15, "fg", colorOf$1(props.palette, "muted"), _$p));
+				return _el$15;
 			}
 		}), null);
-		insert(_el$13, createComponent(Show, {
+		insert(_el$14, createComponent(Show, {
 			get when() {
 				return memo(() => !!!props.state.loading())() && props.state.error();
 			},
 			get children() {
 				return [(() => {
-					var _el$16 = createElement("text");
-					insert(_el$16, () => props.state.error());
-					effect((_$p) => setProp(_el$16, "fg", colorOf$1(props.palette, "critical"), _$p));
-					return _el$16;
-				})(), (() => {
 					var _el$17 = createElement("text");
-					insertNode(_el$17, createTextNode(`Reopen the panel to retry.`));
-					effect((_$p) => setProp(_el$17, "fg", colorOf$1(props.palette, "muted"), _$p));
+					insert(_el$17, () => props.state.error());
+					effect((_$p) => setProp(_el$17, "fg", colorOf$1(props.palette, "critical"), _$p));
 					return _el$17;
+				})(), (() => {
+					var _el$18 = createElement("text");
+					insertNode(_el$18, createTextNode(`Reopen the panel to retry.`));
+					effect((_$p) => setProp(_el$18, "fg", colorOf$1(props.palette, "muted"), _$p));
+					return _el$18;
 				})()];
 			}
 		}), null);
-		insert(_el$13, createComponent(Show, {
+		insert(_el$14, createComponent(Show, {
 			get when() {
 				return memo(() => !!!props.state.loading())() && !props.state.error();
 			},
 			get children() {
-				var _el$19 = createElement("text");
-				insertNode(_el$19, createTextNode(`Preparing…`));
-				effect((_$p) => setProp(_el$19, "fg", colorOf$1(props.palette, "muted"), _$p));
-				return _el$19;
+				var _el$20 = createElement("text");
+				insertNode(_el$20, createTextNode(`Preparing…`));
+				effect((_$p) => setProp(_el$20, "fg", colorOf$1(props.palette, "muted"), _$p));
+				return _el$20;
 			}
 		}), null);
-		return _el$13;
+		return _el$14;
 	})();
 }
 function Table(props) {
@@ -1832,24 +2137,24 @@ function Table(props) {
 		},
 		get fallback() {
 			return (() => {
-				var _el$23 = createElement("text");
-				insertNode(_el$23, createTextNode(`No turns for this session.`));
-				effect((_$p) => setProp(_el$23, "fg", colorOf$1(props.palette, "muted"), _$p));
-				return _el$23;
+				var _el$24 = createElement("text");
+				insertNode(_el$24, createTextNode(`No turns for this session.`));
+				effect((_$p) => setProp(_el$24, "fg", colorOf$1(props.palette, "muted"), _$p));
+				return _el$24;
 			})();
 		},
 		get children() {
 			return [(() => {
-				var _el$21 = createElement("text");
-				setProp(_el$21, "wrapMode", "none");
-				insert(_el$21, () => formatHeader(props.layout.columns));
-				effect((_$p) => setProp(_el$21, "fg", colorOf$1(props.palette, "text2"), _$p));
-				return _el$21;
+				var _el$22 = createElement("text");
+				setProp(_el$22, "wrapMode", "none");
+				insert(_el$22, () => formatHeader(props.layout.columns));
+				effect((_$p) => setProp(_el$22, "fg", colorOf$1(props.palette, "text2"), _$p));
+				return _el$22;
 			})(), (() => {
-				var _el$22 = createElement("scrollbox");
-				setProp(_el$22, "flexGrow", 1);
-				setProp(_el$22, "scrollY", true);
-				insert(_el$22, createComponent(For, {
+				var _el$23 = createElement("scrollbox");
+				setProp(_el$23, "flexGrow", 1);
+				setProp(_el$23, "scrollY", true);
+				insert(_el$23, createComponent(For, {
 					get each() {
 						return props.turns;
 					},
@@ -1858,24 +2163,24 @@ function Table(props) {
 						const expanded = () => props.expanded.has(turn.id);
 						const row = () => formatRow(turn, props.layout.columns, selected(), expanded());
 						return [(() => {
-							var _el$25 = createElement("box"), _el$26 = createElement("text"), _el$27 = createElement("text");
-							insertNode(_el$25, _el$26);
-							insertNode(_el$25, _el$27);
-							setProp(_el$25, "flexDirection", "row");
-							setProp(_el$26, "wrapMode", "none");
-							insert(_el$26, () => row().prefix);
+							var _el$26 = createElement("box"), _el$27 = createElement("text"), _el$28 = createElement("text");
+							insertNode(_el$26, _el$27);
+							insertNode(_el$26, _el$28);
+							setProp(_el$26, "flexDirection", "row");
 							setProp(_el$27, "wrapMode", "none");
-							insert(_el$27, () => row().status);
+							insert(_el$27, () => row().prefix);
+							setProp(_el$28, "wrapMode", "none");
+							insert(_el$28, () => row().status);
 							effect((_p$) => {
-								var _v$9 = colorOf$1(props.palette, selected() ? "accent" : "text"), _v$0 = colorOf$1(props.palette, statusMark(turn.status).paletteKey);
-								_v$9 !== _p$.e && (_p$.e = setProp(_el$26, "fg", _v$9, _p$.e));
-								_v$0 !== _p$.t && (_p$.t = setProp(_el$27, "fg", _v$0, _p$.t));
+								var _v$0 = colorOf$1(props.palette, selected() ? "accent" : "text"), _v$1 = colorOf$1(props.palette, statusMark(turn.status).paletteKey);
+								_v$0 !== _p$.e && (_p$.e = setProp(_el$27, "fg", _v$0, _p$.e));
+								_v$1 !== _p$.t && (_p$.t = setProp(_el$28, "fg", _v$1, _p$.t));
 								return _p$;
 							}, {
 								e: void 0,
 								t: void 0
 							});
-							return _el$25;
+							return _el$26;
 						})(), createComponent(Show, {
 							get when() {
 								return memo(() => !!expanded())() && (turn.steps?.length ?? 0) > 0;
@@ -1888,24 +2193,24 @@ function Table(props) {
 									children: (step) => {
 										const stepRow = () => formatStepRow(step, props.layout.width);
 										return (() => {
-											var _el$28 = createElement("box"), _el$29 = createElement("text"), _el$30 = createElement("text");
-											insertNode(_el$28, _el$29);
-											insertNode(_el$28, _el$30);
-											setProp(_el$28, "flexDirection", "row");
-											setProp(_el$29, "wrapMode", "none");
-											insert(_el$29, () => stepRow().prefix);
+											var _el$29 = createElement("box"), _el$30 = createElement("text"), _el$31 = createElement("text");
+											insertNode(_el$29, _el$30);
+											insertNode(_el$29, _el$31);
+											setProp(_el$29, "flexDirection", "row");
 											setProp(_el$30, "wrapMode", "none");
-											insert(_el$30, () => stepRow().status);
+											insert(_el$30, () => stepRow().prefix);
+											setProp(_el$31, "wrapMode", "none");
+											insert(_el$31, () => stepRow().status);
 											effect((_p$) => {
-												var _v$1 = colorOf$1(props.palette, "text2"), _v$10 = colorOf$1(props.palette, statusMark(step.status).paletteKey);
-												_v$1 !== _p$.e && (_p$.e = setProp(_el$29, "fg", _v$1, _p$.e));
-												_v$10 !== _p$.t && (_p$.t = setProp(_el$30, "fg", _v$10, _p$.t));
+												var _v$10 = colorOf$1(props.palette, "text2"), _v$11 = colorOf$1(props.palette, statusMark(step.status).paletteKey);
+												_v$10 !== _p$.e && (_p$.e = setProp(_el$30, "fg", _v$10, _p$.e));
+												_v$11 !== _p$.t && (_p$.t = setProp(_el$31, "fg", _v$11, _p$.t));
 												return _p$;
 											}, {
 												e: void 0,
 												t: void 0
 											});
-											return _el$28;
+											return _el$29;
 										})();
 									}
 								});
@@ -1913,8 +2218,8 @@ function Table(props) {
 						})];
 					}
 				}));
-				effect((_$p) => setProp(_el$22, "backgroundColor", backgroundOf$1(props.palette), _$p));
-				return _el$22;
+				effect((_$p) => setProp(_el$23, "backgroundColor", backgroundOf$1(props.palette), _$p));
+				return _el$23;
 			})()];
 		}
 	});
@@ -1982,11 +2287,11 @@ function StatisticsPanel(props) {
 		state.startLivePolling(sessionID);
 	});
 	return (() => {
-		var _el$31 = createElement("box");
-		setProp(_el$31, "flexDirection", "column");
-		setProp(_el$31, "flexGrow", 1);
-		setProp(_el$31, "padding", 1);
-		insert(_el$31, createComponent(Show, {
+		var _el$32 = createElement("box");
+		setProp(_el$32, "flexDirection", "column");
+		setProp(_el$32, "flexGrow", 1);
+		setProp(_el$32, "padding", 1);
+		insert(_el$32, createComponent(Show, {
 			get when() {
 				return state.analysis();
 			},
@@ -2032,15 +2337,15 @@ function StatisticsPanel(props) {
 					});
 				},
 				get children() {
-					var _el$32 = createElement("text");
-					insertNode(_el$32, createTextNode(`Loading…`));
-					effect((_$p) => setProp(_el$32, "fg", colorOf$1(palette(), "muted"), _$p));
-					return _el$32;
+					var _el$33 = createElement("text");
+					insertNode(_el$33, createTextNode(`Loading…`));
+					effect((_$p) => setProp(_el$33, "fg", colorOf$1(palette(), "muted"), _$p));
+					return _el$33;
 				}
 			})]
 		}));
-		effect((_$p) => setProp(_el$31, "backgroundColor", backgroundOf$1(palette()), _$p));
-		return _el$31;
+		effect((_$p) => setProp(_el$32, "backgroundColor", backgroundOf$1(palette()), _$p));
+		return _el$32;
 	})();
 }
 function StatisticsView(props) {

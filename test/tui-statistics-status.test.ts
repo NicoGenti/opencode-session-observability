@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import type { StepStatus, TurnStatus } from "../src/core/types.ts";
 import {
+  guardrailsStatusLine,
   recommendationsStatusLine,
   statusLabel,
   statusMark,
@@ -92,4 +93,22 @@ test("the recommendation status line degrades hostile input to zero", () => {
   assert.equal(recommendationsStatusLine(2.9), "Recommendations: 2 advisory");
   // The line never carries a score, a rank or a priority.
   assert.doesNotMatch(recommendationsStatusLine(3), /score|rank|priority|weight/i);
+});
+
+test("the guardrail status line names the default budgets", () => {
+  assert.equal(guardrailsStatusLine(0), "Guardrails (defaults): 0 advisory");
+  assert.equal(guardrailsStatusLine(2), "Guardrails (defaults): 2 advisory");
+  assert.equal(guardrailsStatusLine(11), "Guardrails (defaults): 11 advisory");
+  // Advisory only: the line never claims a block, a score or a ranking.
+  assert.doesNotMatch(guardrailsStatusLine(2), /block|score|rank|priority/i);
+});
+
+test("the guardrail status line degrades hostile input to zero", () => {
+  assert.equal(guardrailsStatusLine(-3), "Guardrails (defaults): 0 advisory");
+  assert.equal(guardrailsStatusLine(Number.NaN), "Guardrails (defaults): 0 advisory");
+  assert.equal(
+    guardrailsStatusLine(Number.POSITIVE_INFINITY),
+    "Guardrails (defaults): 0 advisory",
+  );
+  assert.equal(guardrailsStatusLine(2.9), "Guardrails (defaults): 2 advisory");
 });
