@@ -6516,51 +6516,57 @@ function clientKey(req) {
 	return address.startsWith("::ffff:") ? address.slice(7) : address;
 }
 /**
-* Maps an exception to a wire response. Only the status and code carry
-* exception identity: every message is a fixed string, so neither an error
-* object nor a request path can reach the response body. Exported so the
-* regression tests can drive the mapping directly.
+* Builds an error payload from two constants. The response shape lives here so
+* the mapper never has to read an exception to produce one. Exported so the
+* regression tests can pin the shape directly.
 */
-function errorBody(error) {
+function errorBody(code, message) {
+	return {
+		error: code,
+		message
+	};
+}
+/**
+* Maps a caught exception to a wire response by identity alone. Only
+* `instanceof` tests are used: the argument is never dereferenced,
+* stringified or interpolated, so no exception property, text or identity can
+* travel toward `sendJson`/`res.end`. Every status and payload below is a
+* compile-time constant, and the order mirrors the documented status contract.
+*
+* Exported so the regression tests can drive the mapping directly.
+*/
+function responseForError(error) {
 	if (error instanceof SessionNotFoundError) return {
 		status: 404,
-		code: "session_not_found",
-		message: "Session not found."
+		payload: errorBody("session_not_found", "Session not found.")
 	};
 	if (error instanceof EventNotFoundError) return {
 		status: 404,
-		code: "event_not_found",
-		message: "Event not found."
+		payload: errorBody("event_not_found", "Event not found.")
 	};
 	if (error instanceof EpisodeNotFoundError) return {
 		status: 404,
-		code: "episode_not_found",
-		message: "Episode not found."
+		payload: errorBody("episode_not_found", "Episode not found.")
 	};
 	if (error instanceof DatabaseBusyError) return {
 		status: 503,
-		code: "database_busy",
-		message: "The OpenCode database is locked. Retry when the session is idle."
+		payload: errorBody("database_busy", "The OpenCode database is locked. Retry when the session is idle.")
 	};
 	if (error instanceof UnsupportedSchemaError) return {
 		status: 500,
-		code: "unsupported_schema",
-		message: "The database schema is not supported by this build."
+		payload: errorBody("unsupported_schema", "The database schema is not supported by this build.")
 	};
 	if (error instanceof URIError) return {
 		status: 400,
-		code: "invalid_path",
-		message: "Malformed request path."
+		payload: errorBody("invalid_path", "Malformed request path.")
 	};
 	if (error instanceof SyntaxError) return {
 		status: 400,
-		code: "invalid_query",
-		message: "Invalid request."
+		payload: errorBody("invalid_query", "Invalid request.")
 	};
 	return {
 		status: 500,
-		code: "internal_error",
-		message: "Internal error."
+		payload: errorBody("internal_error", "Internal error.")
 	};
 }
 /**
@@ -7147,11 +7153,8 @@ async function createObservabilityServer(options = {}) {
 				} catch {}
 				return;
 			}
-			const mapped = errorBody(error);
-			sendJson(req, res, mapped.status, {
-				error: mapped.code,
-				message: mapped.message
-			});
+			const mapped = responseForError(error);
+			sendJson(req, res, mapped.status, mapped.payload);
 		}
 	};
 	let inFlight = 0;

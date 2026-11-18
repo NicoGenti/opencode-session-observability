@@ -17,6 +17,7 @@ import {
   RATE_LIMIT_REFILL_PER_MINUTE,
   createObservabilityServer,
   errorBody,
+  responseForError,
 } from "../src/server/http.ts";
 import {
   openCodeThemeReadCount,
@@ -312,50 +313,119 @@ test("error responses are generic JSON and never echo the request", async () => 
 
 test("every mapped error carries a fixed message, never the exception text", () => {
   const secretPath = "C:\\Users\\alice\\.local\\share\\opencode\\opencode.db";
-  assert.deepEqual(errorBody(new Error(`read ${secretPath} failed`)), {
+  assert.deepEqual(responseForError(new Error(`read ${secretPath} failed`)), {
     status: 500,
-    code: "internal_error",
-    message: "Internal error.",
+    payload: { error: "internal_error", message: "Internal error." },
   });
 
-  const unsupported = errorBody(
+  const unsupported = responseForError(
     new UnsupportedSchemaError(`Unrecognized database at ${secretPath}.`),
   );
   assert.equal(unsupported.status, 500);
-  assert.equal(unsupported.code, "unsupported_schema");
-  assert.doesNotMatch(unsupported.message, /opencode\.db|alice/);
+  assert.equal(unsupported.payload.error, "unsupported_schema");
+  assert.doesNotMatch(unsupported.payload.message, /opencode\.db|alice/);
 
-  const missing = errorBody(
+  const missing = responseForError(
     new SessionNotFoundError("<script>alert(1)</script>"),
   );
   assert.equal(missing.status, 404);
-  assert.equal(missing.code, "session_not_found");
-  assert.doesNotMatch(missing.message, /script|alert/);
+  assert.equal(missing.payload.error, "session_not_found");
+  assert.doesNotMatch(missing.payload.message, /script|alert/);
 
-  const missingEvent = errorBody(
+  const missingEvent = responseForError(
     new EventNotFoundError("<script>alert(1)</script>"),
   );
   assert.equal(missingEvent.status, 404);
-  assert.equal(missingEvent.code, "event_not_found");
-  assert.doesNotMatch(missingEvent.message, /script|alert/);
+  assert.equal(missingEvent.payload.error, "event_not_found");
+  assert.doesNotMatch(missingEvent.payload.message, /script|alert/);
 
-  const missingEpisode = errorBody(
+  const missingEpisode = responseForError(
     new EpisodeNotFoundError("<script>alert(1)</script>"),
   );
   assert.equal(missingEpisode.status, 404);
-  assert.equal(missingEpisode.code, "episode_not_found");
-  assert.doesNotMatch(missingEpisode.message, /script|alert/);
+  assert.equal(missingEpisode.payload.error, "episode_not_found");
+  assert.doesNotMatch(missingEpisode.payload.message, /script|alert/);
 
   for (const mapped of [
-    errorBody(new EventNotFoundError("<script>alert(1)</script>")),
-    errorBody(new EpisodeNotFoundError("<script>alert(1)</script>")),
-    errorBody(new URIError("Failed to decode param '%'")),
-    errorBody(new SyntaxError(`Unexpected token < in ${secretPath}`)),
-    errorBody("a bare string"),
-    errorBody(undefined),
+    responseForError(new EventNotFoundError("<script>alert(1)</script>")),
+    responseForError(new EpisodeNotFoundError("<script>alert(1)</script>")),
+    responseForError(new URIError("Failed to decode param '%'")),
+    responseForError(new SyntaxError(`Unexpected token < in ${secretPath}`)),
+    responseForError("a bare string"),
+    responseForError(undefined),
   ]) {
-    assert.match(mapped.message, /^[A-Z][^<>]*\.$/, mapped.message);
+    assert.match(mapped.payload.message, /^[A-Z][^<>]*\.$/, mapped.payload.message);
   }
+
+  // The payload builder copies its two constant arguments and nothing else.
+  assert.deepEqual(errorBody("sample_code", "Sample message."), {
+    error: "sample_code",
+    message: "Sample message.",
+  });
+});
+
+test("an unknown exception from a route becomes a fixed 500 body", async () => {
+  // A subclass the mapper has never seen, carrying a marker that must not
+  // reach the wire even though the object does travel to the catch block.
+  class UnknownRouteFailure extends Error {
+    constructor() {
+      super("SECRET-FAILURE-MARKER at C:\\Users\\alice\\.local\\share");
+      this.name = "UnknownRouteFailure";
+    }
+  }
+
+  const { path } = writeFixtureDb(simpleFixture());
+  const server = await createObservabilityServer({ dbPath: path, port: 0 });
+  try {
+    server.service.listSessions = async () => {
+      throw new UnknownRouteFailure();
+    };
+    const response = await request(server.port, "/api/sessions");
+    assert.equal(response.status, 500);
+    assert.equal(
+      response.body,
+      '{"error":"internal_error","message":"Internal error."}',
+    );
+    assert.doesNotMatch(response.body, /SECRET-FAILURE-MARKER|alice/);
+  } finally {
+    await server.close();
+  }
+});
+
+test("the error mapper reads no exception property, text or identity", async () => {
+  const source = await readFile(
+    new URL("../src/server/http.ts", import.meta.url),
+    "utf8",
+  );
+  const mapper = uiFunctionBody(source, "export function responseForError(");
+
+  // Identity-only: the instanceof order is the documented status contract.
+  assert.deepEqual(
+    [...mapper.matchAll(/error instanceof (\w+)/g)].map((match) => match[1]),
+    [
+      "SessionNotFoundError",
+      "EventNotFoundError",
+      "EpisodeNotFoundError",
+      "DatabaseBusyError",
+      "UnsupportedSchemaError",
+      "URIError",
+      "SyntaxError",
+    ],
+  );
+  // No property access on the parameter, no string conversion, no template
+  // interpolation: none of the dataflow families the scanner tracks. The
+  // message strings themselves end in "error." so the dot must be followed by
+  // an identifier to count as a read.
+  assert.doesNotMatch(mapper, /\berror\s*\.\s*[A-Za-z_$]/);
+  assert.doesNotMatch(mapper, /\berror\s*\[/);
+  assert.doesNotMatch(mapper, /\bString\s*\(/);
+  assert.doesNotMatch(mapper, /toString|JSON\.stringify/);
+  assert.doesNotMatch(mapper, /\$\{/);
+  // The router passes the mapped constants to the sink, never the exception.
+  assert.match(
+    source,
+    /const mapped = responseForError\(error\);\s*sendJson\(req, res, mapped\.status, mapped\.payload\);/,
+  );
 });
 
 test("oversized request bodies are rejected before they are buffered", async () => {

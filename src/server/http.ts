@@ -374,56 +374,81 @@ function clientKey(req: IncomingMessage): string {
     : address;
 }
 
-/**
- * Maps an exception to a wire response. Only the status and code carry
- * exception identity: every message is a fixed string, so neither an error
- * object nor a request path can reach the response body. Exported so the
- * regression tests can drive the mapping directly.
- */
-export function errorBody(error: unknown): {
-  status: number;
-  code: string;
+/** The wire body of an error response: two fixed strings, nothing derived. */
+export interface ErrorPayload {
+  error: string;
   message: string;
-} {
+}
+
+/** A mapped error response: a numeric status plus a constant payload. */
+export interface ErrorResponse {
+  status: number;
+  payload: ErrorPayload;
+}
+
+/**
+ * Builds an error payload from two constants. The response shape lives here so
+ * the mapper never has to read an exception to produce one. Exported so the
+ * regression tests can pin the shape directly.
+ */
+export function errorBody(code: string, message: string): ErrorPayload {
+  return { error: code, message };
+}
+
+/**
+ * Maps a caught exception to a wire response by identity alone. Only
+ * `instanceof` tests are used: the argument is never dereferenced,
+ * stringified or interpolated, so no exception property, text or identity can
+ * travel toward `sendJson`/`res.end`. Every status and payload below is a
+ * compile-time constant, and the order mirrors the documented status contract.
+ *
+ * Exported so the regression tests can drive the mapping directly.
+ */
+export function responseForError(error: unknown): ErrorResponse {
   if (error instanceof SessionNotFoundError) {
     return {
       status: 404,
-      code: "session_not_found",
-      message: "Session not found.",
+      payload: errorBody("session_not_found", "Session not found."),
     };
   }
   if (error instanceof EventNotFoundError) {
-    return { status: 404, code: "event_not_found", message: "Event not found." };
+    return { status: 404, payload: errorBody("event_not_found", "Event not found.") };
   }
   if (error instanceof EpisodeNotFoundError) {
     return {
       status: 404,
-      code: "episode_not_found",
-      message: "Episode not found.",
+      payload: errorBody("episode_not_found", "Episode not found."),
     };
   }
   if (error instanceof DatabaseBusyError) {
     return {
       status: 503,
-      code: "database_busy",
-      message: "The OpenCode database is locked. Retry when the session is idle.",
+      payload: errorBody(
+        "database_busy",
+        "The OpenCode database is locked. Retry when the session is idle.",
+      ),
     };
   }
   if (error instanceof UnsupportedSchemaError) {
     return {
       status: 500,
-      code: "unsupported_schema",
-      message: "The database schema is not supported by this build.",
+      payload: errorBody(
+        "unsupported_schema",
+        "The database schema is not supported by this build.",
+      ),
     };
   }
   if (error instanceof URIError) {
-    return { status: 400, code: "invalid_path", message: "Malformed request path." };
+    return {
+      status: 400,
+      payload: errorBody("invalid_path", "Malformed request path."),
+    };
   }
   if (error instanceof SyntaxError) {
-    return { status: 400, code: "invalid_query", message: "Invalid request." };
+    return { status: 400, payload: errorBody("invalid_query", "Invalid request.") };
   }
   // Never reflect raw exception messages: they can embed absolute paths.
-  return { status: 500, code: "internal_error", message: "Internal error." };
+  return { status: 500, payload: errorBody("internal_error", "Internal error.") };
 }
 
 /**
@@ -1119,11 +1144,10 @@ export async function createObservabilityServer(
         }
         return;
       }
-      const mapped = errorBody(error);
-      sendJson(req, res, mapped.status, {
-        error: mapped.code,
-        message: mapped.message,
-      });
+      // Identity-only mapping: `error` is consumed by the instanceof chain and
+      // by nothing else, so the response body is built from constants only.
+      const mapped = responseForError(error);
+      sendJson(req, res, mapped.status, mapped.payload);
     }
   };
 
