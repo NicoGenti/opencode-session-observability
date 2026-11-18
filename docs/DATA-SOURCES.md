@@ -257,6 +257,23 @@ The live snapshot is derived from what the session row and message stream alread
 - The open turn (`status: "running"`) carries its already-computed tokens/cost and the `session-in-progress` uncertainty label.
 - Polling is `derived`: the endpoint re-projects the dataset each tick and never writes. A session that records messages without bumping `time_updated` would serve a stale-but-unlabelled frame; the cache-coherence test pins the invalidation path.
 
+## Task and file attribution
+
+`analysis.attribution` is optional: it is attached only when at least one turn records a file, a shell command or a delegated child session, and it is absent otherwise. It is computed once in `loadDataset` from the same projection as every other metric, so exports and the analysis endpoint carry it verbatim, redacted by default.
+
+| Signal | Basis | Where it comes from |
+|---|---|---|
+| File path | `measured` | A recorded tool call's `input.path` / `input.filePath` / `input.file` (read, grep, glob, edit, write, patch families) and a write-tool's `state.metadata.files[].file` list |
+| File op counts | `measured` | One count per recorded tool call that touched the path; reads and writes are counted separately |
+| Per-file cost share | `derived` | The step's recorded cost divided evenly across the step's tool calls, then across the files a tool call touched — see [METRICS.md](METRICS.md) |
+| Command name | `derived` | The first token of a recorded `shell`/`bash` command; leading `NAME=value` assignments are skipped |
+| Subtask session | `measured` | The child session ids recorded on the delegation tool call (cap 8) |
+| Commit / git linkage | `unavailable` | No git data is recorded anywhere: not in `session_v2`, not in `session_message`, not in any tool payload. File-mtime matching is deliberately not attempted. |
+
+`taskID` equals `turnID` because the turn is the only task unit the store records; no other grouping is invented. A turn's `trigger` label is copied from the projection (a delegated child session already reads `Delegated prompt`).
+
+Privacy boundary: patch text and full command lines never enter the DTO. A file row carries the path plus capped tool-event ids, a command row carries the first token only, and a file's cost share is a number plus its basis note. Paths still pass through the same `redactValue` path as every other analysis field, so a credential-shaped path reads `[REDACTED:name]` unless reveal is on. Caps are `MAX_FILES_PER_TURN = 12`, `MAX_FILE_EVIDENCE = 6`, `MAX_COMMANDS_PER_TURN = 8`, `MAX_COMMAND_EVIDENCE = 6` and `MAX_ASSESSED_CHILDREN = 8` for subtasks.
+
 ## Deliberately unavailable data
 
 | Wanted | Status | Why |
