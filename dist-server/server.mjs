@@ -2449,7 +2449,7 @@ function levelFor(watch, strong) {
 	if (watch) return "watch";
 	return null;
 }
-function rule(id, label, level, evaluable, note, eventIDs = [], turnIDs = []) {
+function rule(thresholds, id, label, level, evaluable, note, eventIDs = [], turnIDs = []) {
 	return {
 		id,
 		label,
@@ -2457,8 +2457,8 @@ function rule(id, label, level, evaluable, note, eventIDs = [], turnIDs = []) {
 		level,
 		evaluable,
 		note,
-		eventIDs: capIDs$2(eventIDs, 10),
-		turnIDs: capIDs$2(turnIDs, 6)
+		eventIDs: capIDs$2(eventIDs, thresholds.maxEventLinks),
+		turnIDs: capIDs$2(turnIDs, thresholds.maxTurnLinks)
 	};
 }
 /** Deduplicates, drops empty ids and caps the list in recorded order. */
@@ -2474,31 +2474,31 @@ function capIDs$2(ids, limit) {
 	return out;
 }
 /** `totals.errors.total / totals.steps`; steps are the work denominator. */
-function errorRateRule(analysis) {
+function errorRateRule(analysis, thresholds) {
 	const { errors, steps } = analysis.totals;
-	const threshold = HEALTH_RULES.errorRate;
-	if (steps === 0) return rule("error-rate", "Error rate", null, false, "no steps were recorded");
+	const threshold = thresholds.errorRate;
+	if (steps === 0) return rule(thresholds, "error-rate", "Error rate", null, false, "no steps were recorded");
 	const rate = errors.total / steps;
 	const level = levelFor(rate >= threshold.watchRate && errors.total >= threshold.watchErrors, rate >= threshold.strongRate && errors.total >= threshold.strongErrors);
 	const eventIDs = analysis.events.filter((event) => event.flags.error).map((event) => event.id);
-	return rule("error-rate", "Error rate", level, true, `${errors.total} error(s) across ${steps} step(s); rate ${formatRatio(rate)}`, eventIDs);
+	return rule(thresholds, "error-rate", "Error rate", level, true, `${errors.total} error(s) across ${steps} step(s); rate ${formatRatio(rate)}`, eventIDs);
 }
-function retryCountRule(analysis) {
-	const threshold = HEALTH_RULES.retryCount;
+function retryCountRule(analysis, thresholds) {
+	const threshold = thresholds.retryCount;
 	const retries = analysis.totals.retries;
 	const level = levelFor(retries >= threshold.watch, retries >= threshold.strong);
 	const eventIDs = analysis.events.filter((event) => event.kind === "retry").map((event) => event.id);
-	return rule("retry-count", "Retry count", level, true, `${retries} retry event(s) recorded`, eventIDs);
+	return rule(thresholds, "retry-count", "Retry count", level, true, `${retries} retry event(s) recorded`, eventIDs);
 }
 /** Reads the diagnostics attached to the same analysis. */
-function toolFailureRecurrenceRule(analysis) {
-	const threshold = HEALTH_RULES.toolFailureRecurrence;
+function toolFailureRecurrenceRule(analysis, thresholds) {
+	const threshold = thresholds.toolFailureRecurrence;
 	const incidents = analysis.diagnostics?.incidents ?? [];
 	let maxAttempts = 0;
 	for (const incident of incidents) if (incident.attempts > maxAttempts) maxAttempts = incident.attempts;
 	const level = levelFor(incidents.length >= threshold.watchIncidents || maxAttempts >= threshold.watchMaxAttempts, incidents.length >= threshold.strongIncidents || maxAttempts >= threshold.strongMaxAttempts);
 	const eventIDs = incidents.map((incident) => incident.firstFailureEventID);
-	return rule("tool-failure-recurrence", "Tool-failure recurrence", level, true, `${incidents.length} incident(s) recorded; max ${maxAttempts} attempt(s) in one run`, eventIDs);
+	return rule(thresholds, "tool-failure-recurrence", "Tool-failure recurrence", level, true, `${incidents.length} incident(s) recorded; max ${maxAttempts} attempt(s) in one run`, eventIDs);
 }
 /**
 * A compaction recorded inside the run's span ends the run. A turn that owns
@@ -2544,44 +2544,44 @@ function longestGrowthRun(analysis) {
 		length: best.length
 	};
 }
-function contextGrowthRule(analysis) {
-	const threshold = HEALTH_RULES.contextGrowth;
+function contextGrowthRule(analysis, thresholds) {
+	const threshold = thresholds.contextGrowth;
 	const available = analysis.turns.filter((turn) => turn.contextDelta.value !== null).length;
-	if (available < 2) return rule("context-growth", "Context growth", null, false, `${available} turn(s) recorded a context delta; at least 2 are required`);
+	if (available < 2) return rule(thresholds, "context-growth", "Context growth", null, false, `${available} turn(s) recorded a context delta; at least 2 are required`);
 	const finalContext = analysis.totals.finalContext.value;
-	if (finalContext === null) return rule("context-growth", "Context growth", null, false, "final context size was not recorded");
+	if (finalContext === null) return rule(thresholds, "context-growth", "Context growth", null, false, "final context size was not recorded");
 	const run = longestGrowthRun(analysis);
 	const length = run?.length ?? 0;
 	const level = levelFor(length >= threshold.watchRun && finalContext >= threshold.watchFinalContext, length >= threshold.strongRun && finalContext >= threshold.strongFinalContext);
 	const turnIDs = run ? [run.first.id, run.last.id] : [];
-	return rule("context-growth", "Context growth", level, true, `longest growth run ${length} turn(s); final context ${finalContext}`, [], turnIDs);
+	return rule(thresholds, "context-growth", "Context growth", level, true, `longest growth run ${length} turn(s); final context ${finalContext}`, [], turnIDs);
 }
 /** Highest-cost turns, descending, ties resolved by recorded order. */
 function costliestTurns(turns, limit) {
 	return [...turns].filter((turn) => turn.cost.value !== null).sort((left, right) => (right.cost.value ?? 0) - (left.cost.value ?? 0) || left.index - right.index).slice(0, limit).map((turn) => turn.id);
 }
-function costPerTurnRule(analysis) {
-	const threshold = HEALTH_RULES.costPerTurn;
+function costPerTurnRule(analysis, thresholds) {
+	const threshold = thresholds.costPerTurn;
 	const cost = analysis.totals.cost;
 	const turns = analysis.totals.turns;
-	if (cost.value === null) return rule("cost-per-turn", "Cost per turn", null, false, "cost was not recorded");
-	if (turns < 2) return rule("cost-per-turn", "Cost per turn", null, false, `${turns} turn(s) recorded; at least 2 are required`);
+	if (cost.value === null) return rule(thresholds, "cost-per-turn", "Cost per turn", null, false, "cost was not recorded");
+	if (turns < 2) return rule(thresholds, "cost-per-turn", "Cost per turn", null, false, `${turns} turn(s) recorded; at least 2 are required`);
 	const perTurn = cost.value / turns;
-	return rule("cost-per-turn", "Cost per turn", levelFor(perTurn >= threshold.watch, perTurn >= threshold.strong), true, `$${perTurn.toFixed(2)} per turn across ${turns} turn(s)`, [], costliestTurns(analysis.turns, 3));
+	return rule(thresholds, "cost-per-turn", "Cost per turn", levelFor(perTurn >= threshold.watch, perTurn >= threshold.strong), true, `$${perTurn.toFixed(2)} per turn across ${turns} turn(s)`, [], costliestTurns(analysis.turns, 3));
 }
-function lowCacheHitRule(analysis) {
-	const threshold = HEALTH_RULES.lowCacheHit;
+function lowCacheHitRule(analysis, thresholds) {
+	const threshold = thresholds.lowCacheHit;
 	const available = analysis.turns.filter((turn) => turn.cacheHitRate.value !== null);
-	if (available.length === 0) return rule("low-cache-hit", "Low cache hit rate", null, false, "no turn recorded a cache hit rate");
+	if (available.length === 0) return rule(thresholds, "low-cache-hit", "Low cache hit rate", null, false, "no turn recorded a cache hit rate");
 	const low = available.filter((turn) => (turn.cacheHitRate.value ?? 0) < threshold.lowBelow);
 	const share = low.length / available.length;
-	return rule("low-cache-hit", "Low cache hit rate", levelFor(low.length >= threshold.watchLowTurns && share >= threshold.watchShare, low.length >= threshold.strongLowTurns && share >= threshold.strongShare), true, `${low.length} of ${available.length} turn(s) below a ${threshold.lowBelow.toFixed(2)} cache hit rate`, [], low.map((turn) => turn.id));
+	return rule(thresholds, "low-cache-hit", "Low cache hit rate", levelFor(low.length >= threshold.watchLowTurns && share >= threshold.watchShare, low.length >= threshold.strongLowTurns && share >= threshold.strongShare), true, `${low.length} of ${available.length} turn(s) below a ${threshold.lowBelow.toFixed(2)} cache hit rate`, [], low.map((turn) => turn.id));
 }
 /**
 * `running` is explicitly not a trigger: an in-flight session is not
 * unhealthy. Only a recorded interrupt, failure or incomplete tail counts.
 */
-function unfinishedOutcomeRule(analysis) {
+function unfinishedOutcomeRule(analysis, thresholds) {
 	const last = analysis.turns[analysis.turns.length - 1] ?? null;
 	const outcome = analysis.session.outcome ?? null;
 	const lastStatus = last?.status ?? null;
@@ -2589,7 +2589,7 @@ function unfinishedOutcomeRule(analysis) {
 	const anchor = last ? last.trigger.eventID ?? last.eventIDs[0] ?? null : null;
 	const idleFailures = analysis.events.filter((event) => event.kind === "idle" && (event.status === "failed" || event.status === "interrupted")).map((event) => event.id);
 	const eventIDs = anchor === null ? idleFailures : [anchor, ...idleFailures];
-	return rule("unfinished-outcome", "Unfinished outcome", level, true, `session outcome: ${outcome ?? "not recorded"}; last turn status: ${lastStatus ?? "no turns"}`, eventIDs);
+	return rule(thresholds, "unfinished-outcome", "Unfinished outcome", level, true, `session outcome: ${outcome ?? "not recorded"}; last turn status: ${lastStatus ?? "no turns"}`, eventIDs);
 }
 /** The sufficiency gate: none of these may claim a healthy session. */
 function insufficiencyReasons(analysis) {
@@ -2608,15 +2608,15 @@ function insufficiencyReasons(analysis) {
 * Recorded evidence may escalate an insufficient session to `degraded` — only
 * the `healthy` claim is blocked.
 */
-function evaluateSessionHealth(analysis) {
+function evaluateSessionHealth(analysis, thresholds = HEALTH_RULES) {
 	const rules = [
-		errorRateRule(analysis),
-		retryCountRule(analysis),
-		toolFailureRecurrenceRule(analysis),
-		contextGrowthRule(analysis),
-		costPerTurnRule(analysis),
-		lowCacheHitRule(analysis),
-		unfinishedOutcomeRule(analysis)
+		errorRateRule(analysis, thresholds),
+		retryCountRule(analysis, thresholds),
+		toolFailureRecurrenceRule(analysis, thresholds),
+		contextGrowthRule(analysis, thresholds),
+		costPerTurnRule(analysis, thresholds),
+		lowCacheHitRule(analysis, thresholds),
+		unfinishedOutcomeRule(analysis, thresholds)
 	];
 	let watch = 0;
 	let strong = 0;

@@ -58,6 +58,44 @@ export const MAX_EVENT_LINKS = 10;
 export const MAX_TURN_LINKS = 6;
 
 /**
+ * The threshold shape the evaluator reads. It matches the frozen
+ * `HEALTH_RULES` object field for field, so the approved defaults are one
+ * valid value of it; callers may substitute another object (tests do) without
+ * touching the frozen constant.
+ */
+export interface HealthThresholds {
+  errorRate: {
+    watchRate: number;
+    watchErrors: number;
+    strongRate: number;
+    strongErrors: number;
+  };
+  retryCount: { watch: number; strong: number };
+  toolFailureRecurrence: {
+    watchIncidents: number;
+    strongIncidents: number;
+    watchMaxAttempts: number;
+    strongMaxAttempts: number;
+  };
+  contextGrowth: {
+    watchRun: number;
+    strongRun: number;
+    watchFinalContext: number;
+    strongFinalContext: number;
+  };
+  costPerTurn: { watch: number; strong: number };
+  lowCacheHit: {
+    lowBelow: number;
+    watchLowTurns: number;
+    strongLowTurns: number;
+    watchShare: number;
+    strongShare: number;
+  };
+  maxEventLinks: number;
+  maxTurnLinks: number;
+}
+
+/**
  * The user-approved thresholds of 2026-11-17. Frozen so tests, the UI and the
  * documentation all assert against the same source.
  */
@@ -104,6 +142,7 @@ function levelFor(watch: boolean, strong: boolean): HealthRuleLevel | null {
 }
 
 function rule(
+  thresholds: HealthThresholds,
   id: HealthRuleId,
   label: string,
   level: HealthRuleLevel | null,
@@ -119,8 +158,8 @@ function rule(
     level,
     evaluable,
     note,
-    eventIDs: capIDs(eventIDs, MAX_EVENT_LINKS),
-    turnIDs: capIDs(turnIDs, MAX_TURN_LINKS),
+    eventIDs: capIDs(eventIDs, thresholds.maxEventLinks),
+    turnIDs: capIDs(turnIDs, thresholds.maxTurnLinks),
   };
 }
 
@@ -138,11 +177,15 @@ function capIDs(ids: readonly string[], limit: number): string[] {
 }
 
 /** `totals.errors.total / totals.steps`; steps are the work denominator. */
-function errorRateRule(analysis: Analysis): HealthRuleResult {
+function errorRateRule(
+  analysis: Analysis,
+  thresholds: HealthThresholds,
+): HealthRuleResult {
   const { errors, steps } = analysis.totals;
-  const threshold = HEALTH_RULES.errorRate;
+  const threshold = thresholds.errorRate;
   if (steps === 0) {
     return rule(
+      thresholds,
       "error-rate",
       "Error rate",
       null,
@@ -159,6 +202,7 @@ function errorRateRule(analysis: Analysis): HealthRuleResult {
     .filter((event) => event.flags.error)
     .map((event) => event.id);
   return rule(
+    thresholds,
     "error-rate",
     "Error rate",
     level,
@@ -168,8 +212,11 @@ function errorRateRule(analysis: Analysis): HealthRuleResult {
   );
 }
 
-function retryCountRule(analysis: Analysis): HealthRuleResult {
-  const threshold = HEALTH_RULES.retryCount;
+function retryCountRule(
+  analysis: Analysis,
+  thresholds: HealthThresholds,
+): HealthRuleResult {
+  const threshold = thresholds.retryCount;
   const retries = analysis.totals.retries;
   const level = levelFor(
     retries >= threshold.watch,
@@ -179,6 +226,7 @@ function retryCountRule(analysis: Analysis): HealthRuleResult {
     .filter((event) => event.kind === "retry")
     .map((event) => event.id);
   return rule(
+    thresholds,
     "retry-count",
     "Retry count",
     level,
@@ -189,8 +237,11 @@ function retryCountRule(analysis: Analysis): HealthRuleResult {
 }
 
 /** Reads the diagnostics attached to the same analysis. */
-function toolFailureRecurrenceRule(analysis: Analysis): HealthRuleResult {
-  const threshold = HEALTH_RULES.toolFailureRecurrence;
+function toolFailureRecurrenceRule(
+  analysis: Analysis,
+  thresholds: HealthThresholds,
+): HealthRuleResult {
+  const threshold = thresholds.toolFailureRecurrence;
   const incidents: DiagnosticIncident[] = analysis.diagnostics?.incidents ?? [];
   let maxAttempts = 0;
   for (const incident of incidents) {
@@ -204,6 +255,7 @@ function toolFailureRecurrenceRule(analysis: Analysis): HealthRuleResult {
   );
   const eventIDs = incidents.map((incident) => incident.firstFailureEventID);
   return rule(
+    thresholds,
     "tool-failure-recurrence",
     "Tool-failure recurrence",
     level,
@@ -267,13 +319,17 @@ function longestGrowthRun(analysis: Analysis): GrowthRun | null {
   return { first: best[0]!, last: best[best.length - 1]!, length: best.length };
 }
 
-function contextGrowthRule(analysis: Analysis): HealthRuleResult {
-  const threshold = HEALTH_RULES.contextGrowth;
+function contextGrowthRule(
+  analysis: Analysis,
+  thresholds: HealthThresholds,
+): HealthRuleResult {
+  const threshold = thresholds.contextGrowth;
   const available = analysis.turns.filter(
     (turn) => turn.contextDelta.value !== null,
   ).length;
   if (available < 2) {
     return rule(
+      thresholds,
       "context-growth",
       "Context growth",
       null,
@@ -284,6 +340,7 @@ function contextGrowthRule(analysis: Analysis): HealthRuleResult {
   const finalContext = analysis.totals.finalContext.value;
   if (finalContext === null) {
     return rule(
+      thresholds,
       "context-growth",
       "Context growth",
       null,
@@ -300,6 +357,7 @@ function contextGrowthRule(analysis: Analysis): HealthRuleResult {
   );
   const turnIDs = run ? [run.first.id, run.last.id] : [];
   return rule(
+    thresholds,
     "context-growth",
     "Context growth",
     level,
@@ -326,12 +384,16 @@ function costliestTurns(
     .map((turn) => turn.id);
 }
 
-function costPerTurnRule(analysis: Analysis): HealthRuleResult {
-  const threshold = HEALTH_RULES.costPerTurn;
+function costPerTurnRule(
+  analysis: Analysis,
+  thresholds: HealthThresholds,
+): HealthRuleResult {
+  const threshold = thresholds.costPerTurn;
   const cost: Metric = analysis.totals.cost;
   const turns = analysis.totals.turns;
   if (cost.value === null) {
     return rule(
+      thresholds,
       "cost-per-turn",
       "Cost per turn",
       null,
@@ -341,6 +403,7 @@ function costPerTurnRule(analysis: Analysis): HealthRuleResult {
   }
   if (turns < 2) {
     return rule(
+      thresholds,
       "cost-per-turn",
       "Cost per turn",
       null,
@@ -354,6 +417,7 @@ function costPerTurnRule(analysis: Analysis): HealthRuleResult {
     perTurn >= threshold.strong,
   );
   return rule(
+    thresholds,
     "cost-per-turn",
     "Cost per turn",
     level,
@@ -364,13 +428,17 @@ function costPerTurnRule(analysis: Analysis): HealthRuleResult {
   );
 }
 
-function lowCacheHitRule(analysis: Analysis): HealthRuleResult {
-  const threshold = HEALTH_RULES.lowCacheHit;
+function lowCacheHitRule(
+  analysis: Analysis,
+  thresholds: HealthThresholds,
+): HealthRuleResult {
+  const threshold = thresholds.lowCacheHit;
   const available = analysis.turns.filter(
     (turn) => turn.cacheHitRate.value !== null,
   );
   if (available.length === 0) {
     return rule(
+      thresholds,
       "low-cache-hit",
       "Low cache hit rate",
       null,
@@ -387,6 +455,7 @@ function lowCacheHitRule(analysis: Analysis): HealthRuleResult {
     low.length >= threshold.strongLowTurns && share >= threshold.strongShare,
   );
   return rule(
+    thresholds,
     "low-cache-hit",
     "Low cache hit rate",
     level,
@@ -401,7 +470,10 @@ function lowCacheHitRule(analysis: Analysis): HealthRuleResult {
  * `running` is explicitly not a trigger: an in-flight session is not
  * unhealthy. Only a recorded interrupt, failure or incomplete tail counts.
  */
-function unfinishedOutcomeRule(analysis: Analysis): HealthRuleResult {
+function unfinishedOutcomeRule(
+  analysis: Analysis,
+  thresholds: HealthThresholds,
+): HealthRuleResult {
   const last = analysis.turns[analysis.turns.length - 1] ?? null;
   const outcome = analysis.session.outcome ?? null;
   const lastStatus = last?.status ?? null;
@@ -423,6 +495,7 @@ function unfinishedOutcomeRule(analysis: Analysis): HealthRuleResult {
     .map((event) => event.id);
   const eventIDs = anchor === null ? idleFailures : [anchor, ...idleFailures];
   return rule(
+    thresholds,
     "unfinished-outcome",
     "Unfinished outcome",
     level,
@@ -454,15 +527,18 @@ function insufficiencyReasons(analysis: Analysis): string[] {
  * Recorded evidence may escalate an insufficient session to `degraded` — only
  * the `healthy` claim is blocked.
  */
-export function evaluateSessionHealth(analysis: Analysis): SessionHealth {
+export function evaluateSessionHealth(
+  analysis: Analysis,
+  thresholds: HealthThresholds = HEALTH_RULES,
+): SessionHealth {
   const rules: HealthRuleResult[] = [
-    errorRateRule(analysis),
-    retryCountRule(analysis),
-    toolFailureRecurrenceRule(analysis),
-    contextGrowthRule(analysis),
-    costPerTurnRule(analysis),
-    lowCacheHitRule(analysis),
-    unfinishedOutcomeRule(analysis),
+    errorRateRule(analysis, thresholds),
+    retryCountRule(analysis, thresholds),
+    toolFailureRecurrenceRule(analysis, thresholds),
+    contextGrowthRule(analysis, thresholds),
+    costPerTurnRule(analysis, thresholds),
+    lowCacheHitRule(analysis, thresholds),
+    unfinishedOutcomeRule(analysis, thresholds),
   ];
   let watch = 0;
   let strong = 0;

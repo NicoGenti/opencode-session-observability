@@ -10,6 +10,7 @@ import {
 import type {
   HealthRuleId,
   HealthRuleResult,
+  HealthThresholds,
   SessionHealth,
 } from "../src/core/health.ts";
 import { metric } from "../src/core/types.ts";
@@ -333,6 +334,95 @@ test("reports every rule in a documented order", async () => {
       "unfinished-outcome",
     ],
   );
+});
+
+// --- parameterization -----------------------------------------------------
+
+test("the default thresholds are the frozen rules", async () => {
+  const { analysis } = await analyzeBuild(retryTurns(8));
+  assert.deepEqual(
+    evaluateSessionHealth(analysis),
+    evaluateSessionHealth(analysis, HEALTH_RULES),
+  );
+});
+
+test("injected thresholds change a verdict without touching the defaults", async () => {
+  // Five retries stay quiet under the approved default of 8.
+  const { analysis } = await analyzeBuild(retryTurns(5));
+  assert.equal(
+    ruleFor(evaluateSessionHealth(analysis), "retry-count").level,
+    null,
+  );
+
+  const lowered: HealthThresholds = {
+    ...HEALTH_RULES,
+    retryCount: { watch: 5, strong: 12 },
+  };
+  const injected = evaluateSessionHealth(analysis, lowered);
+  assert.equal(ruleFor(injected, "retry-count").level, "watch");
+  assert.equal(injected.state, "watch");
+  assert.equal(injected.triggeredCount, 1);
+
+  // The frozen object is untouched and the default call is unchanged.
+  assert.equal(HEALTH_RULES.retryCount.watch, 8);
+  assert.equal(HEALTH_RULES.retryCount.strong, 15);
+  assert.equal(
+    ruleFor(evaluateSessionHealth(analysis), "retry-count").level,
+    null,
+  );
+});
+
+test("each rule reads its own bucket of the injected thresholds", async () => {
+  // A 0.25 error rate with 5 errors is a default watch trigger.
+  const { analysis } = await analyzeBuild(errorSteps(20, 5));
+  assert.equal(
+    ruleFor(evaluateSessionHealth(analysis), "error-rate").level,
+    "watch",
+  );
+
+  const raised = evaluateSessionHealth(analysis, {
+    ...HEALTH_RULES,
+    errorRate: {
+      watchRate: 0.5,
+      watchErrors: 4,
+      strongRate: 0.9,
+      strongErrors: 6,
+    },
+  });
+  assert.equal(ruleFor(raised, "error-rate").level, null);
+  // Raising one bucket leaves the other rules at their approved thresholds.
+  assert.equal(
+    ruleFor(raised, "tool-failure-recurrence").note,
+    "0 incident(s) recorded; max 0 attempt(s) in one run",
+  );
+});
+
+test("injected link caps bound the returned evidence lists", async () => {
+  const { analysis } = await analyzeBuild(retryTurns(9));
+  const capped = evaluateSessionHealth(analysis, {
+    ...HEALTH_RULES,
+    maxEventLinks: 3,
+    maxTurnLinks: 1,
+  });
+  assert.equal(ruleFor(capped, "retry-count").eventIDs.length, 3);
+  assert.equal(
+    ruleFor(evaluateSessionHealth(analysis), "retry-count").eventIDs.length,
+    9,
+  );
+});
+
+test("the sufficiency gate ignores injected thresholds", async () => {
+  const { analysis } = await analyzeBuild(empty());
+  const injected = evaluateSessionHealth(analysis, {
+    ...HEALTH_RULES,
+    retryCount: { watch: 1, strong: 2 },
+  });
+  assert.equal(injected.insufficient, true);
+  assert.equal(injected.state, "watch");
+  assert.deepEqual(injected.insufficientReasons, [
+    "no turns were recorded",
+    "neither token usage nor cost was recorded",
+  ]);
 });
 
 // --- error-rate -----------------------------------------------------------
