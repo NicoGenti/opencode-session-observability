@@ -638,9 +638,10 @@ function parseTheme(value) {
 }
 /**
 * The CLI theme is process-static configuration: OpenCode writes it once and a
-* running server never needs to observe a mid-process change. The discovery
-* result is therefore cached after the first lookup for a given candidate
-* path list, and a failed lookup is cached exactly like a successful one (a
+* running server never needs to observe a mid-process change. The server
+* therefore resolves it exactly once, while it is being created, so no request
+* handler reads a config file. The discovery result is memoised per candidate
+* path list and a failed lookup is cached exactly like a successful one (a
 * malformed or absent config cannot become a per-request filesystem read).
 */
 var cachedLookup = null;
@@ -6798,6 +6799,7 @@ async function createObservabilityServer(options = {}) {
 	const port = options.port ?? 4517;
 	const allowReveal = options.allowReveal === true;
 	const uiRoot = resolve(options.uiRoot ?? UI_ROOT);
+	const theme = readOpenCodeTheme();
 	const dbPath = options.dbPath ?? discoverDatabase().path;
 	const source = openWorkerSqliteSource(dbPath);
 	try {
@@ -6883,7 +6885,7 @@ async function createObservabilityServer(options = {}) {
 					revealAllowed: allowReveal,
 					authRequired,
 					readOnly: true,
-					theme: readOpenCodeTheme()
+					theme
 				});
 				return;
 			}

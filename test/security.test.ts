@@ -20,7 +20,6 @@ import {
 } from "../src/server/http.ts";
 import {
   openCodeThemeReadCount,
-  readOpenCodeTheme,
   resetOpenCodeThemeCache,
 } from "../src/server/opencode-theme.ts";
 import {
@@ -486,8 +485,12 @@ test("a flooding client gets 429 with Retry-After and is served after refill", a
   }
 });
 
-test("the OpenCode theme is read once per process", async () => {
+test("the OpenCode theme is read once at server creation, never while serving", async () => {
   const dir = await mkdtemp(join(tmpdir(), "observability-theme-"));
+  const previousConfig = process.env.OPENCODE_CLI_CONFIG;
+  const { path: dbPath } = writeFixtureDb(simpleFixture());
+  let first: Awaited<ReturnType<typeof createObservabilityServer>> | undefined;
+  let second: Awaited<ReturnType<typeof createObservabilityServer>> | undefined;
   try {
     const configPath = join(dir, "cli.json");
     await writeFile(
@@ -495,27 +498,42 @@ test("the OpenCode theme is read once per process", async () => {
       JSON.stringify({ theme: { name: "nightowl", mode: "dark" } }),
       "utf8",
     );
+    process.env.OPENCODE_CLI_CONFIG = configPath;
     resetOpenCodeThemeCache();
-    assert.deepEqual(readOpenCodeTheme({ configPath }), {
-      name: "nightowl",
-      mode: "dark",
-    });
+
+    first = await createObservabilityServer({ dbPath, port: 0 });
+    // The server resolves the theme while it is being created: a fresh process
+    // has exactly one config read before any request is served.
     assert.equal(openCodeThemeReadCount(), 1);
 
-    // Rewriting the file must not change the process-static answer: the second
-    // lookup is a cache hit and touches no file.
+    // Rewriting the config cannot change what is reported. Every served request
+    // answers from the value stored at creation and reads no file.
     await writeFile(
       configPath,
       JSON.stringify({ theme: { name: "daylight" } }),
       "utf8",
     );
-    assert.deepEqual(readOpenCodeTheme({ configPath }), {
-      name: "nightowl",
-      mode: "dark",
-    });
+    for (let index = 0; index < 3; index += 1) {
+      const health = JSON.parse((await request(first.port, "/api/health")).body);
+      assert.deepEqual(health.theme, { name: "nightowl", mode: "dark" });
+      assert.equal(openCodeThemeReadCount(), 1);
+    }
+
+    // A second server in the same process resolves the same candidate list
+    // through the memo: it still reports the theme and adds no file read.
+    second = await createObservabilityServer({ dbPath, port: 0 });
+    assert.equal(openCodeThemeReadCount(), 1);
+    const secondHealth = JSON.parse(
+      (await request(second.port, "/api/health")).body,
+    );
+    assert.deepEqual(secondHealth.theme, { name: "nightowl", mode: "dark" });
     assert.equal(openCodeThemeReadCount(), 1);
   } finally {
+    await first?.close();
+    await second?.close();
     resetOpenCodeThemeCache();
+    if (previousConfig === undefined) delete process.env.OPENCODE_CLI_CONFIG;
+    else process.env.OPENCODE_CLI_CONFIG = previousConfig;
     await rm(dir, { recursive: true, force: true });
   }
 });

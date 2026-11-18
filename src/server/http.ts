@@ -695,6 +695,10 @@ export async function createObservabilityServer(
   const port = options.port ?? 4517;
   const allowReveal = options.allowReveal === true;
   const uiRoot = resolve(options.uiRoot ?? UI_ROOT);
+  // The CLI theme is process-static: it is resolved here, before the http
+  // server exists, so no request handler ever reads a config file. /api/health
+  // serves this value from the closure.
+  const theme = readOpenCodeTheme();
   const dbPath = options.dbPath ?? discoverDatabase().path;
   const source = openWorkerSqliteSource(dbPath);
   try {
@@ -834,8 +838,9 @@ export async function createObservabilityServer(
           revealAllowed: allowReveal,
           authRequired,
           readOnly: true,
-          // Process-static CLI config, read once per server process.
-          theme: readOpenCodeTheme(),
+          // Resolved once in createObservabilityServer; serving a request never
+          // touches the CLI config.
+          theme,
         });
         return;
       }

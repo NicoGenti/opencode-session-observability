@@ -73,15 +73,16 @@ function parseTheme(value: unknown): CliTheme | null {
 
 /**
  * The CLI theme is process-static configuration: OpenCode writes it once and a
- * running server never needs to observe a mid-process change. The discovery
- * result is therefore cached after the first lookup for a given candidate
- * path list, and a failed lookup is cached exactly like a successful one (a
+ * running server never needs to observe a mid-process change. The server
+ * therefore resolves it exactly once, while it is being created, so no request
+ * handler reads a config file. The discovery result is memoised per candidate
+ * path list and a failed lookup is cached exactly like a successful one (a
  * malformed or absent config cannot become a per-request filesystem read).
  */
 let cachedLookup: { key: string; theme: CliTheme | null } | null = null;
 let fileReads = 0;
 
-/** Drops the memo. Only the tests need this; production reads once. */
+/** Drops the memo. Only the tests need this; production resolves at startup. */
 export function resetOpenCodeThemeCache(): void {
   cachedLookup = null;
   fileReads = 0;
@@ -89,7 +90,8 @@ export function resetOpenCodeThemeCache(): void {
 
 /**
  * How many config files this process has actually read. Exposed so a test can
- * prove the second lookup does not touch the filesystem.
+ * prove the theme is resolved at server creation and that serving requests
+ * adds no further reads.
  */
 export function openCodeThemeReadCount(): number {
   return fileReads;
