@@ -21,6 +21,8 @@ export interface StatisticsTotals {
   readonly cacheHitRate: Metric;
   readonly cost: Metric;
   readonly turns: number;
+  /** Advisory recommendation rows in the validated analysis; `0` when absent. */
+  readonly recommendations: number;
 }
 
 /** Outcome of one review-prompt request; the file body or a short error. */
@@ -122,6 +124,23 @@ function asMetric(value: Metric | undefined): Metric {
 }
 
 /**
+ * Counts the advisory rows of the already-validated `analysis.recommendations`
+ * rider. The TUI shows the count only: no detail surface, no ordering, and a
+ * missing or malformed rider reads as `0`.
+ */
+export function advisoryRecommendationCount(
+  analysis: Analysis | null | undefined,
+): number {
+  const rows = analysis?.recommendations?.rows;
+  if (!Array.isArray(rows)) return 0;
+  let count = 0;
+  for (const row of rows) {
+    if (row?.severity === "advisory") count += 1;
+  }
+  return count;
+}
+
+/**
  * Validates an export response the same way `parseAnalysisResponse` validates
  * the analysis: the payload crosses the RPC boundary, so it can arrive as the
  * raw envelope (`{ output: … }`), the handler result (`{ filename, content, … }`)
@@ -192,6 +211,7 @@ export function createStatisticsState(client: RpcCapable): StatisticsState {
         typeof source?.turns === "number"
           ? source.turns
           : (value.turns?.length ?? 0),
+      recommendations: advisoryRecommendationCount(value),
     };
   };
 

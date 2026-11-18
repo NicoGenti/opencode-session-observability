@@ -51,3 +51,16 @@ export function statusLabel(status: TurnStatus): string {
 export function statusPaletteKey(status: TurnStatus): StatusPaletteKey {
   return statusMark(status).paletteKey;
 }
+
+/**
+ * The statistics panel's recommendation count line.
+ *
+ * The number counts `severity: "advisory"` rows — the hypotheses — and names
+ * that vocabulary so the line can never read as a score, a priority or a
+ * ranking. Non-finite and negative input degrades to `0 advisory`; the panel
+ * has no recommendation detail surface, the browser is the primary one.
+ */
+export function recommendationsStatusLine(count: number): string {
+  const value = Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0;
+  return `Recommendations: ${value} advisory`;
+}

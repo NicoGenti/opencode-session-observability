@@ -32,7 +32,7 @@ import {
   resolveLayout,
   type StatisticsLayout,
 } from "./columns.ts";
-import { statusMark } from "./status.ts";
+import { recommendationsStatusLine, statusMark } from "./status.ts";
 import { formatStepRow } from "./stepRows.ts";
 import {
   createStatisticsState,
@@ -130,6 +130,9 @@ function Banner(props: {
         </text>
         <text fg={colorOf(props.palette, "text")}>
           {`Cost ${bannerMetric(props.totals?.cost, formatCost)}`}
+        </text>
+        <text fg={colorOf(props.palette, "text2")}>
+          {recommendationsStatusLine(props.totals?.recommendations ?? 0)}
         </text>
       </box>
     </box>

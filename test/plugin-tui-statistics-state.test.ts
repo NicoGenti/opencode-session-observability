@@ -4,10 +4,12 @@ import { join } from "node:path";
 
 import {
   LIVE_POLL_MS,
+  advisoryRecommendationCount,
   clampIndex,
   createStatisticsState,
   moveSelection,
 } from "../src/plugin/tui/statistics/state.ts";
+import { recommendationsStatusLine } from "../src/plugin/tui/statistics/status.ts";
 import { parseAnalysisResponse } from "../src/plugin/tui/analysisResponse.ts";
 import { isSettledAnalysis } from "../src/plugin/tui/polling.ts";
 import {
@@ -108,6 +110,62 @@ test("missing totals fall back to unavailable metrics and the turn count", async
   assert.equal(banner.totalContext.value, null);
   assert.equal(banner.totalContext.basis, "unavailable");
   assert.equal(banner.cost.value, null);
+  assert.equal(banner.recommendations, 0);
+});
+
+test("the banner counts only advisory recommendation rows", async () => {
+  const body = {
+    session: { id: SESSION },
+    totals: {},
+    turns: [{ id: "t1", index: 1, steps: [] }],
+    recommendations: {
+      rows: [
+        { id: "split-task:fact", kind: "fact", severity: "info" },
+        { id: "split-task:hypothesis", kind: "hypothesis", severity: "advisory" },
+        { id: "reuse-subagent:fact", kind: "fact", severity: "info" },
+        { id: "reuse-subagent:hypothesis", kind: "hypothesis", severity: "advisory" },
+      ],
+      basisNotes: [],
+    },
+  };
+  const { client } = fakeClient(() => ({ output: { analysis: body } }));
+  const state = createStatisticsState(client);
+
+  await state.fetchAnalysis(SESSION);
+
+  const banner = state.totals();
+  assert.ok(banner);
+  assert.equal(banner.recommendations, 2);
+  assert.equal(advisoryRecommendationCount(state.analysis()), 2);
+  assert.equal(recommendationsStatusLine(banner.recommendations), "Recommendations: 2 advisory");
+});
+
+test("a missing or malformed recommendation rider reads as zero", async () => {
+  const cases: Array<{ rider: unknown; expected: number }> = [
+    { rider: undefined, expected: 0 },
+    { rider: null, expected: 0 },
+    { rider: { rows: "nope" }, expected: 0 },
+    { rider: { rows: [{ id: "x" }] }, expected: 0 },
+    { rider: { rows: [{ severity: "advisory" }] }, expected: 1 },
+  ];
+  for (const entry of cases) {
+    const body = {
+      session: { id: SESSION },
+      totals: {},
+      turns: [{ id: "t1", index: 1, steps: [] }],
+      recommendations: entry.rider,
+    };
+    const { client } = fakeClient(() => ({ output: { analysis: body } }));
+    const state = createStatisticsState(client);
+
+    await state.fetchAnalysis(SESSION);
+
+    const banner = state.totals();
+    assert.ok(banner);
+    assert.equal(banner.recommendations, entry.expected);
+  }
+  assert.equal(advisoryRecommendationCount(null), 0);
+  assert.equal(advisoryRecommendationCount(undefined), 0);
 });
 
 test("fetchAnalysis surfaces a malformed response as an error state", async () => {
