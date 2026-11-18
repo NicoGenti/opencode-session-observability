@@ -40,7 +40,7 @@
             <button type="button" data-view-mode-option="advanced" aria-pressed="false">Advanced</button>
           </div>
           <button id="refresh" class="btn ghost" type="button" title="Reload the session">Refresh</button>
-          <label class="switch" title="Reload every 10 seconds while visible">
+          <label class="switch" title="Follow the session every 5 seconds while visible">
             <input id="live-toggle" type="checkbox"> Live
           </label>
           <button id="reveal-toggle" class="btn ghost danger" type="button" aria-pressed="false">Reveal secrets</button>
@@ -71,6 +71,8 @@
         <button id="compare-btn" class="btn ghost" type="button" disabled title="Compare two diagnostic episodes side by side">Compare episodes</button>
         <button id="shortcuts-btn" class="btn ghost" type="button" title="Keyboard shortcuts (?)">Shortcuts</button>
       </nav>
+
+      <div id="live-warnings" class="live-warnings" role="status" aria-live="polite" hidden></div>
 
       <section id="view" class="view" role="tabpanel" aria-live="polite"></section>
     </main>

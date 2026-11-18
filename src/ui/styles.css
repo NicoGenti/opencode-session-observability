@@ -568,6 +568,39 @@ code, pre, .mono { font-family: var(--mono); }
 }
 .health-disclaimer { margin: 8px 0 0; }
 
+/* -------------------------------------------------------------- live mode */
+
+/* Liveness badge: state is text; warning is only a border/tint on the live
+   variant, never the text colour. Incomplete keeps the dashed uncertain cue. */
+.live-badge {
+  display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  padding: 3px 9px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--surface);
+  color: var(--text); font-size: 12px;
+}
+.live-badge-live {
+  border-color: color-mix(in srgb, var(--warning) 70%, transparent);
+  background: color-mix(in srgb, var(--warning) 16%, var(--surface));
+}
+.live-badge-incomplete { border-style: dashed; color: var(--text-2); }
+.live-badge-historical { color: var(--text-2); }
+.live-badge-state { font-weight: 600; }
+.live-badge-basis { color: var(--text-2); font-size: 11px; }
+.live-stale {
+  border: 1px dashed var(--warning); border-radius: 999px; padding: 1px 6px;
+  background: var(--surface-2); color: var(--text); font-size: 11px;
+}
+.live-warnings { margin: 0; }
+.live-warnings-section {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); padding: 10px 12px; margin-bottom: 10px;
+}
+.live-warnings-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.live-warnings-title { margin: 0; font-size: 13px; font-weight: 600; }
+.live-warnings-list { margin-top: 8px; }
+.live-warning { border-left: 3px solid var(--warning); }
+.live-warnings-note { margin: 8px 0 0; }
+
 /* --------------------------------------------------------------- drawer */
 
 .backdrop {
