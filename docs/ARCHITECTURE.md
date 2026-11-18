@@ -47,6 +47,7 @@ flowchart LR
 | Metrics | `core/metrics.ts` | Pure formulas for prompt tokens, cache hit rate, durations, residual, speed, context delta. |
 | Diagnostics | `core/diagnostics.ts` | Pure, deterministic recovery rules over the recorded event order; incident anchors and contextual footprint metrics. No I/O and no writes. |
 | Health | `core/health.ts` | Pure, deterministic session-health evaluator over an `Analysis`: seven rules plus the sufficiency gate and three-state mapping. Reads `Analysis.diagnostics` (so it attaches after diagnostics) and rides `analysis.health`. No I/O and no writes. |
+| Live | `core/live.ts` | Pure derivation of a compact `LiveSnapshot` from an `Analysis`: liveness state, the open turn, the five operational health warnings, the `since` event tail and the `lastTurns` window. Never a second rule engine and never a new compute site. |
 | Episodes | `core/episodes.ts` | Pure enumeration of addressable diagnostic episodes: one per incident, with a stable id plus the turn/tool identity and every diagnostic verdict copied verbatim. Never re-sorts and never compares. |
 | Episode comparison | `core/episodeCompare.ts` | Pure, descriptive alignment of two episodes by recorded ordinal (`left - right`); a missing attempt becomes a one-sided row and no DTO field names a winner, an optimum or a recommendation. |
 | Delegation recovery | `core/delegation.ts` | Pure assessment of a parent session and its direct children: recorded delegation links, child failure evidence, parent reaction classification and labelled recovery patterns. No I/O and no writes. |
@@ -120,6 +121,7 @@ See [METRICS.md](METRICS.md).
 - mirrors turn ids onto the full event stream used by detail/list endpoints;
 - computes diagnostics once over that same event stream and attaches them to the analysis payload;
 - computes session health once over that same analysis (after diagnostics attach) and attaches it as `analysis.health`;
+- derives the live snapshot on demand (`liveSnapshot`): the same cached dataset, a pure re-shape, redacted like `analyze`; it never clears the cache;
 - computes the delegation recovery family view on demand (`familyRecovery`): the parent and each direct child are loaded full-range, the direct children are assessed (cap 8) and the result is returned as its own DTO — it is part of neither `Analysis` nor the dataset payload — and served only by `GET /api/sessions/{id}/family-recovery`;
 - redacts (unless reveal is explicitly allowed);
 - applies filters and keyset pagination;
@@ -127,6 +129,10 @@ See [METRICS.md](METRICS.md).
 - exports.
 
 It caches a dataset for ~4 seconds, keyed by `session.time.updated`, message count, sequence range and window flag. This avoids repeating the projection for the analysis + event page + detail requests while keeping live sessions fresh.
+
+### Live snapshot
+
+`GET /api/sessions/{id}/live` is a GET-only route beside `analysis` and `events`. `ObservabilityService.liveSnapshot` loads the same requestKey-coherent dataset, so a moving `session.time.updated` is what makes an in-progress session fresh; the route never calls `clearCache`. `deriveLiveSnapshot` is pure: it reads `analysis.turns`, `analysis.events`, `analysis.coverage` and `analysis.health.rules`, and returns `state` (`running`/`idle`/`ended`/`unknown`), `openTurn`, the five operational warnings, `coverage`, `totalInSession`, an optional `newEvents` page capped at `MAX_NEW_EVENTS = 50` and an optional `turnWindow`. Warnings are the already-computed health rules (`retry-count`, `tool-failure-recurrence`, `context-growth`, `low-cache-hit`, `cost-per-turn`; `unfinished-outcome` excluded) re-read per poll — never a second rule engine, never persisted and never part of `Analysis`. The snapshot passes through `redactValue` unless reveal is allowed, exactly like `analyze`.
 
 ### Event paging
 
@@ -173,6 +179,7 @@ Redaction parity: diagnostics are plain DTO fields, so `redactValue(analysis).di
 - Advanced Statistics adds a Table / Charts sub-tab. The sub-tab is renderer state, not a route; the charts project the same `state.analysis` the table renders, with no extra fetch and no re-paging.
 - `ui/charts-data.js` turns that analysis into chart series: per-turn context (latest or cumulative), five-segment token stacks, cost grouped by the model derived from steps, per-step duration segments, compaction placement, and the window-scope caption. It is pure, has no DOM, and imports only `ui/format.js`.
 - `ui/charts.js` holds the DOM-free SVG string builders for the four charts: token-only paint, a `<title>` and accessible label per datum, optional drill attributes, and the "Chart data" button list that the existing statistics binding loops route to `jumpToEvent`. It imports only `ui/format.js`; both modules are plain browser ESM with no `src/core` import and no build step.
+- `ui/live.js` holds the DOM-free live badge and warning builders (imports `ui/format.js` only). The badge text distinguishes `Live — recording`, `Incomplete — no terminal outcome` and `Historical — recording complete`; warning rows reuse the `.health-rule` rhythm with `data-event-id` drills. While the Live toggle is on, `ui/app.js` polls the live endpoint every 5 s, re-renders the badge and warnings, and calls `refreshCurrent()` only when the open turn changes, `totalInSession` grows or the state moves; a failed poll keeps the previous frame with a `stale, retrying` marker.
 - `ui/markdown.js` renders a safe Markdown subset (raw HTML is escaped first).
 - Scroll preservation is a pure helper (`core/paging.ts`, mirrored in `ui/paging.js`) and is tested.
 

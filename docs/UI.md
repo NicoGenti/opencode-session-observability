@@ -178,6 +178,18 @@ The final row is labelled **Session total** when the loaded range covers the who
 
 On desktop, the `#`, Trigger and Status columns stay visible while the 19-column table scrolls horizontally. The frozen columns are released below 700 px so the narrow layout keeps its scroll area.
 
+## Live mode
+
+The Live toggle in the header follows an in-progress session without replacing the retrospective views. Turning it on polls `GET /api/sessions/{id}/live?since=<orderKey>` every 5 seconds while the tab is visible; the rest of the UI keeps its existing full loads.
+
+- **Badge** — in the session header, with the `derived` basis and the snapshot's `asOf` time. `Live — recording` uses a warning border/tint; `Incomplete — no terminal outcome` (covers `idle` and `unknown`) keeps the dashed uncertain treatment; `Historical — recording complete` is neutral. Colour never carries the state alone.
+- **Warnings** — the five triggered operational health rules (`retry-count`, `tool-failure-recurrence`, `context-growth`, `low-cache-hit`, `cost-per-turn`; `unfinished-outcome` is excluded) listed above the active pane in both Trajectory and Statistics. Each row keeps its level, deterministic note and capped `data-event-id` links that jump to the event in Trajectory. They are re-derived on every poll and never persisted or exported.
+- **Incremental work** — the badge and warnings update on every tick, but the heavy reload (`refreshCurrent()`) runs only when the open turn changes, `totalInSession` grows or the liveness state changes.
+- **Stale frame** — a failed poll (including the `503 database_busy` mapping) keeps the previous frame and adds a `stale, retrying` marker; the next successful tick clears it.
+- `since` is the last `orderKey` the page has seen, so the response only carries the event tail (capped at 50 entries). Live liveness is derived from recorded session timestamps, not streamed.
+
+The native TUI panels re-fetch their existing `analysis` RPC on the same 5 second cadence while open; they add no live-specific RPC and never enqueue prompts.
+
 ## Episode comparison
 
 `Compare episodes` in the session tabs opens the `#compare` modal. Each side picks a session (the current session, its parent or a child) and one diagnostic episode — one tool's failure run within one turn, together with any recorded recovery. The modal aligns the two episodes by recorded ordinal: attempt 1 with attempt 1, attempt 2 with attempt 2, and so on, so a missing attempt stays visible as a one-sided row instead of shifting later attempts. When a side records a recovery, one trailing recovery row is aligned after the attempts; differing tools, attempt counts and recovery states are named per side.
