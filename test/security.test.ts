@@ -16,19 +16,12 @@ import {
   RATE_LIMIT_BURST,
   RATE_LIMIT_REFILL_PER_MINUTE,
   createObservabilityServer,
-  errorBody,
 } from "../src/server/http.ts";
 import {
   openCodeThemeReadCount,
   resetOpenCodeThemeCache,
 } from "../src/server/opencode-theme.ts";
-import {
-  EpisodeNotFoundError,
-  EventNotFoundError,
-  ObservabilityService,
-  SessionNotFoundError,
-} from "../src/core/service.ts";
-import { UnsupportedSchemaError } from "../src/core/adapters/sqlite.ts";
+import { ObservabilityService } from "../src/core/service.ts";
 import { preview, redactString, redactValue } from "../src/core/util.ts";
 // @ts-expect-error - plain browser module without type declarations
 import { renderMarkdown } from "../src/ui/markdown.js";
@@ -310,52 +303,156 @@ test("error responses are generic JSON and never echo the request", async () => 
   }
 });
 
-test("every mapped error carries a fixed message, never the exception text", () => {
-  const secretPath = "C:\\Users\\alice\\.local\\share\\opencode\\opencode.db";
-  assert.deepEqual(errorBody(new Error(`read ${secretPath} failed`)), {
-    status: 500,
-    code: "internal_error",
-    message: "Internal error.",
-  });
-
-  const unsupported = errorBody(
-    new UnsupportedSchemaError(`Unrecognized database at ${secretPath}.`),
+test("every error response body is a literal pinned to the reviewed table", async () => {
+  const source = await readFile(
+    new URL("../src/server/http.ts", import.meta.url),
+    "utf8",
   );
-  assert.equal(unsupported.status, 500);
-  assert.equal(unsupported.code, "unsupported_schema");
-  assert.doesNotMatch(unsupported.message, /opencode\.db|alice/);
+  const block = handleCatchBlock(source);
 
-  const missing = errorBody(
-    new SessionNotFoundError("<script>alert(1)</script>"),
+  // Each branch pairs an identity test with a constant status and body, in the
+  // documented order. Nothing here reads the exception, so an exception that
+  // carries an absolute path or markup has nowhere to put it.
+  const branches = [
+    ...block.matchAll(
+      /error instanceof (\w+)\)\s*\{\s*sendJson\(\s*req,\s*res,\s*(\d{3}),\s*\{\s*error:\s*"([a-z_]+)",\s*message:\s*"([^"]*)",?\s*\}\s*\);/g,
+    ),
+  ].map((match) => ({
+    type: match[1],
+    status: Number(match[2]),
+    body: JSON.stringify({ error: match[3], message: match[4] }),
+  }));
+
+  assert.deepEqual(branches, [
+    {
+      type: "SessionNotFoundError",
+      status: 404,
+      body: '{"error":"session_not_found","message":"Session not found."}',
+    },
+    {
+      type: "EventNotFoundError",
+      status: 404,
+      body: '{"error":"event_not_found","message":"Event not found."}',
+    },
+    {
+      type: "EpisodeNotFoundError",
+      status: 404,
+      body: '{"error":"episode_not_found","message":"Episode not found."}',
+    },
+    {
+      type: "DatabaseBusyError",
+      status: 503,
+      body: '{"error":"database_busy","message":"The OpenCode database is locked. Retry when the session is idle."}',
+    },
+    {
+      type: "UnsupportedSchemaError",
+      status: 500,
+      body: '{"error":"unsupported_schema","message":"The database schema is not supported by this build."}',
+    },
+    {
+      type: "URIError",
+      status: 400,
+      body: '{"error":"invalid_path","message":"Malformed request path."}',
+    },
+    {
+      type: "SyntaxError",
+      status: 400,
+      body: '{"error":"invalid_query","message":"Invalid request."}',
+    },
+  ]);
+
+  // The fallback is the one generic body; the last send in the block is it.
+  const fallback = block.slice(block.lastIndexOf("sendJson("));
+  assert.match(
+    fallback,
+    /^sendJson\(\s*req,\s*res,\s*500,\s*\{\s*error:\s*"internal_error",\s*message:\s*"Internal error\.",?\s*\}\s*\);/,
   );
-  assert.equal(missing.status, 404);
-  assert.equal(missing.code, "session_not_found");
-  assert.doesNotMatch(missing.message, /script|alert/);
+  assert.doesNotMatch(block, /opencode\.db|alice|SECRET/);
+});
 
-  const missingEvent = errorBody(
-    new EventNotFoundError("<script>alert(1)</script>"),
-  );
-  assert.equal(missingEvent.status, 404);
-  assert.equal(missingEvent.code, "event_not_found");
-  assert.doesNotMatch(missingEvent.message, /script|alert/);
-
-  const missingEpisode = errorBody(
-    new EpisodeNotFoundError("<script>alert(1)</script>"),
-  );
-  assert.equal(missingEpisode.status, 404);
-  assert.equal(missingEpisode.code, "episode_not_found");
-  assert.doesNotMatch(missingEpisode.message, /script|alert/);
-
-  for (const mapped of [
-    errorBody(new EventNotFoundError("<script>alert(1)</script>")),
-    errorBody(new EpisodeNotFoundError("<script>alert(1)</script>")),
-    errorBody(new URIError("Failed to decode param '%'")),
-    errorBody(new SyntaxError(`Unexpected token < in ${secretPath}`)),
-    errorBody("a bare string"),
-    errorBody(undefined),
-  ]) {
-    assert.match(mapped.message, /^[A-Z][^<>]*\.$/, mapped.message);
+test("an unknown exception from a route becomes a fixed 500 body", async () => {
+  // A subclass no branch tests for, carrying a marker that must not reach the
+  // wire even though the object does travel into the catch block.
+  class UnknownRouteFailure extends Error {
+    constructor() {
+      super("SECRET-FAILURE-MARKER at C:\\Users\\alice\\.local\\share");
+      this.name = "UnknownRouteFailure";
+    }
   }
+
+  const { path } = writeFixtureDb(simpleFixture());
+  const server = await createObservabilityServer({ dbPath: path, port: 0 });
+  try {
+    server.service.listSessions = async () => {
+      throw new UnknownRouteFailure();
+    };
+    const response = await request(server.port, "/api/sessions");
+    assert.equal(response.status, 500);
+    assert.equal(
+      response.body,
+      '{"error":"internal_error","message":"Internal error."}',
+    );
+    assert.doesNotMatch(response.body, /SECRET-FAILURE-MARKER|alice/);
+  } finally {
+    await server.close();
+  }
+});
+
+test("the error catch block consumes the exception only through instanceof", async () => {
+  const source = await readFile(
+    new URL("../src/server/http.ts", import.meta.url),
+    "utf8",
+  );
+  const block = handleCatchBlock(source);
+
+  // Every occurrence of the binding is either the catch parameter or an
+  // `instanceof` test. Comments and string literals are removed first: the wire
+  // bodies spell the `error` field name, and one message ends with the word
+  // "error.", but neither names the exception. Counting what is left is the
+  // tight assertion, because a property read, a string conversion or an
+  // interpolation would add an occurrence that neither form covers.
+  const code = block
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/\/\/[^\r\n]*/g, "");
+  const named = [...code.matchAll(/\berror\b(?!\s*:)/g)].length;
+  const identityTests = [
+    ...block.matchAll(/error instanceof (\w+)/g),
+  ].map((match) => match[1]);
+  assert.equal(named, identityTests.length + 1, code);
+  assert.match(block, /catch \(error\) \{/);
+  assert.deepEqual(identityTests, [
+    "SessionNotFoundError",
+    "EventNotFoundError",
+    "EpisodeNotFoundError",
+    "DatabaseBusyError",
+    "UnsupportedSchemaError",
+    "URIError",
+    "SyntaxError",
+  ]);
+  // No call receives the exception: only the catch declaration names it.
+  assert.doesNotMatch(code.replace("catch (error) {", ""), /\w+\(\s*error\b/);
+  // No property access, no string conversion, no template interpolation.
+  assert.doesNotMatch(code, /\berror\s*[.[]/);
+  assert.doesNotMatch(code, /String\s*\(|toString|JSON\.stringify/);
+  assert.doesNotMatch(block, /\$\{/);
+
+  // The bodies are constants, and the response-committed guard from the
+  // earlier review still runs before anything can be written.
+  for (const literal of [
+    "session_not_found",
+    "database_busy",
+    "Internal error.",
+  ]) {
+    assert.ok(block.includes(literal), literal);
+  }
+  assert.match(
+    block,
+    /if \(\s*res\.headersSent\s*\) \{\s*try \{\s*res\.end\(\);\s*\} catch \{[\s\S]*?\}\s*return;\s*\}/,
+  );
+  assert.ok(
+    block.indexOf("res.headersSent") < block.indexOf("instanceof"),
+    "the guard must run before the chain",
+  );
 });
 
 test("oversized request bodies are rejected before they are buffered", async () => {
@@ -926,6 +1023,33 @@ async function uiAppSource(): Promise<string> {
 
 async function uiFormatSource(): Promise<string> {
   return readFile(new URL("../src/ui/format.js", import.meta.url), "utf8");
+}
+
+/**
+ * The `catch (error)` block of `handle()`, brace-matched from its opening `{`.
+ * Anchored on the handler declaration so the server's other catch blocks (the
+ * request-error sink at the end of the file, the file-open path) can never be
+ * picked up by mistake.
+ */
+function handleCatchBlock(source: string): string {
+  const handler = source.indexOf("const handle = async (req: IncomingMessage");
+  assert.ok(handler >= 0, "handle() not found");
+  const catchAt = source.indexOf("} catch (error) {", handler);
+  assert.ok(catchAt >= 0, "handle() error catch not found");
+  const handlerEnd = source.slice(catchAt).search(/\r?\n {4}\}\r?\n {2}\};/);
+  assert.ok(handlerEnd >= 0, "the extracted catch escapes handle()");
+  const declarationStart = source.indexOf("catch", catchAt);
+  const open = source.indexOf("{", catchAt);
+  let depth = 0;
+  for (let index = open; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(declarationStart, index + 1);
+    }
+  }
+  assert.fail("unterminated catch block");
 }
 
 /**

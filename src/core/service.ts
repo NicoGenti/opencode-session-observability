@@ -582,8 +582,7 @@ export class ObservabilityService {
         });
       } catch (error) {
         // Only a missing child session degrades into the synthetic child;
-        // storage/schema/data failures must reach `errorBody` as 503/500
-        // instead of being reported as an insufficient-data child.
+        // storage/schema/data failures must reach server/http.ts's fixed 503/500 catch bodies
         if (!(error instanceof SessionNotFoundError)) throw error;
         notes.push(`child ${child.id}: child load unavailable`);
         children.push(this.emptyChildInput(child, parentDataset.family));
