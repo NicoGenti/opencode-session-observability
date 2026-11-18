@@ -51,6 +51,7 @@ flowchart LR
 | Episodes | `core/episodes.ts` | Pure enumeration of addressable diagnostic episodes: one per incident, with a stable id plus the turn/tool identity and every diagnostic verdict copied verbatim. Never re-sorts and never compares. |
 | Episode comparison | `core/episodeCompare.ts` | Pure, descriptive alignment of two episodes by recorded ordinal (`left - right`); a missing attempt becomes a one-sided row and no DTO field names a winner, an optimum or a recommendation. |
 | Delegation recovery | `core/delegation.ts` | Pure assessment of a parent session and its direct children: recorded delegation links, child failure evidence, parent reaction classification and labelled recovery patterns. No I/O and no writes. |
+| Attribution | `core/attribution.ts` | Pure per-turn attribution of files, shell command names and delegated subtasks, with measured/derived/unavailable bases. Reads recorded tool calls only; patch text and full command lines never enter the DTO. Rides `analysis.attribution`. |
 | Service | `core/service.ts` | Load a dataset, cache briefly, compute diagnostics once, redact, filter, keyset-page, detail, export. |
 | Presentation | `server/http.ts`, `server/auth.ts`, `server/token-file.ts`, `ui/*` | Local HTTP API, access token, static UI, view state. |
 | Integration | `plugin/index.ts`, `rpc.ts`, `service.ts`, `tui.ts`, `tui.tsx` | OpenCode 2 server RPC + TUI commands; `tui.tsx` is a typechecked-only OpenTUI scaffold (`NativeObservabilityView`), not bundled. |
@@ -121,6 +122,7 @@ See [METRICS.md](METRICS.md).
 - mirrors turn ids onto the full event stream used by detail/list endpoints;
 - computes diagnostics once over that same event stream and attaches them to the analysis payload;
 - computes session health once over that same analysis (after diagnostics attach) and attaches it as `analysis.health`;
+- computes task/file/command attribution once over that same analysis (after health) and attaches it as `analysis.attribution`, only when at least one turn records a file, a shell command or a delegated subtask;
 - derives the live snapshot on demand (`liveSnapshot`): the same cached dataset, a pure re-shape, redacted like `analyze`; it never clears the cache;
 - computes the delegation recovery family view on demand (`familyRecovery`): the parent and each direct child are loaded full-range, the direct children are assessed (cap 8) and the result is returned as its own DTO — it is part of neither `Analysis` nor the dataset payload — and served only by `GET /api/sessions/{id}/family-recovery`;
 - redacts (unless reveal is explicitly allowed);

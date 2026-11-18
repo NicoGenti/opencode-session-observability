@@ -96,7 +96,7 @@ Each card shows the tool, a recovery badge, `Turn N`, the projected trigger, **O
 
 One row per turn. The first click expands steps; clicking a step expands its detail row. Expanded step rows use the same column meanings as turns; nested step counts and per-step context delta are unavailable and marked `—`.
 
-Advanced-only (web app, Advanced view): the **Table / Charts** segmented control and all four charts, the **Session health** badge and rules breakdown, and the **Copy LLM review prompt** / **Copy raw session digest** buttons. Basic mode renders the turn table, headline filters and diagnostics but none of those surfaces; `renderStatisticsBasic()` carries no health markup. Charts and health live in the browser Statistics view only; the native TUI panel stays at the dense turn table.
+Advanced-only (web app, Advanced view): the **Table / Charts** segmented control and all four charts, the **Session health** badge and rules breakdown, the **Task and file attribution** section, and the **Copy LLM review prompt** / **Copy raw session digest** buttons. Basic mode renders the turn table, headline filters and diagnostics but none of those surfaces; `renderStatisticsBasic()` carries no health markup. Charts and health live in the browser Statistics view only; the native TUI panel stays at the dense turn table.
 
 <p>
   <img src="screenshots/statistics-advanced-dark.png" alt="Statistics view in Advanced mode with the Session health badge" width="48%">
@@ -145,6 +145,20 @@ Advanced Statistics only: a **Session health** badge sits in the statistics tool
 Insufficient sessions show their sufficiency reasons at the top of the breakdown (`no turns were recorded`, windowed coverage, or neither token usage nor cost recorded). The badge `title`/`aria-label` and the breakdown header carry the standing copy "Derived signal from recorded observability data — not a quality judgment." and the footer repeats it. No numeric score is computed, stored or displayed, and the word "score" never appears. The Basic renderer and `renderStatisticsBasic()` contain no health markup.
 
 Rules, thresholds, the sufficiency gate and the state mapping are documented in full in [HEALTH.md](HEALTH.md); the UI mirrors the same rule ids and thresholds.
+
+### Task and file attribution
+
+Advanced Statistics only, below the table/charts block and above the basis legend, and only when `analysis.attribution` is present: a session with no file, command or subtask signal renders no section at all. The header carries the provenance rail "Paths measured · cost shares derived · commits unavailable".
+
+One card per attributed turn shows its recorded index, its trigger label (`User message`, `Delegated prompt`, …) and capped evidence links, then:
+
+- **Files** — up to 12 rows with the path, the read/write counts, and the derived per-file cost share carrying its `D` mark and the even-allocation note in the tooltip. A file whose steps recorded no cost reads `—`, never `$0`.
+- **Commands** — up to 8 rows by first token plus `×count`. The full command line is never sent to the browser.
+- **Subtasks** — up to 8 recorded child sessions, labelled with their delegated agent.
+
+Every row drills through the existing bindings: a file or command links to its tool-call event (`data-event-id`, routed by `bindStatistics()` to `jumpToEvent()`), and a subtask opens the child session (`data-session-id` → `selectSession()`). No new binding is introduced.
+
+A fixed standing row reads "Commit linkage unavailable: the session database records no git data." followed by the DTO's remaining basis notes. Basic mode renders no attribution markup (`renderStatisticsBasic()` carries none), and the native TUI panel has no attribution surface.
 
 ### Advanced copy actions (LLM review handoff)
 
