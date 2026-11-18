@@ -270,6 +270,16 @@ test("HTTP analysis validates the closed gr.* contract", async () => {
       ["gr.elapsedMinutes", "-0.1"],
       ["gr.unknownBudget", "1"],
       ["gr.", "1"],
+      // Plain decimals only: hex, exponents, signs and padded values.
+      ["gr.tokensTotal", "0x10"],
+      ["gr.costTotal", "1e3"],
+      ["gr.retries", "+5"],
+      ["gr.contextRun", " 12 "],
+      // Count budgets must be whole numbers; cost and minutes need not be.
+      ["gr.retries", "1.5"],
+      ["gr.toolFailures", "2.25"],
+      ["gr.tokensTotal", "3.5"],
+      ["gr.contextRun", "0.5"],
     ] as const;
     for (const [key, value] of invalid) {
       const response = await fetch(
@@ -281,6 +291,12 @@ test("HTTP analysis validates the closed gr.* contract", async () => {
       const body = (await response.json()) as any;
       assert.equal(body.error, "invalid_guardrails");
     }
+
+    // Fractional cost and elapsed budgets are legitimate.
+    const fractional = await fetch(
+      `${base}/api/sessions/ses_tools/analysis?gr.costTotal=12.75&gr.elapsedMinutes=1.5`,
+    );
+    assert.equal(fractional.status, 200);
 
     // The documented upper bounds are inclusive.
     const bounds = await fetch(
@@ -301,7 +317,25 @@ test("HTTP analysis validates the closed gr.* contract", async () => {
   });
 });
 
-test("HTTP analysis gates the guardrail sibling behind reveal", async () => {
+test("HTTP analysis rejects a duplicated gr.* parameter instead of first-wins", async () => {
+  await withServer(toolsFixture(), async (base) => {
+    const duplicated = [
+      "gr.retries=5&gr.retries=abc",
+      "gr.retries=5&gr.retries=6",
+      "gr.costTotal=1&gr.costTotal=1",
+      "gr.elapsedMinutes=1&gr.tokensTotal=2&gr.elapsedMinutes=2",
+    ];
+    for (const query of duplicated) {
+      const response = await fetch(
+        `${base}/api/sessions/ses_tools/analysis?${query}`,
+      );
+      assert.equal(response.status, 400, query);
+      assert.equal(((await response.json()) as any).error, "invalid_guardrails");
+    }
+  });
+});
+
+test("the guardrail sibling carries no payload text", async () => {
   await withServer(secretsFixture(), async (base) => {
     const redactedResponse = await fetch(
       `${base}/api/sessions/ses_secrets/analysis?gr.tokensTotal=1`,

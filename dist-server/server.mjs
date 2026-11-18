@@ -6110,8 +6110,21 @@ var DEFAULT_GUARDRAILS = Object.freeze({
 	toolFailures: 5,
 	elapsedMinutes: 60
 });
-/** Largest accepted `elapsedMinutes` budget; mirrored by the GET contract. */
-var MAX_ELAPSED_MINUTES = 1e5;
+/**
+* The largest accepted value per budget. This table is the single source of
+* truth: the GET `gr.*` contract validates against it, the browser settings
+* panel mirrors it as a frozen literal and a test pins the mirror field for
+* field, so a client and the server can never disagree on a bound.
+*/
+var GUARDRAIL_MAX = Object.freeze({
+	tokensTotal: 0xe8d4a51000,
+	costTotal: 0xe8d4a51000,
+	contextRun: 0xe8d4a51000,
+	retries: 0xe8d4a51000,
+	toolFailures: 0xe8d4a51000,
+	elapsedMinutes: 1e5
+});
+GUARDRAIL_MAX.elapsedMinutes;
 var LABELS = Object.freeze({
 	"tokens-total": "Token budget",
 	"cost-total": "Cost budget",
@@ -6471,53 +6484,67 @@ function numericParam(search, name) {
 		invalid: false
 	};
 }
-/** The closed `gr.*` vocabulary: one bounded budget per query parameter. */
+/**
+* The closed `gr.*` vocabulary: one bounded budget per query parameter. The
+* bounds come from `GUARDRAIL_MAX`, the same table the browser panel mirrors.
+*/
 var GUARDRAIL_PARAM_SPECS = [
 	{
 		name: "tokensTotal",
-		key: "tokensTotal",
-		max: 0xe8d4a51000
+		key: "tokensTotal"
 	},
 	{
 		name: "costTotal",
-		key: "costTotal",
-		max: 0xe8d4a51000
+		key: "costTotal"
 	},
 	{
 		name: "contextRun",
-		key: "contextRun",
-		max: 0xe8d4a51000
+		key: "contextRun"
 	},
 	{
 		name: "retries",
-		key: "retries",
-		max: 0xe8d4a51000
+		key: "retries"
 	},
 	{
 		name: "toolFailures",
-		key: "toolFailures",
-		max: 0xe8d4a51000
+		key: "toolFailures"
 	},
 	{
 		name: "elapsedMinutes",
-		key: "elapsedMinutes",
-		max: MAX_ELAPSED_MINUTES
+		key: "elapsedMinutes"
 	}
 ];
+/** Count budgets are whole numbers; cost and elapsed minutes may be fractional. */
+var GUARDRAIL_INTEGER_KEYS = /* @__PURE__ */ new Set([
+	"tokensTotal",
+	"contextRun",
+	"retries",
+	"toolFailures"
+]);
+/** Plain decimal only: `0x10`, `1e3`, `+5` and `" 12 "` are all rejected. */
+var GUARDRAIL_NUMBER_PATTERN = /^\d+(\.\d+)?$/;
 Object.freeze(GUARDRAIL_PARAM_SPECS.map((spec) => `gr.${spec.name}`));
 /**
 * Reads the browser-owned guardrail budgets. The vocabulary is closed: an
-* unknown `gr.*` key is invalid instead of silently ignored, and every present
-* value must be a finite number inside its documented bound. Absent keys fall
-* back to `DEFAULT_GUARDRAILS`, so the evaluator stays stateless and the route
-* is still a pure function of the query.
+* unknown `gr.*` key is invalid instead of silently ignored, a key repeated in
+* the query is invalid instead of "first one wins", and every present value
+* must be a plain decimal inside its documented bound (and a whole number for
+* the count budgets). Absent keys fall back to `DEFAULT_GUARDRAILS`, so the
+* evaluator stays stateless and the route is still a pure function of the query.
 */
 function guardrailQuery(search) {
 	const thresholds = { ...DEFAULT_GUARDRAILS };
+	const seen = /* @__PURE__ */ new Set();
 	let present = false;
 	for (const key of search.keys()) {
 		if (!key.startsWith("gr.")) continue;
 		present = true;
+		if (seen.has(key)) return {
+			present,
+			invalid: true,
+			thresholds
+		};
+		seen.add(key);
 		const name = key.slice(3);
 		const spec = GUARDRAIL_PARAM_SPECS.find((entry) => entry.name === name);
 		if (!spec) return {
@@ -6525,9 +6552,25 @@ function guardrailQuery(search) {
 			invalid: true,
 			thresholds
 		};
-		const raw = search.get(key) ?? "";
-		const value = raw.trim() === "" ? NaN : Number(raw);
-		if (!Number.isFinite(value) || value < 0 || value > spec.max) return {
+		const values = search.getAll(key);
+		if (values.length !== 1) return {
+			present,
+			invalid: true,
+			thresholds
+		};
+		const raw = values[0] ?? "";
+		if (!GUARDRAIL_NUMBER_PATTERN.test(raw)) return {
+			present,
+			invalid: true,
+			thresholds
+		};
+		const value = Number(raw);
+		if (!Number.isFinite(value) || value < 0 || value > GUARDRAIL_MAX[spec.key]) return {
+			present,
+			invalid: true,
+			thresholds
+		};
+		if (GUARDRAIL_INTEGER_KEYS.has(spec.key) && !Number.isInteger(value)) return {
 			present,
 			invalid: true,
 			thresholds
