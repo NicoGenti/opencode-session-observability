@@ -141,6 +141,10 @@ The `error-rate` rule divides by `totals.steps` — **all recorded steps**, not 
 
 UI copy always says **Session health**, so the two are never visually confused. The badge never uses the word "score".
 
+## Recommendations are not health
+
+`analysis.recommendations` ([RECOMMENDATIONS.md](RECOMMENDATIONS.md)) is a separate rider. It may restate a triggered health rule as a fact row, but it never changes the health verdict, never adds a rule to `HEALTH_RULES`, and health never reads it. Recommendations carry no state, no level and no score — only `severity: "info" | "advisory"` — and they are attached after health in `loadDataset`. Tuning a health threshold does not tune a recommendation bound, and vice versa.
+
 ## Tuning policy
 
 Thresholds are documented heuristics (user-approved 2026-11-17). A threshold change is a **code + docs change in the same commit**: update the exported constant in `HEALTH_RULES` (`src/core/health.ts`) and the matching number in this file together. Tests assert against the exported constants, so changing a constant without its doc (or vice versa) breaks the test gate. No per-user threshold settings and no auto-tuning exist.

@@ -162,6 +162,14 @@ Every row drills through the existing bindings: a file or command links to its t
 
 A fixed standing row reads "Commit linkage unavailable: the session database records no git data." followed by the DTO's remaining basis notes. Basic mode renders no attribution markup (`renderStatisticsBasic()` carries none), and the native TUI panel has no attribution surface.
 
+### Recommendations
+
+Advanced Statistics only, below task attribution and above the basis legend, and only when `analysis.recommendations` is present: a session with nothing to suggest renders no section at all. The header carries the fact/hypothesis counts and a provenance rail listing the source layers on screen (`Sources — health · attribution · …`); the footer repeats the standing line "Local and deterministic — derived from recorded data, never ranked." and lists the DTO's basis notes.
+
+Fact rows are plain cards with their kind chip, label, source layer and `data-event-id` evidence buttons. Hypothesis rows keep the **dashed uncertain treatment**, the same kind chip, and the copy `hypothesis — not a diagnosis`; they are advisories, never verdicts. Rows render in the DTO's fixed rule order — there is no sort control, no score and no "top" recommendation. Basic mode renders no recommendation markup, and the native TUI panel shows only the banner count (`Recommendations: N advisory`).
+
+The rules, thresholds and note templates are documented in full in [RECOMMENDATIONS.md](RECOMMENDATIONS.md).
+
 ### Advanced copy actions (LLM review handoff)
 
 Advanced Statistics only, web app. Two buttons sit in the statistics toolbar:
