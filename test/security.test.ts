@@ -1,11 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import { readFile } from "node:fs/promises";
 import { createObservabilityServer } from "../src/server/http.ts";
 import { ObservabilityService } from "../src/core/service.ts";
 import { preview, redactString, redactValue } from "../src/core/util.ts";
 // @ts-expect-error - plain browser module without type declarations
 import { renderMarkdown } from "../src/ui/markdown.js";
+// @ts-expect-error - plain browser module without type declarations
+import { downloadFilename, liveErrorDetail } from "../src/ui/app.js";
 import {
   BASE,
   assistant,
@@ -374,5 +377,127 @@ test("the analysis route delivers diagnostics without a schema change", async ()
     );
   } finally {
     await server.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// DOM-XSS sinks in src/ui/app.js (code-scanning alerts 1, 2 and 21)
+// ---------------------------------------------------------------------------
+
+async function uiAppSource(): Promise<string> {
+  return readFile(new URL("../src/ui/app.js", import.meta.url), "utf8");
+}
+
+/**
+ * One function's source. The slice stops right after the first `}` in column 0
+ * (tolerating CRLF), so a nested block or the next declaration cannot widen it.
+ */
+function uiFunctionBody(source: string, header: string): string {
+  const start = source.indexOf(header);
+  assert.ok(start >= 0, `${header} not found`);
+  let end = -1;
+  for (
+    let index = source.indexOf("\n}", start + header.length);
+    index !== -1;
+    index = source.indexOf("\n}", index + 2)
+  ) {
+    const after = source[index + 2];
+    if (after === undefined || after === "\n" || after === "\r") {
+      end = index + 2;
+      break;
+    }
+  }
+  return source.slice(start, end === -1 ? source.length : end);
+}
+
+test("the live poll error is appended as text, never interpolated into markup", async () => {
+  const renderLive = uiFunctionBody(await uiAppSource(), "function renderLive()");
+
+  // The error is collapsed to text and appended after the static template.
+  assert.match(renderLive, /liveErrorDetail\(state\.live\.staleError\)/);
+  assert.match(renderLive, /liveErrorDetail\(state\.liveError\)/);
+  assert.match(renderLive, /\.append\(` — \$\{detail\}`\)/);
+  // The markup template is built without the error field at all.
+  assert.match(renderLive, /\{ \.\.\.state\.live, staleError: undefined \}/);
+  assert.doesNotMatch(renderLive, /liveUnavailableHtml\(state\.liveError\)/);
+  assert.doesNotMatch(renderLive, /liveBadgeHtml\(state\.live\)/);
+
+  // A script payload stays a text node: nothing is escaped or interpreted.
+  const payload = "<script>alert(1)</script>";
+  assert.equal(liveErrorDetail(payload), payload);
+  assert.equal(liveErrorDetail(`  ${payload}\n`), payload);
+  // Whitespace collapse and the 90-character cap match the string builder.
+  assert.equal(liveErrorDetail(undefined), "");
+  assert.equal(liveErrorDetail("x".repeat(140)).length, 90);
+});
+
+test("the compare error body is built from DOM nodes, not markup", async () => {
+  const requestCompare = uiFunctionBody(
+    await uiAppSource(),
+    "async function requestCompare()",
+  );
+
+  assert.match(requestCompare, /document\.createElement\("p"\)/);
+  assert.match(requestCompare, /paragraph\.className = "compare-inline-error"/);
+  assert.match(requestCompare, /setAttribute\("role", "alert"\)/);
+  assert.match(requestCompare, /paragraph\.tabIndex = 0/);
+  assert.match(requestCompare, /paragraph\.textContent = message/);
+  assert.match(requestCompare, /dom\.compareBody\.replaceChildren\(paragraph\)/);
+  // The message must not be escaped into an HTML string any more.
+  assert.doesNotMatch(requestCompare, /escapeHtml\(\s*message/);
+  assert.doesNotMatch(
+    requestCompare,
+    /innerHTML = `<p class="compare-inline-error"/,
+  );
+});
+
+test("the export download name is validated before it reaches the anchor", async () => {
+  const exportCurrent = uiFunctionBody(
+    await uiAppSource(),
+    "async function exportCurrent(format)",
+  );
+
+  assert.match(exportCurrent, /const filename = downloadFilename\(/);
+  assert.match(exportCurrent, /downloadBlob\(filename, blob\)/);
+  // The document location must not feed the response that supplies the name.
+  assert.doesNotMatch(exportCurrent, /location\.origin/);
+  assert.doesNotMatch(exportCurrent, /const filename = parseFilename\(/);
+});
+
+test("download names keep the export route's shape and reject everything else", () => {
+  const json =
+    'attachment; filename="session-ses-simple-20260101T120000Z.json"';
+  const markdown = "attachment; filename=session-a-20260101T120000Z.md";
+  const digest =
+    'attachment; filename="session-a-20260101T120000Z-digest.md"';
+
+  assert.equal(
+    downloadFilename(json, "session.json"),
+    "session-ses-simple-20260101T120000Z.json",
+  );
+  assert.equal(
+    downloadFilename(markdown, "session.md"),
+    "session-a-20260101T120000Z.md",
+  );
+  assert.equal(
+    downloadFilename(digest, "session.md"),
+    "session-a-20260101T120000Z-digest.md",
+  );
+
+  const fallback = "session.md";
+  for (const hostile of [
+    "",
+    "   ",
+    "../session.md",
+    "..\\..\\session.md",
+    "/etc/passwd",
+    "a b.md",
+    '.hidden.md',
+    'session%22.md',
+    "session<script>alert(1)</script>.md",
+    `${"a".repeat(200)}.md`,
+  ]) {
+    const header = hostile ? `attachment; filename="${hostile}"` : null;
+    assert.equal(downloadFilename(header, fallback), fallback, hostile);
   }
 });

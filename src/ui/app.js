@@ -1120,6 +1120,21 @@ function renderHeader() {
 /** Last markup written to `#live-warnings`; identical markup is skipped. */
 let liveWarningsMarkup = null;
 
+/** Longest poll-error detail the live markers render, mirroring `live.js`. */
+const MAX_LIVE_ERROR_DETAIL = 90;
+
+/**
+ * The poll error as the live markers show it: one line, capped with an ellipsis.
+ * Kept in step with `shortText` in `live.js` so the DOM path and the string
+ * builders render the same words; a parity test pins the two together.
+ */
+export function liveErrorDetail(value) {
+  if (typeof value !== "string") return "";
+  const flat = value.replace(/\s+/g, " ").trim();
+  if (flat.length <= MAX_LIVE_ERROR_DETAIL) return flat;
+  return `${flat.slice(0, MAX_LIVE_ERROR_DETAIL - 1)}…`;
+}
+
 /**
  * Renders the live badge and the warning list from `state.live`. The badge
  * lives in the session header; the warning container sits above the active
@@ -1132,11 +1147,26 @@ let liveWarningsMarkup = null;
 function renderLive() {
   const slot = $("#live-badge-slot");
   if (slot) {
-    slot.innerHTML = state.live
-      ? liveBadgeHtml(state.live)
-      : state.liveError
-        ? liveUnavailableHtml(state.liveError)
-        : "";
+    // Both markers are static templates; the poll error is the only fragment
+    // that originates in an exception, so it is appended as a text node. No
+    // error string may reach an HTML sink: the escaped template is built from
+    // the snapshot with `staleError` removed, and the detail is inserted with
+    // DOM APIs (DOM-XSS alert #21 / issue #78).
+    if (state.live) {
+      const detail = liveErrorDetail(state.live.staleError);
+      slot.innerHTML = liveBadgeHtml(
+        detail ? { ...state.live, staleError: undefined } : state.live,
+      );
+      const marker = detail ? slot.querySelector(".live-stale") : null;
+      if (marker) marker.append(` — ${detail}`);
+    } else if (state.liveError) {
+      const detail = liveErrorDetail(state.liveError);
+      slot.innerHTML = liveUnavailableHtml();
+      const basis = detail ? slot.querySelector(".live-badge-basis") : null;
+      if (basis) basis.append(` — ${detail}`);
+    } else {
+      slot.replaceChildren();
+    }
   }
   if (!dom.liveWarnings) return;
   const warnings = state.live?.warnings ?? [];
@@ -2681,20 +2711,39 @@ function renderDrawer(event) {
 // Export / reveal / theme / shortcuts / live
 // ---------------------------------------------------------------------------
 
+/**
+ * The only filename alphabet the download anchor accepts. It covers every name
+ * the export route produces (`<slug>-<stamp>.json|.md|.html`) and nothing else:
+ * separators, quotes, control characters and markup fall back instead.
+ */
+const DOWNLOAD_FILENAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
+
+/**
+ * Resolves the `Content-Disposition` name to a value that can safely reach the
+ * download anchor. The header is response data, so only a conservative
+ * filename shape is accepted; anything else keeps the caller's local fallback.
+ * The anchor receives an attribute value, never markup (DOM-XSS alert #1 /
+ * issue #56).
+ */
+export function downloadFilename(disposition, fallback) {
+  const parsed = parseFilename(disposition, fallback);
+  return DOWNLOAD_FILENAME.test(parsed) ? parsed : fallback;
+}
+
 async function exportCurrent(format) {
   if (!state.sessionID) return;
   try {
-    const url = new URL(
-      `/api/sessions/${encodeURIComponent(state.sessionID)}/export`,
-      location.origin,
+    // Relative on purpose: the document location must not sit upstream of the
+    // export response whose filename ends up on the download anchor.
+    const params = new URLSearchParams({ format, includeEvents: "1" });
+    if (state.reveal) params.set("reveal", "1");
+    const response = await fetch(
+      `/api/sessions/${encodeURIComponent(state.sessionID)}/export?${params}`,
+      {
+        cache: "no-store",
+        headers: authHeaders(state.token),
+      },
     );
-    url.searchParams.set("format", format);
-    url.searchParams.set("includeEvents", "1");
-    if (state.reveal) url.searchParams.set("reveal", "1");
-    const response = await fetch(url, {
-      cache: "no-store",
-      headers: authHeaders(state.token),
-    });
     if (!response.ok) {
       const body = await response.json().catch(() => null);
       throw new ApiError(
@@ -2705,7 +2754,7 @@ async function exportCurrent(format) {
     }
     const blob = await response.blob();
     const fallback = `session.${format === "markdown" ? "md" : format}`;
-    const filename = parseFilename(
+    const filename = downloadFilename(
       response.headers.get("Content-Disposition"),
       fallback,
     );
@@ -3426,9 +3475,14 @@ async function requestCompare() {
     state.compareComparison = null;
     if (dom.compareBody) {
       const message = error instanceof Error ? error.message : String(error);
-      dom.compareBody.innerHTML = `<p class="compare-inline-error" role="alert" tabindex="0">${escapeHtml(
-        message,
-      )}</p>`;
+      // The exception text is rendered as a text node: the paragraph skeleton
+      // is the only markup (DOM-XSS alert #2 / issue #55).
+      const paragraph = document.createElement("p");
+      paragraph.className = "compare-inline-error";
+      paragraph.setAttribute("role", "alert");
+      paragraph.tabIndex = 0;
+      paragraph.textContent = message;
+      dom.compareBody.replaceChildren(paragraph);
     }
   }
 }
@@ -4292,4 +4346,6 @@ async function boot() {
   }
 }
 
-void boot();
+// Keep the module importable outside a browser (the DOM-sink regression tests
+// import the pure helpers); the page boots exactly as before in the browser.
+if (typeof document !== "undefined") void boot();
