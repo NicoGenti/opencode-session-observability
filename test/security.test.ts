@@ -1,11 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import { readFile } from "node:fs/promises";
 import { createObservabilityServer } from "../src/server/http.ts";
 import { ObservabilityService } from "../src/core/service.ts";
 import { preview, redactString, redactValue } from "../src/core/util.ts";
 // @ts-expect-error - plain browser module without type declarations
 import { renderMarkdown } from "../src/ui/markdown.js";
+// @ts-expect-error - plain browser module without type declarations
+import { clientExportFilename, exportRequestPath, liveErrorDetail, sessionExportName } from "../src/ui/app.js";
+// @ts-expect-error - plain browser module without type declarations
+import { safeDownloadName } from "../src/ui/format.js";
 import {
   BASE,
   assistant,
@@ -375,4 +380,294 @@ test("the analysis route delivers diagnostics without a schema change", async ()
   } finally {
     await server.close();
   }
+});
+
+// ---------------------------------------------------------------------------
+// DOM-XSS sinks in src/ui/app.js (code-scanning alerts 1, 2 and 21)
+// ---------------------------------------------------------------------------
+
+async function uiAppSource(): Promise<string> {
+  return readFile(new URL("../src/ui/app.js", import.meta.url), "utf8");
+}
+
+/**
+ * One function's source. The slice stops right after the first `}` in column 0
+ * (tolerating CRLF), so a nested block or the next declaration cannot widen it.
+ */
+function uiFunctionBody(source: string, header: string): string {
+  const start = source.indexOf(header);
+  assert.ok(start >= 0, `${header} not found`);
+  let end = -1;
+  for (
+    let index = source.indexOf("\n}", start + header.length);
+    index !== -1;
+    index = source.indexOf("\n}", index + 2)
+  ) {
+    const after = source[index + 2];
+    if (after === undefined || after === "\n" || after === "\r") {
+      end = index + 2;
+      break;
+    }
+  }
+  return source.slice(start, end === -1 ? source.length : end);
+}
+
+test("the live poll error is written as text, never interpolated into markup", async () => {
+  const renderLive = uiFunctionBody(await uiAppSource(), "function renderLive()");
+
+  // The error is collapsed to text and written into the static template.
+  assert.match(renderLive, /liveErrorDetail\(state\.live\.staleError\)/);
+  assert.match(renderLive, /liveErrorDetail\(state\.liveError\)/);
+  assert.match(
+    renderLive,
+    /marker\.textContent = `\$\{marker\.textContent\} — \$\{detail\}`/,
+  );
+  assert.match(
+    renderLive,
+    /basis\.textContent = `\$\{basis\.textContent\} — \$\{detail\}`/,
+  );
+  // Neither DOM insertion family may be fed: Snyk tracks `append` as well as
+  // `appendChild` as a sink.
+  assert.doesNotMatch(renderLive, /\.append\(/);
+  assert.doesNotMatch(renderLive, /\.appendChild\(/);
+  // The markup template is built without the error field at all.
+  assert.match(renderLive, /\{ \.\.\.state\.live, staleError: undefined \}/);
+  assert.doesNotMatch(renderLive, /liveUnavailableHtml\(state\.liveError\)/);
+  assert.doesNotMatch(renderLive, /liveBadgeHtml\(state\.live\)/);
+
+  // A script payload stays a text node: nothing is escaped or interpreted.
+  const payload = "<script>alert(1)</script>";
+  assert.equal(liveErrorDetail(payload), payload);
+  assert.equal(liveErrorDetail(`  ${payload}\n`), payload);
+  // Whitespace collapse and the 90-character cap match the string builder.
+  assert.equal(liveErrorDetail(undefined), "");
+  assert.equal(liveErrorDetail("x".repeat(140)).length, 90);
+});
+
+test("the compare error body is built from DOM nodes, not markup", async () => {
+  const requestCompare = uiFunctionBody(
+    await uiAppSource(),
+    "async function requestCompare()",
+  );
+
+  assert.match(requestCompare, /document\.createElement\("p"\)/);
+  assert.match(requestCompare, /paragraph\.className = "compare-inline-error"/);
+  assert.match(requestCompare, /setAttribute\("role", "alert"\)/);
+  assert.match(requestCompare, /paragraph\.tabIndex = 0/);
+  assert.match(requestCompare, /paragraph\.textContent = message/);
+  assert.match(requestCompare, /dom\.compareBody\.replaceChildren\(paragraph\)/);
+  // The message must not be escaped into an HTML string any more.
+  assert.doesNotMatch(requestCompare, /escapeHtml\(\s*message/);
+  assert.doesNotMatch(
+    requestCompare,
+    /innerHTML = `<p class="compare-inline-error"/,
+  );
+});
+
+test("the export download name is built from server metadata, never the route or the response", async () => {
+  const source = await uiAppSource();
+  const exportCurrent = uiFunctionBody(source, "async function exportCurrent(format)");
+
+  // The name is derived from the record the `/api/sessions` list supplies, then
+  // the shared allowlist, then the sink.
+  assert.match(exportCurrent, /sessionExportName\(record, format\)/);
+  assert.match(exportCurrent, /const filename = safeDownloadName\(/);
+  assert.match(exportCurrent, /downloadBlob\(filename, blob\)/);
+  // The location-derived id may not appear in the flow at all; the two
+  // resolvers below are the only places it is read, and only as a lookup key
+  // and a request fallback.
+  assert.doesNotMatch(exportCurrent, /state\.sessionID/);
+  // The response supplies bytes only: its header must not reach the anchor.
+  assert.doesNotMatch(exportCurrent, /Content-Disposition/i);
+  assert.doesNotMatch(exportCurrent, /response\.headers/);
+  assert.doesNotMatch(exportCurrent, /parseFilename/);
+  assert.doesNotMatch(exportCurrent, /location\./);
+  // The request target is the relative helper, fed by the resolved request id.
+  assert.match(exportCurrent, /exportRequestPath\(requestID, \{/);
+
+  // The record lookup reads the server list and nothing else; it never falls
+  // back to the selected id for a display name.
+  const record = uiFunctionBody(source, "function exportSessionRecord()");
+  assert.match(
+    record,
+    /state\.sessions\.find\(\(session\) => session\.id === selected\)/,
+  );
+  assert.doesNotMatch(record, /title|slug/);
+
+  // The request id prefers the server record's own id; the selected id is the
+  // documented fallback for a session the list does not (yet) carry.
+  const requestID = uiFunctionBody(source, "function exportRequestID(record)");
+  assert.match(requestID, /record\?\.id \?\? state\.sessionID \?\? null/);
+
+  // Every download in the UI goes through `exportCurrent`'s checked name.
+  const callSites = [...source.matchAll(/downloadBlob\(([^)]*)\)/g)].map(
+    (match) => match[1],
+  );
+  assert.deepEqual(callSites, ["filename, blob"]);
+});
+
+test("the export request is a relative path with the documented query flags", () => {
+  assert.equal(
+    exportRequestPath("ses_abc", { format: "json", includeEvents: true }),
+    "/api/sessions/ses_abc/export?format=json&includeEvents=1",
+  );
+  assert.equal(
+    exportRequestPath("ses_abc", { format: "html", includeEvents: true }),
+    "/api/sessions/ses_abc/export?format=html&includeEvents=1",
+  );
+  // reveal=1 only when reveal is actually on.
+  assert.equal(
+    exportRequestPath("ses_abc", {
+      format: "markdown",
+      includeEvents: true,
+      reveal: true,
+    }),
+    "/api/sessions/ses_abc/export?format=markdown&includeEvents=1&reveal=1",
+  );
+  assert.equal(
+    exportRequestPath("ses_abc", { format: "markdown", includeEvents: true }),
+    "/api/sessions/ses_abc/export?format=markdown&includeEvents=1",
+  );
+  // The digest copy path reuses the helper without event flags.
+  assert.equal(
+    exportRequestPath("ses_abc", { format: "digest", prompt: true }),
+    "/api/sessions/ses_abc/export?format=digest&prompt=1",
+  );
+  // The session id is encoded, so no path traversal can be spliced in.
+  assert.equal(
+    exportRequestPath("ses/../../x y", { format: "json", includeEvents: true }),
+    "/api/sessions/ses%2F..%2F..%2Fx%20y/export?format=json&includeEvents=1",
+  );
+});
+
+test("api() resolves paths without the document location and keeps pre-set filters", async () => {
+  const apiBody = uiFunctionBody(await uiAppSource(), "async function api(");
+
+  // The request target is the caller's path, never an origin-resolved URL.
+  assert.doesNotMatch(apiBody, /new URL\(/);
+  assert.doesNotMatch(apiBody, /location\./);
+  // A path that already carries filters (the benchmark builder) keeps them and
+  // gains the later params with `&`, not a second `?`.
+  assert.match(apiBody, /path\.includes\("\?"\) \? "&" : "\?"/);
+});
+
+test("the export name follows the server metadata and ignores a hostile session id", () => {
+  const now = new Date(Date.UTC(2026, 0, 2, 3, 4, 5));
+  const stamp = "20260102T030405Z";
+  // An id shaped like a path traversal plus markup: it must not appear in any
+  // name the helper produces.
+  const hostileID = 'ses/../../<script>alert(1)</script>"x';
+
+  // Title first — the server's display name wins.
+  assert.equal(
+    sessionExportName({ id: hostileID, title: "Refactor the parser" }, "json", now),
+    `refactor-the-parser-${stamp}.json`,
+  );
+  // Then the slug.
+  assert.equal(
+    sessionExportName({ id: hostileID, slug: "parser-refactor" }, "markdown", now),
+    `parser-refactor-${stamp}.md`,
+  );
+  // Then the constant fallback: no record, no title, no slug, no name.
+  for (const record of [
+    { id: hostileID },
+    { id: hostileID, title: "", slug: "" },
+    null,
+    undefined,
+  ]) {
+    assert.equal(sessionExportName(record, "html", now), `session-${stamp}.html`);
+  }
+
+  for (const title of ["Refactor the parser", "../../etc/passwd"]) {
+    const name = sessionExportName({ id: hostileID, title }, "json", now);
+    // Not one character of the id survives.
+    assert.ok(!name.includes("ses"), name);
+    assert.ok(!name.includes("script"), name);
+    assert.ok(!name.includes(".."), name);
+    assert.ok(!name.includes("<"), name);
+    // Whatever it produces, the shared allowlist accepts it unchanged.
+    assert.equal(safeDownloadName(name), name);
+  }
+  // The fallback name is the shared alphabetical fallback, never the id.
+  const fallback = sessionExportName({ id: hostileID }, "json", now);
+  assert.equal(fallback, `session-${stamp}.json`);
+  assert.equal(safeDownloadName(fallback), fallback);
+});
+
+test("the client-side export name mirrors the server convention", () => {
+  const now = new Date(Date.UTC(2026, 0, 2, 3, 4, 5));
+  const stamp = "20260102T030405Z";
+
+  assert.equal(
+    clientExportFilename("Session abc", "json", now),
+    `session-abc-${stamp}.json`,
+  );
+  assert.equal(
+    clientExportFilename("Session abc", "markdown", now),
+    `session-abc-${stamp}.md`,
+  );
+  assert.equal(
+    clientExportFilename("Session abc", "html", now),
+    `session-abc-${stamp}.html`,
+  );
+  // An empty display name still yields a name, exactly like the server's
+  // fallback, so a session without metadata still downloads.
+  assert.equal(clientExportFilename("", "json", now), `session-${stamp}.json`);
+  assert.equal(clientExportFilename("!!", "json", now), `session-${stamp}.json`);
+  // The slug is capped at 60 characters, and path-ish names collapse to a slug.
+  assert.equal(
+    clientExportFilename("x".repeat(200), "json", now),
+    `${"x".repeat(60)}-${stamp}.json`,
+  );
+  assert.equal(
+    clientExportFilename("../../etc/passwd", "json", now),
+    `etc-passwd-${stamp}.json`,
+  );
+});
+
+test("download names keep the export route's shape and reject everything else", () => {
+  for (const name of [
+    "session-ses-simple-20260101T120000Z.json",
+    "session-a-20260101T120000Z.md",
+    "session-a-20260101T120000Z-digest.md",
+  ]) {
+    assert.equal(safeDownloadName(name), name);
+  }
+
+  // The allowlist boundary is exact: 120 characters pass, 121 do not.
+  const longest = "a".repeat(120);
+  assert.equal(safeDownloadName(longest), longest);
+  assert.equal(safeDownloadName("a".repeat(121)), "download");
+
+  for (const hostile of [
+    "",
+    "   ",
+    "../session.md",
+    "..\\..\\session.md",
+    "/etc/passwd",
+    "a b.md",
+    ".hidden.md",
+    "session%22.md",
+    'session".md',
+    "session<script>alert(1)</script>.md",
+    `${"a".repeat(200)}.md`,
+    "-session.md",
+    "session.md.",
+    "session..md",
+    "session.md\t",
+    "session\n.md",
+    "download.",
+  ]) {
+    assert.equal(safeDownloadName(hostile), "download", JSON.stringify(hostile));
+  }
+
+  // A non-string and an absent request both fall back.
+  assert.equal(safeDownloadName(undefined), "download");
+  assert.equal(safeDownloadName(null), "download");
+  assert.equal(safeDownloadName(42), "download");
+  // Callers may still name their own fallback.
+  assert.equal(
+    safeDownloadName("../x.md", "session.fallback.md"),
+    "session.fallback.md",
+  );
 });
