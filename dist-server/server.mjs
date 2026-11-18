@@ -3765,7 +3765,8 @@ var BENCHMARK_GROUP_BYS = Object.freeze([
 	"outcome",
 	"taskType"
 ]);
-Object.freeze([
+/** The closed set of recorded session outcomes a filter accepts. */
+var BENCHMARK_OUTCOMES = Object.freeze([
 	"succeeded",
 	"failed",
 	"interrupted"
@@ -3780,6 +3781,12 @@ var BENCHMARK_TASK_TYPES = Object.freeze(["user", "delegation"]);
 var NOT_RECORDED = "not recorded";
 function isBenchmarkGroupBy(value) {
 	return typeof value === "string" && BENCHMARK_GROUP_BYS.includes(value);
+}
+function isBenchmarkTaskType(value) {
+	return typeof value === "string" && BENCHMARK_TASK_TYPES.includes(value);
+}
+function isBenchmarkOutcome(value) {
+	return typeof value === "string" && BENCHMARK_OUTCOMES.includes(value);
 }
 function text(value) {
 	if (typeof value !== "string") return void 0;
@@ -3824,6 +3831,10 @@ function matchesBenchmarkTaskType(input, taskType) {
 	const wanted = text(taskType);
 	if (wanted === void 0) return true;
 	return input.taskTypes.includes(wanted);
+}
+/** True when at least one criterion is set (`groupBy` is not a criterion). */
+function hasBenchmarkCriteria(filters) {
+	return filters.from !== void 0 || filters.to !== void 0 || text(filters.model) !== void 0 || text(filters.provider) !== void 0 || text(filters.agent) !== void 0 || text(filters.directory) !== void 0 || text(filters.outcome) !== void 0 || text(filters.taskType) !== void 0;
 }
 function countOf(value) {
 	return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
@@ -6177,6 +6188,33 @@ function filterFromSearch(search) {
 		maxPromptTokens: numberParam(search, "maxPromptTokens")
 	};
 }
+/** Longest benchmark filter value echoed back by a validation error. */
+var MAX_FILTER_PARAM_LENGTH = 120;
+/**
+* A trimmed benchmark string parameter. Values are length-capped so a hostile
+* query cannot grow the response, and an empty value means "not set".
+*/
+function trimmedParam(search, name) {
+	const raw = search.get(name);
+	if (raw === null) return void 0;
+	const value = raw.trim().slice(0, MAX_FILTER_PARAM_LENGTH);
+	return value.length > 0 ? value : void 0;
+}
+/**
+* A numeric parameter that distinguishes "absent" from "present but not a
+* number", so the benchmark route can answer 400 instead of silently dropping
+* a malformed bound.
+*/
+function numericParam(search, name) {
+	const raw = search.get(name);
+	if (raw === null || raw.trim() === "") return { invalid: false };
+	const value = Number(raw);
+	if (!Number.isFinite(value)) return { invalid: true };
+	return {
+		value,
+		invalid: false
+	};
+}
 var COMPARE_REQUIRED_PARAMS = [
 	"leftSession",
 	"leftEpisode",
@@ -6428,6 +6466,64 @@ async function createObservabilityServer(options = {}) {
 						...query,
 						reveal
 					}),
+					revealAllowed: allowReveal
+				});
+				return;
+			}
+			if (path === "/api/benchmark") {
+				const groupBy = trimmedParam(search, "groupBy");
+				if (groupBy !== void 0 && !isBenchmarkGroupBy(groupBy)) {
+					sendJson(req, res, 400, {
+						error: "invalid_group_by",
+						message: `groupBy must be one of ${BENCHMARK_GROUP_BYS.join(", ")}.`
+					});
+					return;
+				}
+				const from = numericParam(search, "from");
+				const to = numericParam(search, "to");
+				if (from.invalid || to.invalid) {
+					sendJson(req, res, 400, {
+						error: "invalid_filters",
+						message: "from and to must be finite epoch milliseconds."
+					});
+					return;
+				}
+				const outcome = trimmedParam(search, "outcome");
+				if (outcome !== void 0 && !isBenchmarkOutcome(outcome)) {
+					sendJson(req, res, 400, {
+						error: "invalid_filters",
+						message: `outcome must be one of ${BENCHMARK_OUTCOMES.join(", ")}.`
+					});
+					return;
+				}
+				const taskType = trimmedParam(search, "taskType");
+				if (taskType !== void 0 && !isBenchmarkTaskType(taskType)) {
+					sendJson(req, res, 400, {
+						error: "invalid_filters",
+						message: `taskType must be one of ${BENCHMARK_TASK_TYPES.join(", ")}.`
+					});
+					return;
+				}
+				const filters = {
+					from: from.value,
+					to: to.value,
+					model: trimmedParam(search, "model"),
+					provider: trimmedParam(search, "provider"),
+					agent: trimmedParam(search, "agent"),
+					directory: trimmedParam(search, "directory"),
+					outcome,
+					taskType,
+					groupBy
+				};
+				if (!hasBenchmarkCriteria(filters)) {
+					sendJson(req, res, 400, {
+						error: "invalid_filters",
+						message: "At least one filter is required: from, to, model, provider, agent, directory, outcome or taskType."
+					});
+					return;
+				}
+				sendJson(req, res, 200, {
+					benchmark: await service.benchmark(filters, { reveal }),
 					revealAllowed: allowReveal
 				});
 				return;

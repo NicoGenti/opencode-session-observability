@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  BENCHMARK_PATH,
   EPISODE_COMPARE_PATH,
   SESSION_DIAGNOSTICS_PATTERN,
   SESSION_FAMILY_RECOVERY_PATTERN,
@@ -14,6 +15,7 @@ import {
   assistant,
   fixture,
   idle,
+  incompleteFixture,
   longFixture,
   secretsFixture,
   session,
@@ -895,6 +897,238 @@ test("HTTP live redacts by default and reveals under the reveal gate", async () 
     },
     false,
   );
+});
+
+/**
+ * Three one-turn sessions that all record the same failing tool, so the
+ * benchmark's recurring-pattern group-by has a real group to report. `agent`
+ * and `updated` distinguish the candidates and pin the recency order.
+ */
+function benchmarkFixture(): Fixture {
+  const entry = (
+    id: string,
+    agent: string,
+    outcome: "succeeded" | "failed",
+    updated: number,
+  ) => ({
+    meta: session(id, {
+      agent,
+      outcome,
+      time: { created: BASE, updated, busy: BASE, idle: updated },
+    }),
+    messages: [
+      user(`${id}_u1`, 1, BASE),
+      assistant({
+        id: `${id}_a1`,
+        seq: 2,
+        created: BASE + 100,
+        streamed: BASE + 300,
+        completed: BASE + 400,
+        content: [
+          toolBlock({
+            name: "grep",
+            created: BASE + 150,
+            ran: BASE + 200,
+            completed: BASE + 250,
+            status: "error",
+            input: { pattern: "TODO" },
+            output: "",
+          }),
+        ],
+        tokens: { input: 100, output: 10, reasoning: 0, cacheRead: 50, cacheWrite: 0 },
+        cost: 0.01,
+      }),
+      idle(`${id}_i1`, 3, BASE + 500, outcome),
+    ],
+  });
+  return fixture([
+    entry("ses_new", "build", "succeeded", BASE + 9_000),
+    entry("ses_mid", "explorer", "failed", BASE + 8_000),
+    entry("ses_old", "build", "succeeded", BASE + 1_000),
+  ]);
+}
+
+/** Builds a benchmark URL from the exported route constant. */
+function benchmarkURL(base: string, params: Record<string, string> = {}): string {
+  const search = new URLSearchParams(params);
+  const suffix = search.toString();
+  return `${base}${BENCHMARK_PATH}${suffix ? `?${suffix}` : ""}`;
+}
+
+test("HTTP benchmark returns grouped rollups, patterns and provenance notes", async () => {
+  await withServer(benchmarkFixture(), async (base) => {
+    const body = (await fetch(
+      benchmarkURL(base, { directory: "fixtures", groupBy: "agent" }),
+    ).then((res) => res.json())) as any;
+    assert.equal(body.revealAllowed, true);
+
+    const benchmark = body.benchmark;
+    assert.equal(benchmark.groupBy, "agent");
+    assert.deepEqual(
+      benchmark.groups.map((group: any) => group.key),
+      ["build", "explorer"],
+    );
+    assert.deepEqual(
+      benchmark.groups.map((group: any) => group.count),
+      [2, 1],
+    );
+    assert.equal(benchmark.overall.count, 3);
+    assert.equal(benchmark.overall.rollups.turns, 3);
+    assert.equal(benchmark.overall.rollups.costSum.basis, "derived");
+    assert.equal(benchmark.overall.rollups.costPerSession.value, 0.01);
+    assert.equal(benchmark.overall.rollups.completions.succeeded, 2);
+    assert.equal(benchmark.overall.rollups.completions.failed, 1);
+    assert.equal(benchmark.sessionsCapped, false);
+    assert.equal(benchmark.candidatesConsidered, 3);
+    assert.match(
+      benchmark.basisNotes[0],
+      /^Compared 3 of 3 candidate session\(s\)/,
+    );
+
+    const pattern = benchmark.recurringPatterns.find(
+      (item: any) => item.kind === "failing-tool",
+    );
+    assert.equal(pattern.key, "grep");
+    assert.equal(pattern.sessionCount, 3);
+    assert.deepEqual(pattern.sessionIDs, ["ses_new", "ses_mid", "ses_old"]);
+
+    const bounded = (await fetch(
+      benchmarkURL(base, { from: String(BASE + 5_000) }),
+    ).then((res) => res.json())) as any;
+    assert.equal(bounded.benchmark.overall.count, 2);
+    assert.equal(bounded.benchmark.candidatesConsidered, 2);
+  });
+});
+
+test("HTTP benchmark requires a filter and validates the closed vocabularies", async () => {
+  await withServer(benchmarkFixture(), async (base) => {
+    const cases: Array<[Record<string, string>, string]> = [
+      [{}, "invalid_filters"],
+      [{ groupBy: "model" }, "invalid_filters"],
+      [{ agent: "   " }, "invalid_filters"],
+      [{ agent: "build", from: "not-a-number" }, "invalid_filters"],
+      [{ agent: "build", to: "1e" }, "invalid_filters"],
+      [{ agent: "build", groupBy: "directory" }, "invalid_group_by"],
+      [{ agent: "build", outcome: "pending" }, "invalid_filters"],
+      [{ agent: "build", taskType: "retry" }, "invalid_filters"],
+    ];
+    for (const [params, code] of cases) {
+      const response = await fetch(benchmarkURL(base, params));
+      assert.equal(response.status, 400, JSON.stringify(params));
+      assert.equal(
+        ((await response.json()) as any).error,
+        code,
+        JSON.stringify(params),
+      );
+    }
+
+    const empty = await fetch(
+      benchmarkURL(base, { agent: "nobody", groupBy: "agent" }),
+    );
+    assert.equal(empty.status, 200);
+    const body = (await empty.json()) as any;
+    assert.equal(body.benchmark.overall.count, 0);
+    assert.deepEqual(body.benchmark.groups, []);
+    assert.deepEqual(body.benchmark.recurringPatterns, []);
+    assert.equal(body.benchmark.sessionsCapped, false);
+    assert.match(body.benchmark.basisNotes[0], /^Compared 0 of 0/);
+  });
+});
+
+test("HTTP benchmark is GET-only, answers HEAD and requires the access token", async () => {
+  await withServer(benchmarkFixture(), async (base) => {
+    const url = benchmarkURL(base, { agent: "build" });
+    const post = await fetch(url, methods());
+    assert.equal(post.status, 405);
+    assert.equal(((await post.json()) as any).error, "method_not_allowed");
+
+    const head = await fetch(url, { method: "HEAD" });
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), "");
+  });
+
+  const { path } = writeFixtureDb(benchmarkFixture());
+  const token = generateToken();
+  const server = await createObservabilityServer({
+    dbPath: path,
+    port: 0,
+    allowReveal: true,
+    authToken: token,
+  });
+  try {
+    const unauthorized = await fetch(benchmarkURL(server.url, { agent: "build" }));
+    assert.equal(unauthorized.status, 401);
+    assert.equal(((await unauthorized.json()) as any).error, "unauthorized");
+
+    const authorized = await fetch(
+      benchmarkURL(server.url, { agent: "build" }),
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    assert.equal(authorized.status, 200);
+    assert.equal(
+      ((await authorized.json()) as any).benchmark.overall.count,
+      2,
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("HTTP benchmark redacts by default and carries no payload text", async () => {
+  await withServer(secretsFixture(), async (base) => {
+    const redacted = (await fetch(
+      benchmarkURL(base, { directory: "fixtures" }),
+    ).then((res) => res.json())) as any;
+    assert.equal(redacted.benchmark.overall.count, 1);
+    assert.doesNotMatch(
+      JSON.stringify(redacted),
+      /sk-supersecretvalue12345/,
+    );
+
+    const revealed = (await fetch(
+      benchmarkURL(base, { directory: "fixtures", reveal: "1" }),
+    ).then((res) => res.json())) as any;
+    assert.equal(revealed.benchmark.overall.count, 1);
+    assert.doesNotMatch(
+      JSON.stringify(revealed),
+      /sk-supersecretvalue12345/,
+    );
+  });
+
+  await withServer(
+    secretsFixture(),
+    async (base) => {
+      const forbidden = await fetch(
+        benchmarkURL(base, { directory: "fixtures", reveal: "1" }),
+      );
+      assert.equal(forbidden.status, 403);
+      assert.equal(
+        ((await forbidden.json()) as any).error,
+        "reveal_disabled",
+      );
+    },
+    false,
+  );
+});
+
+test("HTTP benchmark names the windowed exclusion without dropping full-range sessions", async () => {
+  await withServer(incompleteFixture(), async (base) => {
+    const body = (await fetch(
+      benchmarkURL(base, { directory: "fixtures" }),
+    ).then((res) => res.json())) as any;
+    const rollups = body.benchmark.overall.rollups;
+
+    // A benchmark always loads the full range, so every compared session is
+    // comparable: an unfinished recording is not a windowed one.
+    assert.equal(body.benchmark.overall.count, 1);
+    assert.equal(rollups.windowedCount, 0);
+    assert.equal(rollups.averagedSessions, 1);
+    assert.equal(rollups.completions.unrecorded, 1);
+    assert.match(
+      body.benchmark.basisNotes[1],
+      /^Windowed sessions \(coverage\.complete = false\) are counted in sums and completion counts and excluded from averages; 0 of 1 compared session\(s\) are windowed/,
+    );
+  });
 });
 
 function methods(): RequestInit {
