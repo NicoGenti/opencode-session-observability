@@ -3756,6 +3756,45 @@ function deriveLiveSnapshot(analysis, options = {}) {
 	};
 	return snapshot;
 }
+// src/core/benchmark.ts
+/**
+* Cross-session benchmark: deterministic rollups over a bounded, recency-sorted
+* candidate set.
+*
+* The layer is pure and server-agnostic: it never reads events, storage, HTTP
+* or the DOM, never reads the clock and never re-reads the source. Callers hand
+* it one already-projected row per session (`benchmarkInputFrom`) and it only
+* aggregates.
+*
+* This module deliberately does **not** extend `episodeCompare`. That module's
+* neutrality contract governs an ordinal, one-to-one alignment of two
+* diagnostic episodes; a benchmark instead folds many independent sessions into
+* descriptive group rollups. The shared discipline is that nothing is ranked:
+* groups are ordered by their recorded key, patterns by kind and key, no field
+* names a winner or an optimum, and every judgement-free average carries the
+* `derived` basis of its inputs.
+*
+* Aggregation rules, all basis-propagated:
+*
+* - Sums (tokens, cost, turns, steps, retries, errors, tool-failure incidents,
+*   compactions) cover every compared session.
+* - Averages (cost per session, duration per session, cache hit rate) are
+*   `derived` and skip a session whose value was not recorded.
+* - Windowed sessions (`coverage.complete === false`) are counted in
+*   `windowedCount` and in every sum, but excluded from every average: a
+*   partial window cannot claim a comparable per-session rate.
+*
+* Notes are deterministic phrases plus counts, mirroring `HealthRuleResult.note`
+* and `Diagnostics.why`: no prompt, file path, patch text or shell command line
+* enters this DTO. The DTO carries session ids, model/provider/agent/outcome/
+* task-type group keys, health-rule ids and tool names only — no directory is
+* carried.
+*/
+/**
+* How many of the newest sessions the service lists as candidates. Older
+* sessions are never listed, so they can never enter a comparison.
+*/
+var CANDIDATE_LISTING_LIMIT = 1e3;
 /** The dimension a comparison is grouped by. `none` yields only `overall`. */
 var BENCHMARK_GROUP_BYS = Object.freeze([
 	"none",
@@ -3900,7 +3939,7 @@ function sumMetric(values, what) {
 	const present = presentNumbers(values);
 	if (present.length === 0) return metric(null, "unavailable", `no session recorded ${what}`);
 	const missing = values.length - present.length;
-	return metric(present.reduce((sum, value) => sum + value, 0), "derived", missing === 0 ? `sum across ${values.length} session(s)` : `${missing} of ${values.length} session(s) recorded no ${what}`);
+	return metric(present.reduce((sum, value) => sum + value, 0), "derived", missing === 0 ? `sum across ${values.length} session(s)` : `${missing} of ${values.length} session(s) did not record ${what}`);
 }
 /**
 * Arithmetic mean of the recorded values, `derived`. Callers pass only the
@@ -4030,39 +4069,64 @@ function patternsFor(inputs) {
 	}
 	return out;
 }
+/** "1 session" / "2 sessions" — a count with the grammar of its noun. */
+function counted(count, singular) {
+	return `${count} ${singular}${count === 1 ? "" : "s"}`;
+}
+/**
+* Provenance notes. Note 1 names three different counts, because they are three
+* different sets: what was compared, what was loaded, and what matched the
+* summary filters. Loading stops at the cap, so the matched set can be larger
+* than the loaded one; the task-type filter runs after loading, so the compared
+* set can be smaller than the loaded one.
+*/
 function basisNotesFor(inputs, options) {
-	const candidates = options.candidatesConsidered ?? inputs.length;
+	const compared = inputs.length;
+	const matched = options.candidatesConsidered ?? compared;
+	const loaded = options.candidatesLoaded ?? compared;
+	const skipped = options.skippedSessions ?? 0;
+	const capped = options.sessionsCapped === true || matched > loaded;
 	const windowedCount = inputs.filter((input) => input.windowed).length;
 	const notes = [];
-	if (options.sessionsCapped === true) notes.push(`Compared the 50 most recently updated of ${candidates} candidate session(s); older candidates were not loaded.`);
-	else notes.push(`Compared ${inputs.length} of ${candidates} candidate session(s).`);
+	notes.push(`Compared ${compared} of ${counted(loaded, "loaded candidate")} (${counted(matched, "session")} matched the summary filters${capped ? "; older candidates were not loaded" : ""}).`);
+	const droppedByTaskType = Math.max(0, loaded - compared - skipped);
+	if (droppedByTaskType > 0) notes.push(`${counted(droppedByTaskType, "loaded candidate")} recorded none of the requested task types and ${droppedByTaskType === 1 ? "was" : "were"} not compared.`);
 	notes.push(`Windowed sessions (coverage.complete = false) are counted in sums and completion counts and excluded from averages; ${windowedCount} of ${inputs.length} compared session(s) are windowed.`);
 	notes.push("Averages are derived: cost per session, duration per session and cache hit rate skip a session whose value was not recorded.");
 	notes.push(`Recurring patterns are deterministic group-bys: a health rule or a top failing tool recorded in at least 3 sessions. Nothing is ranked.`);
-	const skipped = options.skippedSessions ?? 0;
 	if (skipped > 0) notes.push(`${skipped} candidate session(s) could not be loaded between listing and comparison and were skipped.`);
+	notes.push(`Candidates are the ${CANDIDATE_LISTING_LIMIT} most recently updated sessions; older sessions were never listed.`);
 	return notes;
 }
 /**
 * Primary entry point. Pure, deterministic and local; an empty input set yields
 * a valid empty-shaped benchmark instead of throwing.
+*
+* The three candidate counts are normalised so their notes stay coherent:
+* `compared` ≤ `loaded` ≤ `matched`. An omitted count falls back to the next
+* inner one, so a caller that only knows the compared set needs no options.
 */
 function computeBenchmark(inputs, options = {}) {
 	const groupBy = isBenchmarkGroupBy(options.groupBy) ? options.groupBy : "none";
-	const candidates = options.candidatesConsidered ?? inputs.length;
+	const compared = inputs.length;
+	const matched = Math.max(compared, options.candidatesConsidered ?? compared);
+	const loaded = Math.min(matched, Math.max(compared, options.candidatesLoaded ?? compared));
+	const sessionsCapped = options.sessionsCapped === true || matched > loaded;
 	return {
 		groupBy,
 		groups: groupBy === "none" ? [] : groupsFor(inputs, groupBy),
 		overall: {
-			count: inputs.length,
+			count: compared,
 			rollups: rollupsFor(inputs)
 		},
 		recurringPatterns: patternsFor(inputs),
-		sessionsCapped: options.sessionsCapped === true,
-		candidatesConsidered: Math.max(inputs.length, candidates),
+		sessionsCapped,
+		candidatesConsidered: matched,
 		basisNotes: basisNotesFor(inputs, {
 			...options,
-			candidatesConsidered: Math.max(inputs.length, candidates)
+			candidatesConsidered: matched,
+			candidatesLoaded: loaded,
+			sessionsCapped
 		})
 	};
 }
@@ -5669,14 +5733,18 @@ var ObservabilityService = class {
 	* match/no-match oracle. Summary-level filters run first, the survivors are
 	* sorted by `timeUpdated` descending and capped at `MAX_BENCHMARK_SESSIONS`,
 	* and only then is each dataset loaded through the shared requestKey-coherent
-	* cache — the benchmark never clears it and never keeps the event streams.
-	* The task-type filter runs last, because turn triggers only exist after
-	* projection.
+	* cache. The task-type filter runs last, because turn triggers only exist
+	* after projection.
+	*
+	* Loading up to `MAX_BENCHMARK_SESSIONS` datasets evicts the cache working
+	* set (the cache holds at most `MAX_CACHE_ENTRIES` projections); it does not
+	* clear the cache — `clearCache` is never called here — and the event streams
+	* are dropped as soon as the totals-level row is read.
 	*/
 	async benchmark(filters = {}, options = {}) {
 		const reveal = options.reveal === true;
 		const ordered = [...(await this.listSessions({
-			limit: 1e3,
+			limit: CANDIDATE_LISTING_LIMIT,
 			reveal
 		})).filter((summary) => matchesBenchmarkFilters(summary, filters))].sort((left, right) => (right.timeUpdated ?? right.timeCreated) - (left.timeUpdated ?? left.timeCreated) || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
 		const capped = ordered.slice(0, 50);
@@ -5699,6 +5767,7 @@ var ObservabilityService = class {
 			groupBy: filters.groupBy,
 			sessionsCapped: ordered.length > capped.length,
 			candidatesConsidered: ordered.length,
+			candidatesLoaded: capped.length,
 			skippedSessions: skipped
 		});
 		return reveal ? benchmark : redactValue(benchmark);
@@ -6306,7 +6375,7 @@ async function createObservabilityServer(options = {}) {
 				return;
 			}
 			const reveal = revealRequested && allowReveal;
-			if (!SESSION_LIVE_PATTERN.test(path) && bool(search, "refresh")) service.clearCache();
+			if (!SESSION_LIVE_PATTERN.test(path) && path !== "/api/benchmark" && bool(search, "refresh")) service.clearCache();
 			if (path === "/api/health") {
 				sendJson(req, res, 200, {
 					ok: true,
@@ -6488,7 +6557,8 @@ async function createObservabilityServer(options = {}) {
 					});
 					return;
 				}
-				const outcome = trimmedParam(search, "outcome");
+				const outcomeParam = trimmedParam(search, "outcome");
+				const outcome = outcomeParam === void 0 ? void 0 : outcomeParam.toLowerCase();
 				if (outcome !== void 0 && !isBenchmarkOutcome(outcome)) {
 					sendJson(req, res, 400, {
 						error: "invalid_filters",

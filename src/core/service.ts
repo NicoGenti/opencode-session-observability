@@ -7,6 +7,7 @@ import { evaluateAttribution } from "./attribution.ts";
 import { evaluateRecommendations } from "./recommendations.ts";
 import { deriveLiveSnapshot } from "./live.ts";
 import {
+  CANDIDATE_LISTING_LIMIT,
   MAX_BENCHMARK_SESSIONS,
   benchmarkInputFrom,
   computeBenchmark,
@@ -469,16 +470,23 @@ export class ObservabilityService {
    * match/no-match oracle. Summary-level filters run first, the survivors are
    * sorted by `timeUpdated` descending and capped at `MAX_BENCHMARK_SESSIONS`,
    * and only then is each dataset loaded through the shared requestKey-coherent
-   * cache — the benchmark never clears it and never keeps the event streams.
-   * The task-type filter runs last, because turn triggers only exist after
-   * projection.
+   * cache. The task-type filter runs last, because turn triggers only exist
+   * after projection.
+   *
+   * Loading up to `MAX_BENCHMARK_SESSIONS` datasets evicts the cache working
+   * set (the cache holds at most `MAX_CACHE_ENTRIES` projections); it does not
+   * clear the cache — `clearCache` is never called here — and the event streams
+   * are dropped as soon as the totals-level row is read.
    */
   async benchmark(
     filters: BenchmarkFilters = {},
     options: { reveal?: boolean } = {},
   ): Promise<Benchmark> {
     const reveal = options.reveal === true;
-    const summaries = await this.listSessions({ limit: 1000, reveal });
+    const summaries = await this.listSessions({
+      limit: CANDIDATE_LISTING_LIMIT,
+      reveal,
+    });
     const matched = summaries.filter((summary) =>
       matchesBenchmarkFilters(summary, filters),
     );
@@ -510,6 +518,7 @@ export class ObservabilityService {
       groupBy: filters.groupBy,
       sessionsCapped: ordered.length > capped.length,
       candidatesConsidered: ordered.length,
+      candidatesLoaded: capped.length,
       skippedSessions: skipped,
     });
     return reveal ? benchmark : (redactValue(benchmark) as Benchmark);

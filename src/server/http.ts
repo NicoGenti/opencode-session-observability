@@ -420,8 +420,13 @@ export async function createObservabilityServer(
       const reveal = revealRequested && allowReveal;
       // `?refresh=1` drops the dataset cache for the routes that own a manual
       // refresh. The live route is polled and keeps requestKey coherence
-      // (session.time.updated) on its own, so a per-poll flush is excluded.
-      if (!SESSION_LIVE_PATTERN.test(path) && bool(search, "refresh")) {
+      // (session.time.updated) on its own, and the benchmark loads its own
+      // bounded working set, so both are excluded from the per-request flush.
+      if (
+        !SESSION_LIVE_PATTERN.test(path) &&
+        path !== BENCHMARK_PATH &&
+        bool(search, "refresh")
+      ) {
         service.clearCache();
       }
 
@@ -605,7 +610,12 @@ export async function createObservabilityServer(
           });
           return;
         }
-        const outcome = trimmedParam(search, "outcome");
+        // `outcome` is documented as case-insensitive, so the closed vocabulary
+        // is matched on the folded value; the echoed message keeps the canonical
+        // spellings.
+        const outcomeParam = trimmedParam(search, "outcome");
+        const outcome =
+          outcomeParam === undefined ? undefined : outcomeParam.toLowerCase();
         if (outcome !== undefined && !isBenchmarkOutcome(outcome)) {
           sendJson(req, res, 400, {
             error: "invalid_filters",

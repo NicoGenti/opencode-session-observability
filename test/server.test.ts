@@ -980,9 +980,9 @@ test("HTTP benchmark returns grouped rollups, patterns and provenance notes", as
     assert.equal(benchmark.overall.rollups.completions.failed, 1);
     assert.equal(benchmark.sessionsCapped, false);
     assert.equal(benchmark.candidatesConsidered, 3);
-    assert.match(
+    assert.equal(
       benchmark.basisNotes[0],
-      /^Compared 3 of 3 candidate session\(s\)/,
+      "Compared 3 of 3 loaded candidates (3 sessions matched the summary filters).",
     );
 
     const pattern = benchmark.recurringPatterns.find(
@@ -1033,6 +1033,60 @@ test("HTTP benchmark requires a filter and validates the closed vocabularies", a
     assert.equal(body.benchmark.sessionsCapped, false);
     assert.match(body.benchmark.basisNotes[0], /^Compared 0 of 0/);
   });
+});
+
+test("HTTP benchmark folds outcome case and keeps uppercase values valid", async () => {
+  await withServer(benchmarkFixture(), async (base) => {
+    const upper = await fetch(benchmarkURL(base, { outcome: "SUCCEEDED" }));
+    assert.equal(upper.status, 200);
+    const body = (await upper.json()) as any;
+    assert.equal(body.benchmark.overall.count, 2);
+
+    const mixed = await fetch(benchmarkURL(base, { outcome: "FaIlEd" }));
+    assert.equal(mixed.status, 200);
+    assert.equal(((await mixed.json()) as any).benchmark.overall.count, 1);
+  });
+});
+
+test("HTTP benchmark never clears the dataset cache, even with ?refresh=1", async () => {
+  const { path } = writeFixtureDb(benchmarkFixture());
+  const server = await createObservabilityServer({
+    dbPath: path,
+    port: 0,
+    allowReveal: true,
+  });
+  try {
+    let cleared = 0;
+    const clear = server.service.clearCache.bind(server.service);
+    server.service.clearCache = () => {
+      cleared += 1;
+      clear();
+    };
+
+    const warm = await fetch(benchmarkURL(server.url, { directory: "fixtures" }));
+    assert.equal(warm.status, 200);
+    assert.equal(cleared, 0);
+    // The benchmark loads its own bounded working set into the cache.
+    assert.ok(server.service.describe().cacheEntries > 0);
+
+    // The benchmark is not a manual-refresh route: a stray ?refresh=1 must not
+    // drop the working set the comparison just populated.
+    const refreshed = await fetch(
+      benchmarkURL(server.url, { directory: "fixtures", refresh: "1" }),
+    );
+    assert.equal(refreshed.status, 200);
+    assert.equal(cleared, 0);
+    assert.ok(server.service.describe().cacheEntries > 0);
+
+    // Every other route keeps its explicit refresh.
+    const analysis = await fetch(
+      `${server.url}/api/sessions/ses_new/analysis?refresh=1`,
+    );
+    assert.equal(analysis.status, 200);
+    assert.equal(cleared, 1);
+  } finally {
+    await server.close();
+  }
 });
 
 test("HTTP benchmark is GET-only, answers HEAD and requires the access token", async () => {
