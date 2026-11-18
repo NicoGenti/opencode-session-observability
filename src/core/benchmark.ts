@@ -27,8 +27,9 @@
  *
  * Notes are deterministic phrases plus counts, mirroring `HealthRuleResult.note`
  * and `Diagnostics.why`: no prompt, file path, patch text or shell command line
- * enters this DTO. Session ids, directory/agent/model labels, health rule ids
- * and tool names are structural record fields, not payloads.
+ * enters this DTO. The DTO carries session ids, model/provider/agent/outcome/
+ * task-type group keys, health-rule ids and tool names only — no directory is
+ * carried.
  */
 
 import { sumTokens } from "./metrics.ts";
@@ -43,6 +44,12 @@ import type {
 
 /** Hard cap on the compared sessions; the rest of the candidates are not read. */
 export const MAX_BENCHMARK_SESSIONS = 50;
+
+/**
+ * How many of the newest sessions the service lists as candidates. Older
+ * sessions are never listed, so they can never enter a comparison.
+ */
+export const CANDIDATE_LISTING_LIMIT = 1000;
 
 /** Minimum number of sessions a recurring-pattern group-by must span. */
 export const PATTERN_MIN_SESSIONS = 3;
@@ -214,7 +221,10 @@ export interface Benchmark {
 export interface BenchmarkOptions {
   groupBy?: string;
   sessionsCapped?: boolean;
+  /** Sessions that matched the summary filters, before the cap. */
   candidatesConsidered?: number;
+  /** Candidates that went into `loadDataset` (the capped set). */
+  candidatesLoaded?: number;
   /** Sessions that vanished between listing and loading. */
   skippedSessions?: number;
 }
@@ -435,7 +445,7 @@ function sumMetric(values: readonly (number | null)[], what: string): Metric {
     "derived",
     missing === 0
       ? `sum across ${values.length} session(s)`
-      : `${missing} of ${values.length} session(s) recorded no ${what}`,
+      : `${missing} of ${values.length} session(s) did not record ${what}`,
   );
 }
 
@@ -635,19 +645,47 @@ export function patternsFor(
   return out;
 }
 
+/** "1 session" / "2 sessions" — a count with the grammar of its noun. */
+function counted(count: number, singular: string): string {
+  return `${count} ${singular}${count === 1 ? "" : "s"}`;
+}
+
+/**
+ * Provenance notes. Note 1 names three different counts, because they are three
+ * different sets: what was compared, what was loaded, and what matched the
+ * summary filters. Loading stops at the cap, so the matched set can be larger
+ * than the loaded one; the task-type filter runs after loading, so the compared
+ * set can be smaller than the loaded one.
+ */
 function basisNotesFor(
   inputs: readonly BenchmarkSessionInput[],
   options: BenchmarkOptions,
 ): string[] {
-  const candidates = options.candidatesConsidered ?? inputs.length;
+  const compared = inputs.length;
+  const matched = options.candidatesConsidered ?? compared;
+  const loaded = options.candidatesLoaded ?? compared;
+  const skipped = options.skippedSessions ?? 0;
+  const capped = options.sessionsCapped === true || matched > loaded;
   const windowedCount = inputs.filter((input) => input.windowed).length;
   const notes: string[] = [];
-  if (options.sessionsCapped === true) {
+  notes.push(
+    `Compared ${compared} of ${counted(loaded, "loaded candidate")} (${counted(
+      matched,
+      "session",
+    )} matched the summary filters${
+      capped ? "; older candidates were not loaded" : ""
+    }).`,
+  );
+  const droppedByTaskType = Math.max(0, loaded - compared - skipped);
+  if (droppedByTaskType > 0) {
     notes.push(
-      `Compared the ${MAX_BENCHMARK_SESSIONS} most recently updated of ${candidates} candidate session(s); older candidates were not loaded.`,
+      `${counted(
+        droppedByTaskType,
+        "loaded candidate",
+      )} recorded none of the requested task types and ${
+        droppedByTaskType === 1 ? "was" : "were"
+      } not compared.`,
     );
-  } else {
-    notes.push(`Compared ${inputs.length} of ${candidates} candidate session(s).`);
   }
   notes.push(
     `Windowed sessions (coverage.complete = false) are counted in sums and completion counts and excluded from averages; ${windowedCount} of ${inputs.length} compared session(s) are windowed.`,
@@ -658,35 +696,51 @@ function basisNotesFor(
   notes.push(
     `Recurring patterns are deterministic group-bys: a health rule or a top failing tool recorded in at least ${PATTERN_MIN_SESSIONS} sessions. Nothing is ranked.`,
   );
-  const skipped = options.skippedSessions ?? 0;
   if (skipped > 0) {
     notes.push(
       `${skipped} candidate session(s) could not be loaded between listing and comparison and were skipped.`,
     );
   }
+  notes.push(
+    `Candidates are the ${CANDIDATE_LISTING_LIMIT} most recently updated sessions; older sessions were never listed.`,
+  );
   return notes;
 }
 
 /**
  * Primary entry point. Pure, deterministic and local; an empty input set yields
  * a valid empty-shaped benchmark instead of throwing.
+ *
+ * The three candidate counts are normalised so their notes stay coherent:
+ * `compared` ≤ `loaded` ≤ `matched`. An omitted count falls back to the next
+ * inner one, so a caller that only knows the compared set needs no options.
  */
 export function computeBenchmark(
   inputs: readonly BenchmarkSessionInput[],
   options: BenchmarkOptions = {},
 ): Benchmark {
   const groupBy = isBenchmarkGroupBy(options.groupBy) ? options.groupBy : "none";
-  const candidates = options.candidatesConsidered ?? inputs.length;
+  const compared = inputs.length;
+  const matched = Math.max(compared, options.candidatesConsidered ?? compared);
+  const loaded = Math.min(
+    matched,
+    Math.max(compared, options.candidatesLoaded ?? compared),
+  );
+  const sessionsCapped = options.sessionsCapped === true || matched > loaded;
   return {
     groupBy,
     groups: groupBy === "none" ? [] : groupsFor(inputs, groupBy),
-    overall: { count: inputs.length, rollups: rollupsFor(inputs) },
+    overall: { count: compared, rollups: rollupsFor(inputs) },
     recurringPatterns: patternsFor(inputs),
-    sessionsCapped: options.sessionsCapped === true,
-    candidatesConsidered: Math.max(inputs.length, candidates),
+    // A load that stopped below the matched set is the cap, whether or not the
+    // caller repeated the flag.
+    sessionsCapped,
+    candidatesConsidered: matched,
     basisNotes: basisNotesFor(inputs, {
       ...options,
-      candidatesConsidered: Math.max(inputs.length, candidates),
+      candidatesConsidered: matched,
+      candidatesLoaded: loaded,
+      sessionsCapped,
     }),
   };
 }

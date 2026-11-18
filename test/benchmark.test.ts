@@ -82,10 +82,16 @@ function makeInput(
 /** One one-turn session; `agent`/`outcome`/`updated` distinguish candidates. */
 function tinySession(
   id: string,
-  options: { agent?: string; outcome?: "succeeded" | "failed" | "interrupted"; updated: number },
+  options: {
+    agent?: string;
+    outcome?: "succeeded" | "failed" | "interrupted";
+    updated: number;
+    delegated?: boolean;
+  },
 ): { meta: SessionMeta; messages: RawMessage[] } {
   return {
     meta: session(id, {
+      ...(options.delegated ? { parentID: "ses_parent" } : {}),
       ...(options.agent ? { agent: options.agent } : {}),
       ...(options.outcome ? { outcome: options.outcome } : { outcome: "succeeded" }),
       time: { created: BASE, updated: options.updated, busy: BASE, idle: options.updated },
@@ -139,6 +145,25 @@ function manySessionsFixture(count: number): Fixture {
         // observable in the grouped output.
         agent: index === 0 ? "dropped" : "build",
         updated: BASE + (index + 1) * 1_000,
+      }),
+    );
+  }
+  return fixture(entries);
+}
+
+/**
+ * 52 sessions that all match the summary filters. The two newest are delegated
+ * children (their turns carry the `delegation` trigger), the 50 older ones are
+ * user-triggered, so the cap loads exactly the two delegations plus 48 sessions
+ * the task-type filter then drops.
+ */
+function delegationHeavyFixture(): Fixture {
+  const entries = [];
+  for (let index = 0; index < 52; index++) {
+    entries.push(
+      tinySession(`ses_${String(index).padStart(3, "0")}`, {
+        updated: BASE + (index + 1) * 1_000,
+        delegated: index >= 50,
       }),
     );
   }
@@ -301,7 +326,7 @@ test("a missing value is labelled, never reported as zero", () => {
   const { rollups } = computeBenchmark([missing, present]).overall;
   assert.equal(rollups.costSum.value, 2);
   assert.equal(rollups.costSum.basis, "derived");
-  assert.match(rollups.costSum.note ?? "", /1 of 2 session\(s\) recorded no a cost value/);
+  assert.match(rollups.costSum.note ?? "", /1 of 2 session\(s\) did not record a cost value/);
   assert.equal(rollups.costPerSession.value, 2);
   assert.match(rollups.costPerSession.note ?? "", /1 of 2 comparable session\(s\)/);
   assert.equal(rollups.durationPerSession.value, 1_000);
@@ -490,12 +515,18 @@ test("the cap is reported instead of silently truncating", () => {
   assert.equal(capped.sessionsCapped, true);
   assert.equal(capped.candidatesConsidered, 120);
   assert.equal(capped.overall.count, MAX_BENCHMARK_SESSIONS);
-  assert.match(capped.basisNotes[0], /^Compared the 50 most recently updated of 120 candidate session\(s\)/);
+  assert.equal(
+    capped.basisNotes[0],
+    "Compared 50 of 50 loaded candidates (120 sessions matched the summary filters; older candidates were not loaded).",
+  );
 
   const open = computeBenchmark(inputs, { candidatesConsidered: 12 });
   assert.equal(open.sessionsCapped, false);
   assert.equal(open.candidatesConsidered, 50);
-  assert.match(open.basisNotes[0], /^Compared 50 of 50 candidate session\(s\)/);
+  assert.equal(
+    open.basisNotes[0],
+    "Compared 50 of 50 loaded candidates (50 sessions matched the summary filters).",
+  );
 });
 
 test("an empty comparison is a valid empty-shaped benchmark", () => {
@@ -511,8 +542,31 @@ test("an empty comparison is a valid empty-shaped benchmark", () => {
   assert.deepEqual(benchmark.recurringPatterns, []);
   assert.equal(benchmark.sessionsCapped, false);
   assert.equal(benchmark.candidatesConsidered, 0);
-  assert.equal(benchmark.basisNotes.length, 4);
+  assert.equal(benchmark.basisNotes.length, 5);
+  assert.equal(
+    benchmark.basisNotes[0],
+    "Compared 0 of 0 loaded candidates (0 sessions matched the summary filters).",
+  );
   assert.match(benchmark.basisNotes[1], /0 of 0 compared session\(s\) are windowed/);
+  assert.match(
+    benchmark.basisNotes[4],
+    /^Candidates are the 1000 most recently updated sessions; older sessions were never listed\.$/,
+  );
+});
+
+test("the candidate listing ceiling is stated in every comparison", () => {
+  const notes = computeBenchmark([makeInput()]).basisNotes;
+  assert.ok(
+    notes.some(
+      (note) =>
+        note ===
+        "Candidates are the 1000 most recently updated sessions; older sessions were never listed.",
+    ),
+  );
+  assert.equal(
+    notes.filter((note) => note.startsWith("Candidates are the")).length,
+    1,
+  );
 });
 
 test("a skipped candidate is reported in the notes", () => {
@@ -599,6 +653,50 @@ test("failing tools are ranked by incident count, then by name", async () => {
   const dataset = await service.loadDataset("ses_a");
   assert.deepEqual(failingToolsOf(dataset.analysis), ["grep"]);
   assert.deepEqual(taskTypesOf(dataset.analysis), ["user"]);
+});
+
+test("failing tools order by count descending, then name ascending", async () => {
+  const call = (name: string, seq: number): unknown =>
+    toolBlock({
+      name,
+      created: BASE + seq * 10,
+      ran: BASE + seq * 10 + 1,
+      completed: BASE + seq * 10 + 2,
+      status: "error",
+      input: {},
+      output: "",
+    });
+  const service = serviceOf(
+    fixture([
+      {
+        meta: session("ses_order", {
+          time: { created: BASE, updated: BASE + 1_000, busy: BASE, idle: BASE + 900 },
+        }),
+        messages: [
+          user("msg_u1", 1, BASE),
+          assistant({
+            id: "msg_a1",
+            seq: 2,
+            created: BASE + 10,
+            streamed: BASE + 200,
+            completed: BASE + 300,
+            // grep 2 errors (top), read 1, bash 1: the tie is broken by name.
+            content: [
+              call("grep", 1),
+              call("read", 2),
+              call("grep", 3),
+              call("bash", 4),
+            ],
+            tokens: { input: 10, output: 1, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+            cost: 0.001,
+          }),
+          idle("msg_i1", 3, BASE + 400, "succeeded"),
+        ],
+      },
+    ]),
+  );
+  const dataset = await service.loadDataset("ses_order");
+  assert.deepEqual(failingToolsOf(dataset.analysis), ["grep", "bash", "read"]);
 });
 
 test("benchmarkInputFrom copies the summary and the totals-level row", async () => {
@@ -719,13 +817,49 @@ test("the task-type filter selects sessions by recorded turn trigger", async () 
   assert.equal(user.overall.rollups.sessions, 1);
 });
 
+test("the compared note names the compared count, not the loaded or matched count", async () => {
+  const service = serviceOf(delegationHeavyFixture());
+  const benchmark = await service.benchmark({
+    directory: "fixtures",
+    taskType: "delegation",
+  });
+
+  // 52 summary matches, 50 loaded (the cap), 2 of them delegated and compared.
+  assert.equal(benchmark.overall.count, 2);
+  assert.equal(benchmark.candidatesConsidered, 52);
+  assert.equal(benchmark.sessionsCapped, true);
+  assert.equal(
+    benchmark.basisNotes[0],
+    "Compared 2 of 50 loaded candidates (52 sessions matched the summary filters; older candidates were not loaded).",
+  );
+  assert.doesNotMatch(benchmark.basisNotes[0], /Compared 52/);
+  assert.doesNotMatch(benchmark.basisNotes[0], /of 52/);
+  // The 48 loaded candidates the task-type filter dropped get their own note.
+  assert.equal(
+    benchmark.basisNotes[1],
+    "48 loaded candidates recorded none of the requested task types and were not compared.",
+  );
+});
+
+test("the task-type drop note is absent when nothing was dropped after loading", async () => {
+  const service = serviceOf(candidatesFixture());
+  const benchmark = await service.benchmark({ directory: "fixtures" });
+  assert.equal(
+    benchmark.basisNotes.some((note) => note.includes("recorded none of the requested task types")),
+    false,
+  );
+});
+
 test("an empty comparison is a 200-shaped benchmark, not an error", async () => {
   const service = serviceOf(candidatesFixture());
   const benchmark = await service.benchmark({ agent: "nobody", groupBy: "agent" });
   assert.equal(benchmark.overall.count, 0);
   assert.deepEqual(benchmark.groups, []);
   assert.equal(benchmark.candidatesConsidered, 0);
-  assert.match(benchmark.basisNotes[0], /^Compared 0 of 0 candidate session\(s\)/);
+  assert.equal(
+    benchmark.basisNotes[0],
+    "Compared 0 of 0 loaded candidates (0 sessions matched the summary filters).",
+  );
 });
 
 test("the benchmark never clears the dataset cache", async () => {
