@@ -3,6 +3,7 @@ import { projectSession } from "./project.ts";
 import { promptTokensMetric } from "./metrics.ts";
 import { evaluateDiagnostics } from "./diagnostics.ts";
 import { evaluateSessionHealth } from "./health.ts";
+import { deriveLiveSnapshot } from "./live.ts";
 import { redactValue, truncate } from "./util.ts";
 import { exportSession } from "./export.ts";
 import { listDiagnosticEpisodes } from "./episodes.ts";
@@ -10,6 +11,7 @@ import { compareEpisodeData } from "./episodeCompare.ts";
 import { evaluateDelegationRecovery } from "./delegation.ts";
 import type { Diagnostics } from "./diagnostics.ts";
 import type { DiagnosticEpisode } from "./episodes.ts";
+import type { LiveSnapshot } from "./live.ts";
 import type {
   DelegationChildInput,
   FamilyDelegationRecovery,
@@ -406,6 +408,29 @@ export class ObservabilityService {
       events: reveal ? dataset.events : this.redactedFor(dataset),
       redacted: !reveal,
     };
+  }
+
+  /**
+   * Compact live snapshot for an in-progress session.
+   *
+   * The dataset is loaded through the same requestKey-coherent cache as
+   * `analyze`; this method never clears it. The derive step is pure, so the
+   * live endpoint re-projects once per poll and re-shapes the result. Without
+   * `reveal` the whole snapshot passes through the same redaction path as the
+   * analysis payload.
+   */
+  async liveSnapshot(
+    sessionID: string,
+    options: { reveal?: boolean; lastTurns?: number; since?: string } = {},
+  ): Promise<LiveSnapshot> {
+    const dataset = await this.loadDataset(sessionID);
+    const snapshot = deriveLiveSnapshot(dataset.analysis, {
+      lastTurns: options.lastTurns,
+      since: options.since,
+    });
+    return options.reveal === true
+      ? snapshot
+      : (redactValue(snapshot) as LiveSnapshot);
   }
 
   /**
