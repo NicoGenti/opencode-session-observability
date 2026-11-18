@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -6344,21 +6344,78 @@ function sendText(req, res, status, body, contentType, headers = {}) {
 	}
 	res.end(body);
 }
+/**
+* True when the request declares a body through either HTTP/1.1 framing
+* header. No route reads a payload, but a declared body still has to be
+* bounded before the router can ignore it.
+*/
+function declaresBody(req) {
+	return req.headers["content-length"] !== void 0 || req.headers["transfer-encoding"] !== void 0;
+}
+/**
+* Consumes a declared request body under `limit` and discards it. The declared
+* `Content-Length` is rejected before a single byte is buffered, and a chunked
+* body is counted as it arrives; crossing either bound stops the read and the
+* caller answers 413 with `Connection: close`. Nothing accumulates past
+* `limit`, which is the point: the entry point owns the bound even though no
+* route consumes the bytes.
+*/
+function drainBody(req, limit) {
+	return new Promise((resolve) => {
+		const declared = Number(req.headers["content-length"]);
+		if (Number.isFinite(declared) && declared > limit) {
+			resolve("too_large");
+			return;
+		}
+		let total = 0;
+		let settled = false;
+		function settle(result) {
+			if (settled) return;
+			settled = true;
+			req.off("data", onData);
+			req.off("end", onEnd);
+			req.off("error", onError);
+			resolve(result);
+		}
+		function onData(chunk) {
+			total += chunk.length;
+			if (total > limit) {
+				req.pause();
+				settle("too_large");
+			}
+		}
+		function onEnd() {
+			settle("ok");
+		}
+		function onError() {
+			settle("ok");
+		}
+		req.on("data", onData);
+		req.once("end", onEnd);
+		req.once("error", onError);
+	});
+}
+/**
+* Maps an exception to a wire response. Only the status and code carry
+* exception identity: every message is a fixed string, so neither an error
+* object nor a request path can reach the response body (alerts 13 and 14).
+* Exported so the regression tests can drive the mapping directly.
+*/
 function errorBody(error) {
 	if (error instanceof SessionNotFoundError) return {
 		status: 404,
 		code: "session_not_found",
-		message: error.message
+		message: "Session not found."
 	};
 	if (error instanceof EventNotFoundError) return {
 		status: 404,
 		code: "event_not_found",
-		message: error.message
+		message: "Event not found."
 	};
 	if (error instanceof EpisodeNotFoundError) return {
 		status: 404,
 		code: "episode_not_found",
-		message: error.message
+		message: "Episode not found."
 	};
 	if (error instanceof DatabaseBusyError) return {
 		status: 503,
@@ -6368,7 +6425,7 @@ function errorBody(error) {
 	if (error instanceof UnsupportedSchemaError) return {
 		status: 500,
 		code: "unsupported_schema",
-		message: error.message
+		message: "The database schema is not supported by this build."
 	};
 	if (error instanceof URIError) return {
 		status: 400,
@@ -6634,6 +6691,15 @@ async function createObservabilityServer(options = {}) {
 	let boundPort = port;
 	const handle = async (req, res) => {
 		try {
+			if (declaresBody(req)) {
+				if (await drainBody(req, 65536) === "too_large") {
+					sendJson(req, res, 413, {
+						error: "payload_too_large",
+						message: "Request body is too large."
+					}, { Connection: "close" });
+					return;
+				}
+			}
 			if (!requestAllowed(req, host, boundPort)) {
 				sendJson(req, res, 403, {
 					error: "forbidden_host",
@@ -6938,7 +7004,7 @@ async function createObservabilityServer(options = {}) {
 			}
 			sendJson(req, res, 404, {
 				error: "not_found",
-				message: `No route for ${path}`
+				message: "No route for this request."
 			});
 		} catch (error) {
 			const mapped = errorBody(error);
@@ -6949,9 +7015,8 @@ async function createObservabilityServer(options = {}) {
 		}
 	};
 	let inFlight = 0;
-	const MAX_IN_FLIGHT = 32;
 	const server = createServer((req, res) => {
-		if (inFlight >= MAX_IN_FLIGHT) {
+		if (inFlight >= 32) {
 			sendJson(req, res, 503, {
 				error: "busy",
 				message: "Too many concurrent requests."
@@ -6989,18 +7054,45 @@ async function createObservabilityServer(options = {}) {
 		}
 	};
 }
+/**
+* Serves one static file under `MAX_SERVED_FILE_BYTES`. The size is read from
+* the handle's own `stat` before any buffer is allocated, and the read stops
+* at that size, so the allocation is bounded by the cap even if the file grows
+* between the stat and the read. An oversized file is answered exactly like a
+* missing one: the response never reveals whether it exists (alerts 11/12).
+*/
 async function serveFile(req, res, path) {
 	try {
-		const body = await readFile(path);
-		securityHeaders(res);
-		res.statusCode = 200;
-		res.setHeader("Content-Type", MIME[extname(path).toLowerCase()] ?? "application/octet-stream");
-		res.setHeader("Cache-Control", "no-cache");
-		if (req.method === "HEAD") {
-			res.end();
-			return;
+		const handle = await open(path, "r");
+		try {
+			const info = await handle.stat();
+			if (!info.isFile() || info.size > 8388608) {
+				sendJson(req, res, 404, {
+					error: "not_found",
+					message: "Static file not found."
+				});
+				return;
+			}
+			const body = Buffer.alloc(info.size);
+			let offset = 0;
+			while (offset < body.length) {
+				const { bytesRead } = await handle.read(body, offset, body.length - offset, offset);
+				if (bytesRead === 0) break;
+				offset += bytesRead;
+			}
+			securityHeaders(res);
+			res.statusCode = 200;
+			res.setHeader("Content-Type", MIME[extname(path).toLowerCase()] ?? "application/octet-stream");
+			res.setHeader("Cache-Control", "no-cache");
+			res.setHeader("Content-Length", String(offset));
+			if (req.method === "HEAD") {
+				res.end();
+				return;
+			}
+			res.end(offset === body.length ? body : body.subarray(0, offset));
+		} finally {
+			await handle.close();
 		}
-		res.end(body);
 	} catch (error) {
 		const code = error.code;
 		if (code === "ENOENT" || code === "EISDIR") {

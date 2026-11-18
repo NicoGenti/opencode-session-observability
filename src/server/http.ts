@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
-import { readFile } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { basename, extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discoverDatabase } from "../core/adapters/paths.ts";
@@ -35,6 +35,28 @@ import type { GuardrailThresholds } from "../core/guardrails.ts";
 
 const UI_ROOT = fileURLToPath(new URL("../ui/", import.meta.url));
 const VERSION = "0.1.0";
+
+/**
+ * Hard ceiling for one static asset. The largest shipped file is
+ * `src/ui/app.js` at ~161 KiB, so 8 MiB keeps roughly 50x headroom for future
+ * UI work while a runaway or hostile file can never become an unbounded
+ * allocation (alerts 11/12 and their bundle mirror, 17).
+ */
+export const MAX_SERVED_FILE_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Hard ceiling for a request body. The API is read-only and every action
+ * travels in the URL, so no route needs a payload; the cap bounds what a
+ * client can push at the socket before the router answers (alert 12).
+ */
+export const MAX_BODY_BYTES = 64 * 1024;
+
+/**
+ * Concurrent requests served at once. This is the throttle that guards every
+ * filesystem-backed handler: once it is reached the listener answers 503 with
+ * `Retry-After` instead of starting more work (alerts 11/12/17).
+ */
+export const MAX_IN_FLIGHT_REQUESTS = 32;
 
 /**
  * `/api/sessions/{id}/diagnostics`. Exported so tests build requests from the
@@ -139,19 +161,93 @@ function sendText(
   res.end(body);
 }
 
-function errorBody(error: unknown): {
+/**
+ * True when the request declares a body through either HTTP/1.1 framing
+ * header. No route reads a payload, but a declared body still has to be
+ * bounded before the router can ignore it.
+ */
+function declaresBody(req: IncomingMessage): boolean {
+  return (
+    req.headers["content-length"] !== undefined ||
+    req.headers["transfer-encoding"] !== undefined
+  );
+}
+
+/**
+ * Consumes a declared request body under `limit` and discards it. The declared
+ * `Content-Length` is rejected before a single byte is buffered, and a chunked
+ * body is counted as it arrives; crossing either bound stops the read and the
+ * caller answers 413 with `Connection: close`. Nothing accumulates past
+ * `limit`, which is the point: the entry point owns the bound even though no
+ * route consumes the bytes.
+ */
+function drainBody(
+  req: IncomingMessage,
+  limit: number,
+): Promise<"ok" | "too_large"> {
+  return new Promise((resolve) => {
+    const declared = Number(req.headers["content-length"]);
+    if (Number.isFinite(declared) && declared > limit) {
+      resolve("too_large");
+      return;
+    }
+    let total = 0;
+    let settled = false;
+    function settle(result: "ok" | "too_large"): void {
+      if (settled) return;
+      settled = true;
+      req.off("data", onData);
+      req.off("end", onEnd);
+      req.off("error", onError);
+      resolve(result);
+    }
+    function onData(chunk: Buffer): void {
+      total += chunk.length;
+      if (total > limit) {
+        req.pause();
+        settle("too_large");
+      }
+    }
+    function onEnd(): void {
+      settle("ok");
+    }
+    // A client that aborts mid-body leaves nothing left to bound.
+    function onError(): void {
+      settle("ok");
+    }
+    req.on("data", onData);
+    req.once("end", onEnd);
+    req.once("error", onError);
+  });
+}
+
+/**
+ * Maps an exception to a wire response. Only the status and code carry
+ * exception identity: every message is a fixed string, so neither an error
+ * object nor a request path can reach the response body (alerts 13 and 14).
+ * Exported so the regression tests can drive the mapping directly.
+ */
+export function errorBody(error: unknown): {
   status: number;
   code: string;
   message: string;
 } {
   if (error instanceof SessionNotFoundError) {
-    return { status: 404, code: "session_not_found", message: error.message };
+    return {
+      status: 404,
+      code: "session_not_found",
+      message: "Session not found.",
+    };
   }
   if (error instanceof EventNotFoundError) {
-    return { status: 404, code: "event_not_found", message: error.message };
+    return { status: 404, code: "event_not_found", message: "Event not found." };
   }
   if (error instanceof EpisodeNotFoundError) {
-    return { status: 404, code: "episode_not_found", message: error.message };
+    return {
+      status: 404,
+      code: "episode_not_found",
+      message: "Episode not found.",
+    };
   }
   if (error instanceof DatabaseBusyError) {
     return {
@@ -161,7 +257,11 @@ function errorBody(error: unknown): {
     };
   }
   if (error instanceof UnsupportedSchemaError) {
-    return { status: 500, code: "unsupported_schema", message: error.message };
+    return {
+      status: 500,
+      code: "unsupported_schema",
+      message: "The database schema is not supported by this build.",
+    };
   }
   if (error instanceof URIError) {
     return { status: 400, code: "invalid_path", message: "Malformed request path." };
@@ -455,6 +555,26 @@ export async function createObservabilityServer(
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
+      // No route reads a payload, but the entry point still owns the bound on
+      // what a client may push: the declared length is rejected up front and a
+      // chunked body is counted as it arrives, so nothing grows unbounded
+      // before the router answers (alert 12).
+      if (declaresBody(req)) {
+        const verdict = await drainBody(req, MAX_BODY_BYTES);
+        if (verdict === "too_large") {
+          sendJson(
+            req,
+            res,
+            413,
+            {
+              error: "payload_too_large",
+              message: "Request body is too large.",
+            },
+            { Connection: "close" },
+          );
+          return;
+        }
+      }
       if (!requestAllowed(req, host, boundPort)) {
         sendJson(req, res, 403, {
           error: "forbidden_host",
@@ -793,7 +913,9 @@ export async function createObservabilityServer(
 
       sendJson(req, res, 404, {
         error: "not_found",
-        message: `No route for ${path}`,
+        // Fixed text: the request path is attacker-controlled and must never
+        // travel into a response body (alerts 13/14).
+        message: "No route for this request.",
       });
     } catch (error) {
       const mapped = errorBody(error);
@@ -805,9 +927,8 @@ export async function createObservabilityServer(
   };
 
   let inFlight = 0;
-  const MAX_IN_FLIGHT = 32;
   const server = createServer((req, res) => {
-    if (inFlight >= MAX_IN_FLIGHT) {
+    if (inFlight >= MAX_IN_FLIGHT_REQUESTS) {
       sendJson(
         req,
         res,
@@ -853,22 +974,54 @@ export async function createObservabilityServer(
   };
 }
 
+/**
+ * Serves one static file under `MAX_SERVED_FILE_BYTES`. The size is read from
+ * the handle's own `stat` before any buffer is allocated, and the read stops
+ * at that size, so the allocation is bounded by the cap even if the file grows
+ * between the stat and the read. An oversized file is answered exactly like a
+ * missing one: the response never reveals whether it exists (alerts 11/12).
+ */
 async function serveFile(
   req: IncomingMessage,
   res: ServerResponse,
   path: string,
 ): Promise<void> {
   try {
-    const body = await readFile(path);
-    securityHeaders(res);
-    res.statusCode = 200;
-    res.setHeader("Content-Type", MIME[extname(path).toLowerCase()] ?? "application/octet-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    if (req.method === "HEAD") {
-      res.end();
-      return;
+    const handle = await open(path, "r");
+    try {
+      const info = await handle.stat();
+      if (!info.isFile() || info.size > MAX_SERVED_FILE_BYTES) {
+        sendJson(req, res, 404, {
+          error: "not_found",
+          message: "Static file not found.",
+        });
+        return;
+      }
+      const body = Buffer.alloc(info.size);
+      let offset = 0;
+      while (offset < body.length) {
+        const { bytesRead } = await handle.read(
+          body,
+          offset,
+          body.length - offset,
+          offset,
+        );
+        if (bytesRead === 0) break;
+        offset += bytesRead;
+      }
+      securityHeaders(res);
+      res.statusCode = 200;
+      res.setHeader("Content-Type", MIME[extname(path).toLowerCase()] ?? "application/octet-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Content-Length", String(offset));
+      if (req.method === "HEAD") {
+        res.end();
+        return;
+      }
+      res.end(offset === body.length ? body : body.subarray(0, offset));
+    } finally {
+      await handle.close();
     }
-    res.end(body);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT" || code === "EISDIR") {
