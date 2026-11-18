@@ -584,8 +584,13 @@ code, pre, .mono { font-family: var(--mono); }
 }
 .live-badge-incomplete { border-style: dashed; color: var(--text-2); }
 .live-badge-historical { color: var(--text-2); }
+.live-badge-unavailable { border-style: dashed; color: var(--text-2); }
 .live-badge-state { font-weight: 600; }
 .live-badge-basis { color: var(--text-2); font-size: 11px; }
+.live-new-events {
+  border-radius: 999px; padding: 1px 6px; background: var(--surface-2);
+  color: var(--text-2); font-size: 11px; font-variant-numeric: tabular-nums;
+}
 .live-stale {
   border: 1px dashed var(--warning); border-radius: 999px; padding: 1px 6px;
   background: var(--surface-2); color: var(--text); font-size: 11px;

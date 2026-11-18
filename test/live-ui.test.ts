@@ -1,8 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-// @ts-expect-error - plain browser module without type declarations
-import { LIVE_POLL_MS, liveBadgeHtml, liveStaleHtml, liveWarningsHtml } from "../src/ui/live.js";
+import {
+  LIVE_POLL_MS,
+  liveBadgeHtml,
+  liveStaleHtml,
+  liveUnavailableHtml,
+  liveWarningsHtml,
+  nextLiveCursor,
+  shouldHeavyRefresh,
+  shouldReplaceLiveWarnings,
+  withStaleMarker,
+  // @ts-expect-error - plain browser module without type declarations
+} from "../src/ui/live.js";
 
 const AS_OF = 1_700_000_000_000;
 
@@ -68,6 +78,47 @@ test("a stale frame keeps its badge and adds the retry marker", () => {
   assert.equal(liveStaleHtml(), '<span class="live-stale" role="status">stale, retrying</span>');
 });
 
+test("the stale marker renders the poll error instead of dropping it", () => {
+  const markup = liveStaleHtml("The OpenCode database is locked.");
+
+  assert.match(markup, /stale, retrying — The OpenCode database is locked\./);
+  assert.match(liveBadgeHtml(snapshot({ stale: true, staleError: "<b>busy</b>" })), /&lt;b&gt;busy&lt;\/b&gt;/);
+  assert.doesNotMatch(liveStaleHtml("<b>busy</b>"), /<b>/);
+  assert.equal(liveStaleHtml("   "), '<span class="live-stale" role="status">stale, retrying</span>');
+});
+
+test("a first-poll failure with no frame renders a visible unavailable state", () => {
+  const markup = liveUnavailableHtml("Request failed (503)");
+
+  assert.match(markup, /Live unavailable/);
+  assert.match(markup, /poll failed — Request failed \(503\)/);
+  assert.match(markup, /live-badge-unavailable/);
+  assert.equal(liveUnavailableHtml(), liveUnavailableHtml(undefined));
+  assert.match(liveUnavailableHtml(), /Live unavailable/);
+});
+
+test("the badge renders the since cursor yield as a +N events affordance", () => {
+  const none = liveBadgeHtml(snapshot());
+  assert.doesNotMatch(none, /live-new-events/);
+
+  const page = snapshot({
+    newEvents: [
+      { id: "evt_1", orderKey: "0001" },
+      { id: "evt_2", orderKey: "0002" },
+    ],
+  });
+  const markup = liveBadgeHtml(page);
+  assert.match(markup, /class="live-new-events"/);
+  assert.match(markup, />\+2 events</);
+
+  const single = liveBadgeHtml(snapshot({ newEvents: [{ id: "evt_1", orderKey: "0001" }] }));
+  assert.match(single, />\+1 event</);
+  assert.doesNotMatch(single, /\+1 events/);
+
+  // A non-array payload from a hostile/broken response renders nothing.
+  assert.doesNotMatch(liveBadgeHtml(snapshot({ newEvents: "nope" })), /live-new-events/);
+});
+
 test("an unrecognized state falls back to the incomplete reading", () => {
   const markup = liveBadgeHtml(snapshot({ state: "surprise" }));
 
@@ -123,6 +174,84 @@ test("live.js imports only ./format.js and touches no DOM", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// DOM-free poll decisions
+// ---------------------------------------------------------------------------
+
+test("the heavy refresh is skipped on the first tick and on an unchanged frame", () => {
+  const frame = snapshot({ openTurn: { id: "turn_1" }, totalInSession: 7 });
+
+  assert.equal(shouldHeavyRefresh(null, frame), false);
+  assert.equal(shouldHeavyRefresh(undefined, frame), false);
+  assert.equal(shouldHeavyRefresh(frame, null), false);
+  assert.equal(shouldHeavyRefresh(frame, snapshot({ ...frame })), false);
+});
+
+test("the heavy refresh fires on a new open turn, event count or state", () => {
+  const frame = snapshot({ openTurn: { id: "turn_1" }, totalInSession: 7 });
+
+  assert.equal(
+    shouldHeavyRefresh(frame, snapshot({ ...frame, openTurn: { id: "turn_2" } })),
+    true,
+  );
+  assert.equal(
+    shouldHeavyRefresh(frame, snapshot({ ...frame, openTurn: null })),
+    true,
+  );
+  assert.equal(
+    shouldHeavyRefresh(frame, snapshot({ ...frame, totalInSession: 8 })),
+    true,
+  );
+  assert.equal(
+    shouldHeavyRefresh(frame, snapshot({ ...frame, state: "idle" })),
+    true,
+  );
+});
+
+test("a 503-style failure keeps the frame and renders the error on it", () => {
+  const frame = snapshot({ openTurn: { id: "turn_1" } });
+  const stale = withStaleMarker(frame, "The OpenCode database is locked. Retry when the session is idle.");
+
+  assert.ok(stale);
+  assert.equal(stale.stale, true);
+  assert.equal(stale.openTurn.id, "turn_1");
+  assert.equal(stale.staleError, "The OpenCode database is locked. Retry when the session is idle.");
+  assert.match(liveBadgeHtml(stale), /stale, retrying — The OpenCode database is locked/);
+
+  // A long message is collapsed and capped so the marker stays one line.
+  const long = withStaleMarker(frame, `${"x".repeat(200)}\n\nrest`);
+  assert.ok(long.staleError.length <= 90);
+  assert.doesNotMatch(long.staleError, /\n/);
+
+  assert.equal(withStaleMarker(null, "boom"), null);
+  assert.equal(withStaleMarker(undefined, "boom"), null);
+});
+
+test("the since cursor follows the last new event and survives an empty page", () => {
+  assert.equal(nextLiveCursor("0005", [{ orderKey: "0006" }, { orderKey: "0008" }]), "0008");
+  assert.equal(nextLiveCursor("0005", []), "0005");
+  assert.equal(nextLiveCursor("0005", null), "0005");
+  assert.equal(nextLiveCursor("0005", undefined), "0005");
+  // A malformed tail is skipped rather than poisoning the cursor.
+  assert.equal(nextLiveCursor("0005", [{ orderKey: "" }, { orderKey: "0009" }]), "0009");
+  // A session switch resets the cursor to null; the next tick re-seeds it.
+  assert.equal(nextLiveCursor(null, []), null);
+  assert.equal(nextLiveCursor(undefined, []), null);
+  assert.equal(nextLiveCursor("", []), null);
+});
+
+test("only changed warning markup replaces the live region", () => {
+  const first = liveWarningsHtml([warning()]);
+  const second = liveWarningsHtml([warning({ note: "10 retry event(s) recorded" })]);
+
+  assert.equal(shouldReplaceLiveWarnings(null, ""), true);
+  assert.equal(shouldReplaceLiveWarnings(liveWarningsHtml([warning()]), first), false);
+  assert.equal(shouldReplaceLiveWarnings(first, second), true);
+  assert.equal(shouldReplaceLiveWarnings(first, ""), true);
+  // Equal input yields byte-identical markup, which is what the gate compares.
+  assert.equal(liveWarningsHtml([warning()]), first);
+});
+
+// ---------------------------------------------------------------------------
 // app.js wiring
 // ---------------------------------------------------------------------------
 
@@ -130,11 +259,26 @@ async function appSource(): Promise<string> {
   return readFile(new URL("../src/ui/app.js", import.meta.url), "utf8");
 }
 
+/**
+ * One function's source. The slice stops right after the first `}` in column 0
+ * (tolerating CRLF), so a nested block or the next declaration cannot widen it.
+ */
 function functionBody(source: string, header: string): string {
   const start = source.indexOf(header);
   assert.ok(start >= 0, `${header} not found`);
-  const next = source.indexOf("\nfunction ", start + header.length);
-  return source.slice(start, next === -1 ? source.length : next);
+  let end = -1;
+  for (
+    let index = source.indexOf("\n}", start + header.length);
+    index !== -1;
+    index = source.indexOf("\n}", index + 2)
+  ) {
+    const after = source[index + 2];
+    if (after === undefined || after === "\n" || after === "\r") {
+      end = index + 2;
+      break;
+    }
+  }
+  return source.slice(start, end === -1 ? source.length : end);
 }
 
 test("the live toggle polls every 5 seconds and stops cleanly", async () => {
@@ -148,34 +292,60 @@ test("the live toggle polls every 5 seconds and stops cleanly", async () => {
   assert.match(toggle, /\},\s*5_000\);/);
   assert.match(stop, /clearInterval\(state\.liveTimer\)/);
   assert.match(stop, /state\.liveTimer = null/);
-  assert.match(toggle, /state\.liveSince = lastSeenOrderKey\(\)/);
+  // The cursor is re-seeded by the first tick from the session on screen.
+  assert.match(toggle, /state\.liveSince = null/);
+  assert.doesNotMatch(toggle, /lastSeenOrderKey\(\)/);
 });
 
 test("pollLive fetches the incremental endpoint with the orderKey cursor", async () => {
-  const poll = functionBody(await appSource(), "async function pollLive()");
+  const source = await appSource();
+  const poll = functionBody(source, "async function pollLive()");
+  const cursor = functionBody(source, "function liveSinceCursor()");
 
   assert.match(poll, /\/api\/sessions\/\$\{encodeURIComponent\(requestedSession\)\}\/live/);
   assert.match(poll, /\{ since \}/);
-  assert.match(poll, /data\.newEvents/);
-  assert.match(poll, /state\.liveSince = data\.newEvents\[data\.newEvents\.length - 1\]\.orderKey/);
+  assert.match(poll, /state\.liveSince = nextLiveCursor\(since \?\? null, data\.newEvents\)/);
+  assert.match(cursor, /nextLiveCursor\(null, state\.live\?\.newEvents\)/);
+  assert.match(cursor, /lastSeenOrderKey\(\)/);
 });
 
-test("the heavy refresh runs only on an open-turn, count or state change", async () => {
+test("the heavy refresh decision comes from the DOM-free helper", async () => {
   const poll = functionBody(await appSource(), "async function pollLive()");
 
-  assert.match(poll, /const openTurnChanged = \(data\.openTurn\?\.id \?\? null\) !==/);
-  assert.match(poll, /const grew = \(data\.totalInSession \?\? 0\) >/);
-  assert.match(poll, /const stateChanged = data\.state !== previous\?\.state/);
-  assert.match(poll, /if \(previous && \(openTurnChanged \|\| grew \|\| stateChanged\)\) \{/);
-  assert.match(poll, /await refreshCurrent\(\)/);
+  assert.match(poll, /const heavy = shouldHeavyRefresh\(previous, data\)/);
+  assert.match(poll, /if \(heavy\) await refreshCurrent\(\)/);
+  assert.doesNotMatch(poll, /openTurnChanged|stateChanged|const grew/);
 });
 
 test("a failed poll keeps the previous frame with the stale marker", async () => {
   const poll = functionBody(await appSource(), "async function pollLive()");
 
   assert.match(poll, /catch \(error\) \{/);
-  assert.match(poll, /state\.live = \{ \.\.\.state\.live, stale: true/);
+  assert.match(poll, /state\.live = withStaleMarker\(state\.live, error\.message\)/);
+  assert.match(poll, /state\.liveError = state\.live === null \? error\.message : null/);
   assert.match(poll, /renderLive\(\)/);
+});
+
+test("the live poll never asks the server to flush its cache", async () => {
+  const source = await appSource();
+  const poll = functionBody(source, "async function pollLive()");
+  const refresh = functionBody(source, "async function refreshCurrent(options = {})");
+
+  assert.doesNotMatch(poll, /refresh: 1/);
+  assert.doesNotMatch(poll, /force/);
+  assert.match(refresh, /force: options\.force === true/);
+  assert.match(
+    source,
+    /addEventListener\("click", \(\) => void refreshCurrent\(\{ force: true \}\)\)/,
+  );
+});
+
+test("loadSessionData only forwards refresh when the caller forces it", async () => {
+  const load = functionBody(await appSource(), "async function loadSessionData(options = {})");
+
+  assert.match(load, /refresh: options\.force === true \? 1 : undefined/);
+  // The cursor belongs to the analysis just replaced.
+  assert.match(load, /state\.liveSince = null/);
 });
 
 test("a session switch clears the live frame and in-flight ticket", async () => {
@@ -183,7 +353,9 @@ test("a session switch clears the live frame and in-flight ticket", async () => 
   const select = functionBody(source, "async function selectSession(");
 
   assert.match(select, /state\.live = null/);
+  assert.match(select, /state\.liveError = null/);
   assert.match(select, /state\.liveSince = null/);
+  assert.match(select, /liveWarningsMarkup = null/);
   assert.match(select, /liveRequestSeq \+= 1/);
 });
 
@@ -195,9 +367,14 @@ test("the badge renders in the session header and warnings above the pane", asyn
   assert.match(header, /id="live-badge-slot"/);
   assert.match(header, /renderLive\(\)/);
   assert.match(renderLive, /liveBadgeHtml\(state\.live\)/);
+  assert.match(renderLive, /liveUnavailableHtml\(state\.liveError\)/);
   assert.match(renderLive, /liveWarningsHtml\(warnings\)/);
+  assert.match(renderLive, /shouldReplaceLiveWarnings\(liveWarningsMarkup, markup\)/);
   assert.match(renderLive, /dom\.liveWarnings\.hidden/);
-  assert.match(source, /import \{ liveBadgeHtml, liveWarningsHtml \} from "\.\/live\.js";/);
+  assert.match(
+    source,
+    /import \{[^}]*liveWarningsHtml[^}]*\} from "\.\/live\.js";/,
+  );
   assert.match(source, /dom\.liveWarnings = \$\("#live-warnings"\)/);
 });
 
@@ -220,7 +397,11 @@ test("live styles use existing tokens only and no hex literals", async () => {
   assert.match(block, /\.live-badge \{/);
   assert.match(block, /\.live-badge-live/);
   assert.match(block, /\.live-badge-incomplete \{ border-style: dashed/);
+  assert.match(block, /\.live-badge-unavailable \{ border-style: dashed/);
+  assert.match(block, /\.live-new-events \{/);
   assert.match(block, /\.live-warning \{/);
   assert.match(block, /var\(--warning\)/);
+  // The warning hue is a border/tint only; it is never used as the text colour.
+  assert.doesNotMatch(block, /color:\s*var\(--warning\)/);
   assert.doesNotMatch(block, /#[0-9a-fA-F]{3,8}\b/);
 });
