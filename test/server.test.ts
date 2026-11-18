@@ -4,13 +4,17 @@ import {
   EPISODE_COMPARE_PATH,
   SESSION_DIAGNOSTICS_PATTERN,
   SESSION_FAMILY_RECOVERY_PATTERN,
+  SESSION_LIVE_PATTERN,
   createObservabilityServer,
 } from "../src/server/http.ts";
+import { generateToken } from "../src/server/auth.ts";
+import { DatabaseBusyError } from "../src/core/adapters/sqlite.ts";
 import {
   BASE,
   assistant,
   fixture,
   idle,
+  longFixture,
   secretsFixture,
   session,
   simpleFixture,
@@ -148,6 +152,25 @@ function familyRecoveryURL(base: string, sessionID: string): string {
     .replace("([^/]+)", encodeURIComponent(sessionID));
   assert.match(route, SESSION_FAMILY_RECOVERY_PATTERN);
   return `${base}${route}`;
+}
+
+/** Builds a live-snapshot URL from the exported route pattern. */
+function liveURL(
+  base: string,
+  sessionID: string,
+  params: Record<string, string | number> = {},
+): string {
+  const route = SESSION_LIVE_PATTERN.source
+    .slice(1, -1)
+    .replaceAll("\\/", "/")
+    .replace("([^/]+)", encodeURIComponent(sessionID));
+  assert.match(route, SESSION_LIVE_PATTERN);
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    search.set(key, String(value));
+  }
+  const suffix = search.toString();
+  return `${base}${route}${suffix ? `?${suffix}` : ""}`;
 }
 
 function compareURL(
@@ -694,6 +717,141 @@ test("HTTP family recovery clears the dataset cache when ?refresh is set", async
   } finally {
     await server.close();
   }
+});
+
+test("HTTP live returns the derived snapshot shape", async () => {
+  await withServer(toolsFixture(), async (base) => {
+    const response = await fetch(liveURL(base, "ses_tools"));
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as any;
+
+    assert.equal(body.revealAllowed, true);
+    assert.equal(body.state, "ended");
+    assert.equal(body.basis, "derived");
+    assert.equal(typeof body.asOf, "number");
+    assert.equal(body.openTurn, null);
+    assert.deepEqual(body.warnings, []);
+    assert.equal(body.coverage.complete, true);
+    assert.ok(body.totalInSession > 0);
+    assert.equal(body.newEvents, null);
+    assert.equal("turnWindow" in body, false);
+
+    const windowed = (await fetch(
+      liveURL(base, "ses_tools", { lastTurns: 1 }),
+    ).then((res) => res.json())) as any;
+    assert.deepEqual(windowed.turnWindow, { last: 1, of: 1 });
+  });
+});
+
+test("HTTP live trims new events by since and caps the page", async () => {
+  await withServer(longFixture(30), async (base) => {
+    const first = (await fetch(
+      `${base}/api/sessions/ses_long/events?limit=1&direction=forward`,
+    ).then((res) => res.json())) as any;
+    const since = first.events[0].orderKey as string;
+
+    const body = (await fetch(
+      liveURL(base, "ses_long", { since }),
+    ).then((res) => res.json())) as any;
+
+    assert.equal(body.newEvents.length, 50);
+    for (const event of body.newEvents) {
+      assert.ok(event.orderKey > since, `${event.orderKey} is not after ${since}`);
+    }
+  });
+});
+
+test("HTTP live maps unknown sessions, rejects writes and answers HEAD", async () => {
+  await withServer(simpleFixture(), async (base) => {
+    const missing = await fetch(liveURL(base, "ses_missing"));
+    assert.equal(missing.status, 404);
+    assert.equal(((await missing.json()) as any).error, "session_not_found");
+
+    const post = await fetch(liveURL(base, "ses_simple"), methods());
+    assert.equal(post.status, 405);
+    assert.equal(((await post.json()) as any).error, "method_not_allowed");
+
+    const head = await fetch(liveURL(base, "ses_simple"), { method: "HEAD" });
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), "");
+  });
+});
+
+test("HTTP live maps a locked database to a stable 503", async () => {
+  const { path } = writeFixtureDb(simpleFixture());
+  const server = await createObservabilityServer({
+    dbPath: path,
+    port: 0,
+    allowReveal: true,
+  });
+  try {
+    server.service.liveSnapshot = async () => {
+      throw new DatabaseBusyError("database is locked");
+    };
+    const response = await fetch(liveURL(server.url, "ses_simple"));
+    assert.equal(response.status, 503);
+    assert.equal(((await response.json()) as any).error, "database_busy");
+  } finally {
+    await server.close();
+  }
+});
+
+test("HTTP live requires the access token when one is configured", async () => {
+  const { path } = writeFixtureDb(simpleFixture());
+  const token = generateToken();
+  const server = await createObservabilityServer({
+    dbPath: path,
+    port: 0,
+    allowReveal: true,
+    authToken: token,
+  });
+  try {
+    const unauthorized = await fetch(liveURL(server.url, "ses_simple"));
+    assert.equal(unauthorized.status, 401);
+    assert.equal(((await unauthorized.json()) as any).error, "unauthorized");
+
+    const authorized = await fetch(liveURL(server.url, "ses_simple"), {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(authorized.status, 200);
+    assert.equal(((await authorized.json()) as any).state, "ended");
+  } finally {
+    await server.close();
+  }
+});
+
+test("HTTP live redacts by default and reveals under the reveal gate", async () => {
+  await withServer(secretsFixture(), async (base) => {
+    const redacted = (await fetch(
+      liveURL(base, "ses_secrets", { since: "0" }),
+    ).then((res) => res.json())) as any;
+    const redactedText = JSON.stringify(redacted);
+    assert.doesNotMatch(redactedText, /sk-abcdefghijklmnopqrstuvwxyz/);
+    assert.match(redactedText, /\[REDACTED/);
+
+    const revealed = (await fetch(
+      liveURL(base, "ses_secrets", { since: "0", reveal: 1 }),
+    ).then((res) => res.json())) as any;
+    assert.match(
+      JSON.stringify(revealed),
+      /sk-abcdefghijklmnopqrstuvwxyz/,
+    );
+  });
+
+  await withServer(
+    secretsFixture(),
+    async (base) => {
+      const forbidden = await fetch(
+        liveURL(base, "ses_secrets", { reveal: 1 }),
+      );
+      assert.equal(forbidden.status, 403);
+      assert.equal(
+        ((await forbidden.json()) as any).error,
+        "reveal_disabled",
+      );
+    },
+    false,
+  );
 });
 
 function methods(): RequestInit {
