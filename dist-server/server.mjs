@@ -2457,12 +2457,12 @@ function rule(thresholds, id, label, level, evaluable, note, eventIDs = [], turn
 		level,
 		evaluable,
 		note,
-		eventIDs: capIDs$2(eventIDs, thresholds.maxEventLinks),
-		turnIDs: capIDs$2(turnIDs, thresholds.maxTurnLinks)
+		eventIDs: capIDs$3(eventIDs, thresholds.maxEventLinks),
+		turnIDs: capIDs$3(turnIDs, thresholds.maxTurnLinks)
 	};
 }
 /** Deduplicates, drops empty ids and caps the list in recorded order. */
-function capIDs$2(ids, limit) {
+function capIDs$3(ids, limit) {
 	const out = [];
 	const seen = /* @__PURE__ */ new Set();
 	for (const id of ids) {
@@ -2562,7 +2562,7 @@ function contextGrowthRule(analysis, thresholds) {
 	return rule(thresholds, "context-growth", "Context growth", level, true, `longest growth run ${length} turn(s); final context ${finalContext}`, [], turnIDs);
 }
 /** Highest-cost turns, descending, ties resolved by recorded order. */
-function costliestTurns(turns, limit) {
+function costliestTurns$1(turns, limit) {
 	return [...turns].filter((turn) => turn.cost.value !== null).sort((left, right) => (right.cost.value ?? 0) - (left.cost.value ?? 0) || left.index - right.index).slice(0, limit).map((turn) => turn.id);
 }
 function costPerTurnRule(analysis, thresholds) {
@@ -2572,7 +2572,7 @@ function costPerTurnRule(analysis, thresholds) {
 	if (cost.value === null) return rule(thresholds, "cost-per-turn", "Cost per turn", null, false, "cost was not recorded");
 	if (turns < 2) return rule(thresholds, "cost-per-turn", "Cost per turn", null, false, `${turns} turn(s) recorded; at least 2 are required`);
 	const perTurn = cost.value / turns;
-	return rule(thresholds, "cost-per-turn", "Cost per turn", levelFor(perTurn >= threshold.watch, perTurn >= threshold.strong), true, `$${perTurn.toFixed(2)} per turn across ${turns} turn(s)`, [], costliestTurns(analysis.turns, 3));
+	return rule(thresholds, "cost-per-turn", "Cost per turn", levelFor(perTurn >= threshold.watch, perTurn >= threshold.strong), true, `$${perTurn.toFixed(2)} per turn across ${turns} turn(s)`, [], costliestTurns$1(analysis.turns, 3));
 }
 function lowCacheHitRule(analysis, thresholds) {
 	const threshold = thresholds.lowCacheHit;
@@ -3393,7 +3393,7 @@ var BASIS_NOTES = Object.freeze([
 /** Recovery states that prove the failure run continued without a resolution. */
 var UNRECOVERED = /* @__PURE__ */ new Set(["no-recovery-evidence"]);
 /** Deduplicates, drops empty ids and caps the list in recorded order. */
-function capIDs$1(ids, limit) {
+function capIDs$2(ids, limit) {
 	const out = [];
 	const seen = /* @__PURE__ */ new Set();
 	for (const id of ids) {
@@ -3444,8 +3444,8 @@ function row(ruleID, kind, label, note, eventIDs = [], turnIDs = []) {
 		ruleID,
 		label,
 		note,
-		eventIDs: capIDs$1(eventIDs, 10),
-		turnIDs: capIDs$1(turnIDs, 6)
+		eventIDs: capIDs$2(eventIDs, 10),
+		turnIDs: capIDs$2(turnIDs, 6)
 	};
 }
 /** A fact row plus the hypothesis it supports, in that order. */
@@ -3654,7 +3654,7 @@ function openTurnOf(turns, state) {
 	};
 }
 /** Deduplicates, drops empty ids and caps the list in recorded order. */
-function capIDs(ids, limit) {
+function capIDs$1(ids, limit) {
 	const out = [];
 	const seen = /* @__PURE__ */ new Set();
 	for (const id of ids) {
@@ -3691,8 +3691,8 @@ function warningsOf(analysis, windowTurns) {
 	for (const rule of rules) {
 		if (!rule.triggered) continue;
 		if (!LIVE_WARNING_RULE_IDS.includes(rule.id)) continue;
-		const eventIDs = capIDs(rule.eventIDs, 10);
-		const turnIDs = capIDs(rule.turnIDs, 6);
+		const eventIDs = capIDs$1(rule.eventIDs, 10);
+		const turnIDs = capIDs$1(rule.turnIDs, 6);
 		const inWindowEvents = window === null || turnByEvent === null ? eventIDs : eventIDs.filter((id) => {
 			const turnID = turnByEvent.get(id) ?? null;
 			return turnID !== null && window.has(turnID);
@@ -6095,6 +6095,188 @@ function filterEvents(events, filter, corpora = null) {
 		return true;
 	});
 }
+// src/core/guardrails.ts
+/**
+* The out-of-the-box budgets. They sit just above the approved health watch
+* levels on purpose: health flags an anomaly, a guardrail flags a budget the
+* user chose to track. Frozen so the UI mirror, the TUI and the tests all
+* assert against the same numbers.
+*/
+var DEFAULT_GUARDRAILS = Object.freeze({
+	tokensTotal: 2e6,
+	costTotal: 5,
+	contextRun: 6,
+	retries: 10,
+	toolFailures: 5,
+	elapsedMinutes: 60
+});
+/** Largest accepted `elapsedMinutes` budget; mirrored by the GET contract. */
+var MAX_ELAPSED_MINUTES = 1e5;
+var LABELS = Object.freeze({
+	"tokens-total": "Token budget",
+	"cost-total": "Cost budget",
+	"context-run": "Context growth budget",
+	retries: "Retry budget",
+	"tool-failures": "Tool-failure budget",
+	"elapsed-minutes": "Elapsed-time budget"
+});
+/** A finite, non-negative threshold; anything else falls back to the default. */
+function limitFor(thresholds, key) {
+	const value = thresholds[key];
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : DEFAULT_GUARDRAILS[key];
+}
+/** Deduplicates, drops empty ids and caps the list in recorded order. */
+function capIDs(ids, limit) {
+	const out = [];
+	const seen = /* @__PURE__ */ new Set();
+	for (const id of ids) {
+		if (typeof id !== "string" || id.length === 0 || seen.has(id)) continue;
+		seen.add(id);
+		out.push(id);
+		if (out.length >= limit) break;
+	}
+	return out;
+}
+/** `input + output + reasoning + cache read + cache write`, like `sumTokens`. */
+function totalTokens(tokens) {
+	return tokens.input + tokens.output + tokens.reasoning + tokens.cacheRead + tokens.cacheWrite;
+}
+/** Highest-token turns, descending, ties resolved by recorded order. */
+function heaviestTurns(turns, limit) {
+	return [...turns].sort((left, right) => totalTokens(right.tokens) - totalTokens(left.tokens) || left.index - right.index).filter((turn) => totalTokens(turn.tokens) > 0).slice(0, limit).map((turn) => turn.id);
+}
+/** Highest-cost turns, descending, ties resolved by recorded order. */
+function costliestTurns(turns, limit) {
+	return [...turns].filter((turn) => turn.cost.value !== null).sort((left, right) => (right.cost.value ?? 0) - (left.cost.value ?? 0) || left.index - right.index).slice(0, limit).map((turn) => turn.id);
+}
+function warning(id, observed, threshold, eventIDs = [], turnIDs = []) {
+	return {
+		id,
+		label: LABELS[id],
+		observed,
+		threshold,
+		basis: "derived",
+		advisory: true,
+		eventIDs: capIDs(eventIDs, 10),
+		turnIDs: capIDs(turnIDs, 6)
+	};
+}
+var NONE = { kind: "none" };
+function skip(id, note) {
+	return {
+		kind: "skip",
+		skip: {
+			id,
+			label: LABELS[id],
+			note
+		}
+	};
+}
+function tokensBudget(analysis, limit) {
+	const tokens = totalTokens(analysis.totals.tokens);
+	if (tokens === 0 && !analysis.capabilities.tokenUsage) return skip("tokens-total", "token usage was not recorded");
+	const observed = `${tokens} total token(s) recorded`;
+	if (tokens < limit) return NONE;
+	return {
+		kind: "warning",
+		warning: warning("tokens-total", observed, limit, [], heaviestTurns(analysis.turns, 3))
+	};
+}
+function costBudget(analysis, limit) {
+	const cost = analysis.totals.cost.value;
+	if (cost === null) return skip("cost-total", "cost was not recorded");
+	const observed = `$${cost.toFixed(2)} total recorded cost`;
+	if (cost < limit) return NONE;
+	return {
+		kind: "warning",
+		warning: warning("cost-total", observed, limit, [], costliestTurns(analysis.turns, 3))
+	};
+}
+function contextRunBudget(analysis, limit) {
+	const available = analysis.turns.filter((turn) => turn.contextDelta.value !== null).length;
+	if (available < 2) return skip("context-run", `${available} turn(s) recorded a context delta; at least 2 are required`);
+	const run = longestGrowthRun(analysis);
+	const length = run?.length ?? 0;
+	const observed = `longest growth run ${length} turn(s)`;
+	if (length < limit) return NONE;
+	return {
+		kind: "warning",
+		warning: warning("context-run", observed, limit, [], run ? [run.first.id, run.last.id] : [])
+	};
+}
+function retriesBudget(analysis, limit) {
+	const retries = analysis.totals.retries;
+	const observed = `${retries} retry event(s) recorded`;
+	if (retries < limit) return NONE;
+	return {
+		kind: "warning",
+		warning: warning("retries", observed, limit, analysis.events.filter((event) => event.kind === "retry").map((event) => event.id))
+	};
+}
+function toolFailuresBudget(analysis, limit) {
+	const incidents = analysis.diagnostics?.incidents ?? [];
+	const observed = `${incidents.length} tool-failure incident(s) recorded`;
+	if (incidents.length < limit) return NONE;
+	return {
+		kind: "warning",
+		warning: warning("tool-failures", observed, limit, incidents.map((incident) => incident.firstFailureEventID))
+	};
+}
+/**
+* Wall time between the first and the last recorded event. Only a complete
+* analysis bounds the whole session, so a windowed one is skipped rather than
+* timed from a partial event set.
+*/
+function elapsedBudget(analysis, limit) {
+	if (!analysis.coverage.complete) return skip("elapsed-minutes", "the analysis covers a window, not the full session");
+	const events = analysis.events;
+	if (events.length === 0) return skip("elapsed-minutes", "no events were recorded");
+	let first = events[0];
+	let last = events[0];
+	for (const event of events) {
+		if (event.timestamp < first.timestamp) first = event;
+		if (event.timestamp > last.timestamp) last = event;
+	}
+	const minutes = Math.max(0, last.timestamp - first.timestamp) / 6e4;
+	const observed = `${minutes.toFixed(1)} minute(s) from the first to the last recorded event`;
+	if (minutes < limit) return NONE;
+	return {
+		kind: "warning",
+		warning: warning("elapsed-minutes", observed, limit, [first.id, last.id])
+	};
+}
+/**
+* Primary entry point. Pure, deterministic and local; the default thresholds
+* are `DEFAULT_GUARDRAILS`. A malformed injected threshold (not finite or
+* negative) falls back to the default for that budget, so a hostile query
+* cannot disable a budget or make the evaluator throw.
+*/
+function evaluateGuardrails(analysis, thresholds = DEFAULT_GUARDRAILS) {
+	const limits = {
+		tokensTotal: limitFor(thresholds, "tokensTotal"),
+		costTotal: limitFor(thresholds, "costTotal"),
+		contextRun: limitFor(thresholds, "contextRun"),
+		retries: limitFor(thresholds, "retries"),
+		toolFailures: limitFor(thresholds, "toolFailures"),
+		elapsedMinutes: limitFor(thresholds, "elapsedMinutes")
+	};
+	const outcomes = [
+		tokensBudget(analysis, limits.tokensTotal),
+		costBudget(analysis, limits.costTotal),
+		contextRunBudget(analysis, limits.contextRun),
+		retriesBudget(analysis, limits.retries),
+		toolFailuresBudget(analysis, limits.toolFailures),
+		elapsedBudget(analysis, limits.elapsedMinutes)
+	];
+	const warnings = [];
+	const skipped = [];
+	for (const outcome of outcomes) if (outcome.kind === "skip") skipped.push(outcome.skip);
+	else if (outcome.kind === "warning") warnings.push(outcome.warning);
+	return {
+		warnings,
+		skipped
+	};
+}
 // src/server/http.ts
 var UI_ROOT = fileURLToPath(new URL("../src/ui/", import.meta.url));
 var VERSION$1 = "0.1.0";
@@ -6289,6 +6471,75 @@ function numericParam(search, name) {
 		invalid: false
 	};
 }
+/** The closed `gr.*` vocabulary: one bounded budget per query parameter. */
+var GUARDRAIL_PARAM_SPECS = [
+	{
+		name: "tokensTotal",
+		key: "tokensTotal",
+		max: 0xe8d4a51000
+	},
+	{
+		name: "costTotal",
+		key: "costTotal",
+		max: 0xe8d4a51000
+	},
+	{
+		name: "contextRun",
+		key: "contextRun",
+		max: 0xe8d4a51000
+	},
+	{
+		name: "retries",
+		key: "retries",
+		max: 0xe8d4a51000
+	},
+	{
+		name: "toolFailures",
+		key: "toolFailures",
+		max: 0xe8d4a51000
+	},
+	{
+		name: "elapsedMinutes",
+		key: "elapsedMinutes",
+		max: MAX_ELAPSED_MINUTES
+	}
+];
+Object.freeze(GUARDRAIL_PARAM_SPECS.map((spec) => `gr.${spec.name}`));
+/**
+* Reads the browser-owned guardrail budgets. The vocabulary is closed: an
+* unknown `gr.*` key is invalid instead of silently ignored, and every present
+* value must be a finite number inside its documented bound. Absent keys fall
+* back to `DEFAULT_GUARDRAILS`, so the evaluator stays stateless and the route
+* is still a pure function of the query.
+*/
+function guardrailQuery(search) {
+	const thresholds = { ...DEFAULT_GUARDRAILS };
+	let present = false;
+	for (const key of search.keys()) {
+		if (!key.startsWith("gr.")) continue;
+		present = true;
+		const name = key.slice(3);
+		const spec = GUARDRAIL_PARAM_SPECS.find((entry) => entry.name === name);
+		if (!spec) return {
+			present,
+			invalid: true,
+			thresholds
+		};
+		const raw = search.get(key) ?? "";
+		const value = raw.trim() === "" ? NaN : Number(raw);
+		if (!Number.isFinite(value) || value < 0 || value > spec.max) return {
+			present,
+			invalid: true,
+			thresholds
+		};
+		thresholds[spec.key] = value;
+	}
+	return {
+		present,
+		invalid: false,
+		thresholds
+	};
+}
 var COMPARE_REQUIRED_PARAMS = [
 	"leftSession",
 	"leftEpisode",
@@ -6420,12 +6671,28 @@ async function createObservabilityServer(options = {}) {
 				const sessionID = match[1];
 				const fromSeq = numberParam(search, "fromSeq");
 				const toSeq = numberParam(search, "toSeq");
+				const guardrails = guardrailQuery(search);
+				if (guardrails.invalid) {
+					sendJson(req, res, 400, {
+						error: "invalid_guardrails",
+						message: "Guardrail budgets must be finite, non-negative numbers inside their documented bounds, and only the documented gr.* keys are accepted."
+					});
+					return;
+				}
 				const { analysis } = await service.analyze(sessionID, {
 					fromSeq,
 					toSeq,
 					reveal,
 					windowed: fromSeq !== void 0 || toSeq !== void 0
 				});
+				if (guardrails.present) {
+					sendJson(req, res, 200, {
+						analysis,
+						guardrails: evaluateGuardrails(analysis, guardrails.thresholds),
+						revealAllowed: allowReveal
+					});
+					return;
+				}
 				sendJson(req, res, 200, {
 					analysis,
 					revealAllowed: allowReveal
