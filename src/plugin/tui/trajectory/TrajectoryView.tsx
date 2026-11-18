@@ -227,6 +227,7 @@ function TrajectoryPanel(props: {
   });
 
   onCleanup(() => {
+    state.stopLivePolling();
     if (props.keyboard.handlers === keyboardHandlers) {
       props.keyboard.handlers = null;
       props.keyboard.focused = null;
@@ -245,6 +246,7 @@ function TrajectoryPanel(props: {
     // synchronous window, so its own state writes cannot re-trigger this.
     const sessionID = props.sessionID;
     void state.fetchAnalysis(sessionID);
+    state.startLivePolling(sessionID);
   });
 
   return (

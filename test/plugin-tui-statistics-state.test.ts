@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 
 import {
+  LIVE_POLL_MS,
   clampIndex,
   createStatisticsState,
   moveSelection,
@@ -301,6 +302,115 @@ test("a stale response cannot overwrite a newer session (request ticket, F2)", a
     },
     settled,
   );
+});
+
+/** Lets the pending `fetchAnalysis` continuation run under mocked intervals. */
+async function flush(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+test("startLivePolling re-fetches every 5 seconds and stops on close", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const { client, calls } = fakeClient(() => ({
+    output: { analysis: analysisBody(["t1"]) },
+  }));
+  const state = createStatisticsState(client);
+  await state.fetchAnalysis(SESSION);
+  assert.deepEqual(calls, [SESSION]);
+
+  state.startLivePolling(SESSION);
+
+  t.mock.timers.tick(LIVE_POLL_MS);
+  await flush();
+  assert.deepEqual(calls, [SESSION, SESSION]);
+
+  t.mock.timers.tick(LIVE_POLL_MS);
+  await flush();
+  assert.deepEqual(calls, [SESSION, SESSION, SESSION]);
+
+  state.stopLivePolling();
+  t.mock.timers.tick(LIVE_POLL_MS);
+  await flush();
+  assert.equal(calls.length, 3);
+  assert.deepEqual(
+    state.turns().map((turn) => turn.id),
+    ["t1"],
+  );
+});
+
+test("a live poll keeps the previous frame until the response lands", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const gates: Array<(value: unknown) => void> = [];
+  let first = true;
+  const client = {
+    rpc: () => ({
+      analysis: () => {
+        if (first) {
+          first = false;
+          return analysisBody(["t1"]);
+        }
+        return new Promise<unknown>((resolve) => gates.push(resolve));
+      },
+    }),
+  } as unknown as StatisticsRpcClient;
+  const state = createStatisticsState(client);
+  await state.fetchAnalysis(SESSION);
+
+  state.startLivePolling(SESSION);
+  t.mock.timers.tick(LIVE_POLL_MS);
+  await flush();
+
+  assert.deepEqual(
+    state.turns().map((turn) => turn.id),
+    ["t1"],
+  );
+  assert.equal(state.error(), null);
+
+  gates[0]!(analysisBody(["t1", "t2"]));
+  await flush();
+  assert.deepEqual(
+    state.turns().map((turn) => turn.id),
+    ["t1", "t2"],
+  );
+  state.stopLivePolling();
+});
+
+test("live polling never overlaps an in-flight request", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const gates: Array<(value: unknown) => void> = [];
+  const client = {
+    rpc: () => ({
+      analysis: () =>
+        new Promise<unknown>((resolve) => {
+          gates.push(resolve);
+        }),
+    }),
+  } as unknown as StatisticsRpcClient;
+  const state = createStatisticsState(client);
+
+  state.startLivePolling(SESSION);
+  t.mock.timers.tick(LIVE_POLL_MS);
+  await flush();
+  t.mock.timers.tick(LIVE_POLL_MS);
+  await flush();
+
+  assert.equal(gates.length, 1);
+  state.stopLivePolling();
+  gates[0]!(analysisBody(["t1"]));
+  await flush();
+});
+
+test("startLivePolling ignores a blank session id", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const { client, calls } = fakeClient(() => analysisBody(["t1"]));
+  const state = createStatisticsState(client);
+
+  state.startLivePolling("   ");
+  t.mock.timers.tick(LIVE_POLL_MS);
+  await flush();
+
+  assert.deepEqual(calls, []);
+  state.stopLivePolling();
 });
 
 test("fetchReviewPrompt asks for a redacted digest prompt and returns its file surface", async () => {

@@ -1467,6 +1467,9 @@ function createStatisticsState(client) {
 	const [selectedIndex, setSelectedIndexSignal] = createSignal(0);
 	const [expandedTurns, setExpandedTurns] = createSignal(/* @__PURE__ */ new Set());
 	let request = 0;
+	let liveTimer = null;
+	let liveTarget = "";
+	let liveInFlight = false;
 	const totals = () => {
 		const value = analysis();
 		if (!value) return null;
@@ -1517,12 +1520,13 @@ function createStatisticsState(client) {
 	async function fetchAnalysis(nextSessionID) {
 		const target = typeof nextSessionID === "string" ? nextSessionID.trim() : "";
 		const ticket = ++request;
-		if (target !== untrack(sessionID)) {
+		const sameSession = target === untrack(sessionID);
+		if (!sameSession) {
 			setSelectedIndexSignal(0);
 			setExpandedTurns(/* @__PURE__ */ new Set());
 		}
 		setSessionID(target);
-		setAnalysis(null);
+		if (!sameSession) setAnalysis(null);
 		setError(null);
 		if (target.length === 0) {
 			setLoading(false);
@@ -1543,11 +1547,38 @@ function createStatisticsState(client) {
 			setAnalysis(parsed.analysis);
 		} catch {
 			if (ticket !== request) return;
-			setAnalysis(null);
+			if (!sameSession) setAnalysis(null);
 			setError("The analysis could not be loaded. Reopen the panel to retry.");
 		} finally {
 			if (ticket === request) setLoading(false);
 		}
+	}
+	/** Clears the live poll timer and its in-flight guard. */
+	function stopLivePolling() {
+		if (liveTimer !== null) {
+			clearInterval(liveTimer);
+			liveTimer = null;
+		}
+		liveTarget = "";
+		liveInFlight = false;
+	}
+	/**
+	* Re-fetches the current analysis every `LIVE_POLL_MS` while the panel is
+	* open. The RPC is the existing `analysis` one — no new surface — and one
+	* request at a time keeps a slow host from piling up polls.
+	*/
+	function startLivePolling(nextSessionID) {
+		stopLivePolling();
+		const target = typeof nextSessionID === "string" ? nextSessionID.trim() : "";
+		if (target.length === 0) return;
+		liveTarget = target;
+		liveTimer = setInterval(() => {
+			if (liveInFlight) return;
+			liveInFlight = true;
+			fetchAnalysis(liveTarget).finally(() => {
+				liveInFlight = false;
+			});
+		}, LIVE_POLL_MS);
 	}
 	async function fetchReviewPrompt() {
 		const target = sessionID().trim();
@@ -1582,13 +1613,16 @@ function createStatisticsState(client) {
 		toggleTurnExpand,
 		isSelected,
 		fetchAnalysis,
+		startLivePolling,
+		stopLivePolling,
 		fetchReviewPrompt
 	};
 }
-var UNAVAILABLE;
+var LIVE_POLL_MS, UNAVAILABLE;
 var init_state$1 = __esmMin((() => {
 	init_rpc();
 	init_analysisResponse();
+	LIVE_POLL_MS = 5e3;
 	UNAVAILABLE = {
 		value: null,
 		basis: "unavailable"
@@ -1875,6 +1909,7 @@ function StatisticsPanel(props) {
 		props.keyboard.handlers = keyboardHandlers;
 	});
 	onCleanup(() => {
+		state.stopLivePolling();
 		if (props.keyboard.handlers === keyboardHandlers) {
 			props.keyboard.handlers = null;
 			props.keyboard.focused = null;
@@ -1886,6 +1921,7 @@ function StatisticsPanel(props) {
 	createEffect(() => {
 		const sessionID = props.sessionID;
 		state.fetchAnalysis(sessionID);
+		state.startLivePolling(sessionID);
 	});
 	return (() => {
 		var _el$30 = createElement("box");
@@ -2013,6 +2049,9 @@ function createTrajectoryState(client) {
 	const [selectedIndex, setSelectedIndexSignal] = createSignal(0);
 	const [expandedTurns, setExpandedTurns] = createSignal(/* @__PURE__ */ new Set());
 	let request = 0;
+	let liveTimer = null;
+	let liveTarget = "";
+	let liveInFlight = false;
 	const turns = () => analysis()?.turns ?? [];
 	function setSelectedIndex(index) {
 		setSelectedIndexSignal(clampIndex(index, turns().length));
@@ -2048,12 +2087,13 @@ function createTrajectoryState(client) {
 	async function fetchAnalysis(nextSessionID) {
 		const target = typeof nextSessionID === "string" ? nextSessionID.trim() : "";
 		const ticket = ++request;
-		if (target !== untrack(sessionID)) {
+		const sameSession = target === untrack(sessionID);
+		if (!sameSession) {
 			setSelectedIndexSignal(0);
 			setExpandedTurns(/* @__PURE__ */ new Set());
 		}
 		setSessionID(target);
-		setAnalysis(null);
+		if (!sameSession) setAnalysis(null);
 		setError(null);
 		if (target.length === 0) {
 			setLoading(false);
@@ -2074,11 +2114,38 @@ function createTrajectoryState(client) {
 			setAnalysis(parsed.analysis);
 		} catch {
 			if (ticket !== request) return;
-			setAnalysis(null);
+			if (!sameSession) setAnalysis(null);
 			setError("The analysis could not be loaded. Reopen the panel to retry.");
 		} finally {
 			if (ticket === request) setLoading(false);
 		}
+	}
+	/** Clears the live poll timer and its in-flight guard. */
+	function stopLivePolling() {
+		if (liveTimer !== null) {
+			clearInterval(liveTimer);
+			liveTimer = null;
+		}
+		liveTarget = "";
+		liveInFlight = false;
+	}
+	/**
+	* Re-fetches the current analysis every `LIVE_POLL_MS` while the panel is
+	* open. The RPC is the existing `analysis` one — no new surface — and one
+	* request at a time keeps a slow host from piling up polls.
+	*/
+	function startLivePolling(nextSessionID) {
+		stopLivePolling();
+		const target = typeof nextSessionID === "string" ? nextSessionID.trim() : "";
+		if (target.length === 0) return;
+		liveTarget = target;
+		liveTimer = setInterval(() => {
+			if (liveInFlight) return;
+			liveInFlight = true;
+			fetchAnalysis(liveTarget).finally(() => {
+				liveInFlight = false;
+			});
+		}, LIVE_POLL_MS);
 	}
 	return {
 		analysis,
@@ -2092,7 +2159,9 @@ function createTrajectoryState(client) {
 		moveSelection: moveSelectionBy,
 		toggleTurnExpand,
 		isSelected,
-		fetchAnalysis
+		fetchAnalysis,
+		startLivePolling,
+		stopLivePolling
 	};
 }
 var init_state = __esmMin((() => {
@@ -2320,6 +2389,7 @@ function TrajectoryPanel(props) {
 		props.keyboard.handlers = keyboardHandlers;
 	});
 	onCleanup(() => {
+		state.stopLivePolling();
 		if (props.keyboard.handlers === keyboardHandlers) {
 			props.keyboard.handlers = null;
 			props.keyboard.focused = null;
@@ -2331,6 +2401,7 @@ function TrajectoryPanel(props) {
 	createEffect(() => {
 		const sessionID = props.sessionID;
 		state.fetchAnalysis(sessionID);
+		state.startLivePolling(sessionID);
 	});
 	return (() => {
 		var _el$27 = createElement("box");

@@ -5,6 +5,7 @@ import type { Analysis, Turn } from "../../../core/types.ts";
 import { Observability } from "../../rpc.ts";
 import { parseAnalysisResponse } from "../analysisResponse.ts";
 import { clampIndex, moveSelection } from "../statistics/state.ts";
+import { LIVE_POLL_MS } from "../statistics/state.ts";
 
 /**
  * Reactive state for the native trajectory panel (issue #6, phase 2).
@@ -35,6 +36,10 @@ export interface TrajectoryState {
   toggleTurnExpand(turnID: string): void;
   isSelected(turn: Turn): boolean;
   fetchAnalysis(sessionID: string): Promise<void>;
+  /** Starts the 5 s re-fetch used while the view is open. */
+  startLivePolling(sessionID: string): void;
+  /** Clears the poll timer. Safe to call when nothing is polling. */
+  stopLivePolling(): void;
 }
 
 /**
@@ -77,6 +82,9 @@ export function createTrajectoryState(
     new Set(),
   );
   let request = 0;
+  let liveTimer: ReturnType<typeof setInterval> | null = null;
+  let liveTarget = "";
+  let liveInFlight = false;
 
   const turns = (): readonly Turn[] => analysis()?.turns ?? [];
 
@@ -127,14 +135,17 @@ export function createTrajectoryState(
     // tracked read would subscribe the effect to the `setSessionID` write below
     // and issue a second request per open/session change.
     const previous = untrack(sessionID);
-    if (target !== previous) {
+    const sameSession = target === previous;
+    if (!sameSession) {
       // Written signal-level rather than through `setSelectedIndex`, which
       // reads `turns()` and would re-subscribe the effect to the response.
       setSelectedIndexSignal(0);
       setExpandedTurns(new Set<string>());
     }
     setSessionID(target);
-    setAnalysis(null);
+    // A same-session live poll keeps the previous frame until the response
+    // lands; a session change must not show the old session's turn table.
+    if (!sameSession) setAnalysis(null);
     setError(null);
 
     if (target.length === 0) {
@@ -157,11 +168,43 @@ export function createTrajectoryState(
       setAnalysis(parsed.analysis);
     } catch {
       if (ticket !== request) return;
-      setAnalysis(null);
+      // Keep the last good frame on a failed live poll; only a fresh session
+      // falls back to the error state.
+      if (!sameSession) setAnalysis(null);
       setError("The analysis could not be loaded. Reopen the panel to retry.");
     } finally {
       if (ticket === request) setLoading(false);
     }
+  }
+
+  /** Clears the live poll timer and its in-flight guard. */
+  function stopLivePolling(): void {
+    if (liveTimer !== null) {
+      clearInterval(liveTimer);
+      liveTimer = null;
+    }
+    liveTarget = "";
+    liveInFlight = false;
+  }
+
+  /**
+   * Re-fetches the current analysis every `LIVE_POLL_MS` while the panel is
+   * open. The RPC is the existing `analysis` one — no new surface — and one
+   * request at a time keeps a slow host from piling up polls.
+   */
+  function startLivePolling(nextSessionID: string): void {
+    stopLivePolling();
+    const target =
+      typeof nextSessionID === "string" ? nextSessionID.trim() : "";
+    if (target.length === 0) return;
+    liveTarget = target;
+    liveTimer = setInterval(() => {
+      if (liveInFlight) return;
+      liveInFlight = true;
+      void fetchAnalysis(liveTarget).finally(() => {
+        liveInFlight = false;
+      });
+    }, LIVE_POLL_MS);
   }
 
   return {
@@ -177,5 +220,7 @@ export function createTrajectoryState(
     toggleTurnExpand,
     isSelected,
     fetchAnalysis,
+    startLivePolling,
+    stopLivePolling,
   };
 }
