@@ -44,6 +44,14 @@ import { attributionSectionHtml } from "./attribution.js";
 import { recommendationsSectionHtml } from "./recommendations.js";
 import { liveBadgeHtml, liveUnavailableHtml, liveWarningsHtml, nextLiveCursor, shouldHeavyRefresh, shouldReplaceLiveWarnings, withStaleMarker } from "./live.js";
 import {
+  benchmarkApiPath,
+  benchmarkHasFilters,
+  benchmarkViewHtml,
+  dateInputToEpoch,
+  parseBenchmarkFilters,
+  serializeBenchmarkFilters,
+} from "./benchmark.js";
+import {
   authHeaders,
   consumeTokenFromLocation,
   storeToken,
@@ -365,7 +373,9 @@ async function selectSession(sessionID, view = state.view, eventID = null) {
   dom.shell?.classList.remove("sidebar-open");
   const changed = sessionID !== state.sessionID;
   state.sessionID = sessionID;
-  state.view = view;
+  // A session route only knows the two session views. The benchmark is a
+  // standalone route, so leaving it never writes `#/s/<id>/benchmark`.
+  state.view = view === "statistics" ? "statistics" : "trajectory";
   if (changed) {
     state.filters = defaultFilters();
     state.expandedTurns.clear();
@@ -3636,6 +3646,98 @@ function toggleLive() {
 }
 
 // ---------------------------------------------------------------------------
+// Rendering: cross-session benchmark (#/benchmark)
+// ---------------------------------------------------------------------------
+
+/** Guards the async comparison against a stale route or a newer submit. */
+let benchmarkRequestSeq = 0;
+
+/**
+ * Reads the filter form back into the filter object. Date inputs become the
+ * epoch bounds the endpoint expects (the `to` bound covers its whole day);
+ * every other field stays trimmed text.
+ */
+function benchmarkFiltersFromForm(form) {
+  const data = new FormData(form);
+  const filters = {
+    model: data.get("model"),
+    provider: data.get("provider"),
+    agent: data.get("agent"),
+    directory: data.get("directory"),
+    outcome: data.get("outcome"),
+    taskType: data.get("taskType"),
+    groupBy: data.get("groupBy"),
+  };
+  const from = dateInputToEpoch(data.get("from"));
+  if (from !== undefined) filters.from = String(from);
+  const to = dateInputToEpoch(data.get("to"), true);
+  if (to !== undefined) filters.to = String(to);
+  return filters;
+}
+
+async function renderBenchmark(filters = {}) {
+  if (!dom.view) return;
+  const seq = ++benchmarkRequestSeq;
+  dom.view.className = "view benchmark-view-wrap";
+  if (!benchmarkHasFilters(filters)) {
+    dom.view.innerHTML = benchmarkViewHtml({ filters });
+    return;
+  }
+  dom.view.innerHTML = benchmarkViewHtml({ filters, loading: true });
+  try {
+    const data = await api(benchmarkApiPath(filters));
+    if (seq !== benchmarkRequestSeq) return;
+    dom.view.innerHTML = benchmarkViewHtml({ filters, benchmark: data.benchmark });
+  } catch (error) {
+    if (seq !== benchmarkRequestSeq) return;
+    dom.view.innerHTML = benchmarkViewHtml({ filters, error: error.message });
+  }
+}
+
+/**
+ * Enters the standalone benchmark route: no session is selected, the live poll
+ * is stopped and the session header is cleared, so the comparison never sits
+ * under another session's frame.
+ */
+async function enterBenchmark(filters = {}) {
+  stopLive();
+  if (dom.liveToggle) dom.liveToggle.checked = false;
+  state.sessionID = null;
+  state.session = null;
+  state.analysis = null;
+  state.family = null;
+  state.view = "benchmark";
+  state.detailEvent = null;
+  state.selectedEventID = null;
+  state.live = null;
+  state.liveError = null;
+  state.liveSince = null;
+  liveWarningsMarkup = null;
+  liveRequestSeq += 1;
+  setDiagnosticHighlight([]);
+  closeDrawer();
+  renderHeader();
+  renderTabs();
+  renderCompareButton();
+  renderLive();
+  renderSessionList();
+  renderFamily();
+  await renderBenchmark(filters);
+}
+
+/** Submits the filter form through the hash, which owns the comparison. */
+function submitBenchmarkForm(form) {
+  const filters = benchmarkFiltersFromForm(form);
+  const query = serializeBenchmarkFilters(filters);
+  const next = query ? `#/benchmark?${query}` : "#/benchmark";
+  if (location.hash === next) {
+    void renderBenchmark(filters);
+    return;
+  }
+  location.hash = next;
+}
+
+// ---------------------------------------------------------------------------
 // Routing and events
 // ---------------------------------------------------------------------------
 
@@ -3649,6 +3751,16 @@ function parseHash() {
       sessionID: decodeURIComponent(parts[1]),
       view: parts[2] === "statistics" ? "statistics" : "trajectory",
       eventID: params.get("event"),
+    };
+  }
+  if (parts[0] === "benchmark") {
+    // The comparison is standalone: no session is selected and the filter set
+    // travels in the query string, so a deep link reproduces the same rows.
+    return {
+      sessionID: null,
+      view: "benchmark",
+      eventID: null,
+      filters: parseBenchmarkFilters(params.toString()),
     };
   }
   return { sessionID: null, view: "trajectory", eventID: null };
@@ -3666,6 +3778,10 @@ function updateHash() {
 
 async function onHashChange() {
   const route = parseHash();
+  if (route.view === "benchmark") {
+    await enterBenchmark(route.filters ?? {});
+    return;
+  }
   if (!route.sessionID) return;
   if (route.sessionID !== state.sessionID) {
     await selectSession(route.sessionID, route.view, route.eventID);
@@ -3733,6 +3849,12 @@ function bindStaticEvents() {
     });
   }
   $("#refresh")?.addEventListener("click", () => void refreshCurrent({ force: true }));
+  dom.view?.addEventListener("submit", (event) => {
+    const form = event.target.closest?.("[data-benchmark-form]");
+    if (!form) return;
+    event.preventDefault();
+    submitBenchmarkForm(form);
+  });
   dom.liveToggle?.addEventListener("change", toggleLive);
   dom.liveWarnings?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-event-id]");
@@ -4040,6 +4162,10 @@ async function boot() {
     renderRevealState();
     await loadSessions("");
     const route = parseHash();
+    if (route.view === "benchmark") {
+      await enterBenchmark(route.filters ?? {});
+      return;
+    }
     const sessionID = route.sessionID ?? state.sessions[0]?.id ?? null;
     if (sessionID) {
       await selectSession(sessionID, route.view, route.eventID);
