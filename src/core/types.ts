@@ -7,6 +7,7 @@
  * format.
  */
 
+import type { Attribution } from "./attribution.ts";
 import type { Diagnostics } from "./diagnostics.ts";
 import type { SessionHealth } from "./health.ts";
 
@@ -443,6 +444,12 @@ export interface Analysis {
    * payloads produced before the evaluator existed stay valid.
    */
   health?: SessionHealth;
+  /**
+   * Per-turn task/file/command attribution derived from the recorded tool
+   * calls. Optional and absent when no turn recorded a signal, so payloads
+   * produced before the evaluator existed stay valid.
+   */
+  attribution?: Attribution;
 }
 
 export interface EventPage {
