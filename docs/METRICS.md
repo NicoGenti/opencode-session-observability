@@ -255,6 +255,27 @@ Each share is rounded to a 1e-12 grid before it is stored, so binary floating-po
 
 The session row's own cost (`Totals.recorded`, `session_v2.cost`) is never used as the basis: it can include auxiliary calls that are not attributable to a turn. Commands and subtasks carry no cost share for the same reason — nothing recorded can be divided for them.
 
+## Cross-session benchmark rollups — `D`
+
+`GET /api/benchmark` reports descriptive rollups over at most 50 sessions. Nothing here is a new per-session formula: every row copies `Analysis.totals` (plus the triggered health rule ids, the failing tool names and the recorded task trigger kinds), and the aggregator only sums and averages.
+
+| Rollup | Basis | Definition |
+|---|---|---|
+| Turns, steps, retries, errors, compactions | counts | Summed over every compared session. `errors` is `totals.errors.total` (tool + step + session errors); tool-failure incidents are the diagnostic incidents, not the tool-error count. |
+| Tokens (sum) | `D` | `input + output + reasoning + cacheRead + cacheWrite` summed over every compared session. A row with incomplete token usage still contributes what it recorded; the per-session `tokensComplete` flag is not aggregated. |
+| Cost (sum) | `D` | Sum of the per-session `totals.cost` (steps + compactions). A session without a recorded cost is skipped and the note names how many; the session row's own `session_v2.cost` is never used. |
+| Average cost per session | `D` | `sum(recorded costs) / count(sessions with a recorded cost)`, over comparable (non-windowed) sessions only. |
+| Average duration per session | `D` | Mean of the per-session wall-clock span (`totals.wallClockTime`: first to last recorded event), over comparable sessions with an available span. |
+| Average cache hit rate | `D` | Mean of the per-session token-weighted cache hit rate, over comparable sessions with a recorded rate. |
+| Completion counts | counts | `sessions.outcome` grouped into succeeded / failed / interrupted / unrecorded (no recorded terminal outcome). |
+| Windowed count | counts | Sessions in the rollup whose `coverage.complete` is false. |
+
+Sums and averages answer different questions, so they are kept apart: a group of three sessions has one cost sum and one average, and a session that recorded nothing lowers neither the sum nor the denominator of an average. An average with no recorded value anywhere is `unavailable` (`value: null`), which the UI renders as "Not recorded" rather than zero.
+
+Windowed exclusion: a benchmark always loads the full message range, so in practice every compared session is comparable. The rule still lives in the aggregator: a `coverage.complete === false` session keeps contributing to the sums and the completion counts but never to an average, and `windowedCount` reports how many were excluded.
+
+Rollups are descriptive: no score, no index, no ranking. Groups are ordered by their recorded key and patterns by kind and key.
+
 ## Session vs window totals
 
 - `Session total` — coverage includes the full message range (`fromSeq <= minSeq && toSeq >= maxSeq`).

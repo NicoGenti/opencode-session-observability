@@ -224,6 +224,18 @@ Differences are reported descriptively. No attempt is designated as better.
 
 The modal reads `GET /api/episodes/compare` (with `GET /api/sessions/{id}/diagnostics` supplying the episode pickers); like `/analysis`, both are read-only and follow the same reveal gate for raw inputs.
 
+## Session benchmark
+
+`Benchmark` in the header (beside the Live toggle) opens `#/benchmark`, a standalone page that compares recent sessions without selecting one. Opening it stops the Live poll and clears the session header, so a comparison never sits under another session's frame; leaving it (a session from the sidebar) returns to a normal session route. The filter set travels in the hash query, so `#/benchmark?from=…&agent=build&groupBy=model` reproduces the same rows.
+
+- **Filters** — date range (`from`/`to`, inclusive, applied to the session's last update and stored in the hash as epoch milliseconds; the date inputs are UTC days and the `to` day is included whole), model, provider, agent, directory (substring), outcome (`succeeded`/`failed`/`interrupted`), task type (`user`/`delegation`) and group by (`none`/`model`/`provider`/`agent`/`outcome`/`taskType`). At least one filter is required: the form stays on an idle state until one is set, and the endpoint answers `400 invalid_filters` otherwise. `groupBy` alone is not a criterion.
+- **Results** — one row per group plus a pinned **Overall** row, in the existing ledger/table idiom: sessions, turns, steps, tokens, cost sum, average cost per session, average duration per session, average cache hit rate, retries, errors, tool failures, compactions, the four completion counts and the windowed count. Sums cover every compared session; the three averages are `derived` and skip windowed sessions and sessions without a recorded value. An unavailable average reads **Not recorded** — never `$0` or `0` — and every available average keeps its `D` mark and its note in the tooltip.
+- **Recurring patterns** — one card per deterministic group-by: a triggered health rule id, or a session's top failing tool, recorded in at least 3 sessions. Each card names the rule or tool, its session count and up to ten session ids (`+N more` beyond that). They are group-bys, not correlations, and nothing is ranked.
+- **Provenance** — the notes list reports the candidate set (`Compared 3 of 3 candidate session(s)`), the windowed exclusion (`…excluded from averages; 0 of 3 compared session(s) are windowed`), the average basis and the pattern floor. When the cap applies, the first note names it (`Compared the 50 most recently updated of 120 candidate session(s); older candidates were not loaded`) and is marked as the cap note.
+- **Empty and error states** — an untouched form, a comparison with no matching session (`No session matched these filters`), a request in flight (`Comparing sessions…`) and a failed request (`Could not compare sessions: …`) are distinct; the form stays editable in all four.
+
+The page reads `GET /api/benchmark` and inherits the usual access token and reveal gates. The DTO carries no payload text: session ids, directory/agent/model labels, rule ids and tool names only.
+
 ## Access token
 
 By default every `/api` route except `/api/health` requires an access token. The printed URL carries it in the fragment (`#/?token=…` or `#/s/<id>/<view>?token=…`). On load the UI:

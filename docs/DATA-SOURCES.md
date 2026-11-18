@@ -278,6 +278,17 @@ Path shape gate: every accepted path key (`path`, `filePath`, `file`, `dir`, `di
 
 Directory caveat: `glob`, `list` and `grep` may report a directory as their `dir` / `directory` input, and the evaluator records it verbatim. Such a path can therefore appear as a file row; the DTO does not expand directories or claim that every row is a regular file. Path identity merges separator variants (`./src/a.ts`, `src/a.ts`, and their backslash-separated forms) and, on Windows, letter-case variants, while the first recorded spelling is what the row displays.
 
+## Cross-session benchmark
+
+`GET /api/benchmark` reads only what every other view already reads: the session summaries from `session_v2` and, for each compared session, the same full-range projection the analysis endpoint serves. It adds no query and no column.
+
+- **Candidates** — the 1000 most recently updated sessions the source returns; the filters then run in memory on the *visible* (already redacted when reveal is off) summaries, so a filter can never act as a match/no-match oracle over a redacted value. `from`/`to` bound the recency anchor (`time_updated`, else `time_created`); `model`/`provider`/`agent`/`outcome` are case-insensitive exact matches; `directory` is a case-insensitive substring.
+- **Cap** — the newest `MAX_BENCHMARK_SESSIONS = 50` survivors are loaded; `candidatesConsidered` and `sessionsCapped` describe the truncation instead of hiding it.
+- **What is kept** — only the totals-level row, the triggered health rule ids, the failing tool names, the windowed flag and the recorded task trigger kinds. Event streams and payloads are dropped as soon as the row is read, and nothing is cached beyond the existing ~4 s dataset cache.
+- **Task type** — the benchmark filters on the recorded turn trigger kind: a `user` message opens a user task, and a `parent_id` session's prompts read as `Delegation`. `synthetic`, `retry`, `resume` and `orphan` triggers name no task type and so never match that filter.
+- **Windowed sessions** — the benchmark always loads the full message range, so `coverage.complete` is true for every compared session in practice. The aggregate still excludes a `coverage.complete === false` session from its averages (an unfinished recording is *not* windowed and stays included) and reports the count in `windowedCount`.
+- **Not available** — no git or commit data is involved (see the table above); recurring patterns are group-bys over the recorded health rule ids and tool names, never inferred relationships.
+
 ## Deliberately unavailable data
 
 | Wanted | Status | Why |
