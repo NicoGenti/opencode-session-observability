@@ -380,75 +380,14 @@ export interface ErrorPayload {
   message: string;
 }
 
-/** A mapped error response: a numeric status plus a constant payload. */
-export interface ErrorResponse {
-  status: number;
-  payload: ErrorPayload;
-}
-
 /**
- * Builds an error payload from two constants. The response shape lives here so
- * the mapper never has to read an exception to produce one. Exported so the
- * regression tests can pin the shape directly.
+ * Builds an error payload from two constants. There is deliberately no
+ * exception-to-response mapper: every wire error body is written as a literal
+ * at its call site, so no exception value can ever reach `sendJson`/`res.end`.
+ * Exported so the regression tests can pin the shape directly.
  */
 export function errorBody(code: string, message: string): ErrorPayload {
   return { error: code, message };
-}
-
-/**
- * Maps a caught exception to a wire response by identity alone. Only
- * `instanceof` tests are used: the argument is never dereferenced,
- * stringified or interpolated, so no exception property, text or identity can
- * travel toward `sendJson`/`res.end`. Every status and payload below is a
- * compile-time constant, and the order mirrors the documented status contract.
- *
- * Exported so the regression tests can drive the mapping directly.
- */
-export function responseForError(error: unknown): ErrorResponse {
-  if (error instanceof SessionNotFoundError) {
-    return {
-      status: 404,
-      payload: errorBody("session_not_found", "Session not found."),
-    };
-  }
-  if (error instanceof EventNotFoundError) {
-    return { status: 404, payload: errorBody("event_not_found", "Event not found.") };
-  }
-  if (error instanceof EpisodeNotFoundError) {
-    return {
-      status: 404,
-      payload: errorBody("episode_not_found", "Episode not found."),
-    };
-  }
-  if (error instanceof DatabaseBusyError) {
-    return {
-      status: 503,
-      payload: errorBody(
-        "database_busy",
-        "The OpenCode database is locked. Retry when the session is idle.",
-      ),
-    };
-  }
-  if (error instanceof UnsupportedSchemaError) {
-    return {
-      status: 500,
-      payload: errorBody(
-        "unsupported_schema",
-        "The database schema is not supported by this build.",
-      ),
-    };
-  }
-  if (error instanceof URIError) {
-    return {
-      status: 400,
-      payload: errorBody("invalid_path", "Malformed request path."),
-    };
-  }
-  if (error instanceof SyntaxError) {
-    return { status: 400, payload: errorBody("invalid_query", "Invalid request.") };
-  }
-  // Never reflect raw exception messages: they can embed absolute paths.
-  return { status: 500, payload: errorBody("internal_error", "Internal error.") };
 }
 
 /**
@@ -1144,10 +1083,54 @@ export async function createObservabilityServer(
         }
         return;
       }
-      // Identity-only mapping: `error` is consumed by the instanceof chain and
-      // by nothing else, so the response body is built from constants only.
-      const mapped = responseForError(error);
-      sendJson(req, res, mapped.status, mapped.payload);
+      // Identity-only mapping, inlined into this catch scope so the caught
+      // exception is consumed by the `instanceof` chain and by nothing else:
+      // each branch hands `sendJson` a status number plus a literal body, never
+      // the exception or anything derived from it. The order below is the
+      // documented status contract.
+      if (error instanceof SessionNotFoundError) {
+        sendJson(req, res, 404, {
+          error: "session_not_found",
+          message: "Session not found.",
+        });
+      } else if (error instanceof EventNotFoundError) {
+        sendJson(req, res, 404, {
+          error: "event_not_found",
+          message: "Event not found.",
+        });
+      } else if (error instanceof EpisodeNotFoundError) {
+        sendJson(req, res, 404, {
+          error: "episode_not_found",
+          message: "Episode not found.",
+        });
+      } else if (error instanceof DatabaseBusyError) {
+        sendJson(req, res, 503, {
+          error: "database_busy",
+          message:
+            "The OpenCode database is locked. Retry when the session is idle.",
+        });
+      } else if (error instanceof UnsupportedSchemaError) {
+        sendJson(req, res, 500, {
+          error: "unsupported_schema",
+          message: "The database schema is not supported by this build.",
+        });
+      } else if (error instanceof URIError) {
+        sendJson(req, res, 400, {
+          error: "invalid_path",
+          message: "Malformed request path.",
+        });
+      } else if (error instanceof SyntaxError) {
+        sendJson(req, res, 400, {
+          error: "invalid_query",
+          message: "Invalid request.",
+        });
+      } else {
+        // Never reflect raw exception messages: they can embed absolute paths.
+        sendJson(req, res, 500, {
+          error: "internal_error",
+          message: "Internal error.",
+        });
+      }
     }
   };
 

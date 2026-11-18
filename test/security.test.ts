@@ -17,19 +17,12 @@ import {
   RATE_LIMIT_REFILL_PER_MINUTE,
   createObservabilityServer,
   errorBody,
-  responseForError,
 } from "../src/server/http.ts";
 import {
   openCodeThemeReadCount,
   resetOpenCodeThemeCache,
 } from "../src/server/opencode-theme.ts";
-import {
-  EpisodeNotFoundError,
-  EventNotFoundError,
-  ObservabilityService,
-  SessionNotFoundError,
-} from "../src/core/service.ts";
-import { UnsupportedSchemaError } from "../src/core/adapters/sqlite.ts";
+import { ObservabilityService } from "../src/core/service.ts";
 import { preview, redactString, redactValue } from "../src/core/util.ts";
 // @ts-expect-error - plain browser module without type declarations
 import { renderMarkdown } from "../src/ui/markdown.js";
@@ -311,51 +304,71 @@ test("error responses are generic JSON and never echo the request", async () => 
   }
 });
 
-test("every mapped error carries a fixed message, never the exception text", () => {
-  const secretPath = "C:\\Users\\alice\\.local\\share\\opencode\\opencode.db";
-  assert.deepEqual(responseForError(new Error(`read ${secretPath} failed`)), {
-    status: 500,
-    payload: { error: "internal_error", message: "Internal error." },
-  });
-
-  const unsupported = responseForError(
-    new UnsupportedSchemaError(`Unrecognized database at ${secretPath}.`),
+test("every error response body is a literal pinned to the reviewed table", async () => {
+  const source = await readFile(
+    new URL("../src/server/http.ts", import.meta.url),
+    "utf8",
   );
-  assert.equal(unsupported.status, 500);
-  assert.equal(unsupported.payload.error, "unsupported_schema");
-  assert.doesNotMatch(unsupported.payload.message, /opencode\.db|alice/);
+  const block = handleCatchBlock(source);
 
-  const missing = responseForError(
-    new SessionNotFoundError("<script>alert(1)</script>"),
+  // Each branch pairs an identity test with a constant status and body, in the
+  // documented order. Nothing here reads the exception, so an exception that
+  // carries an absolute path or markup has nowhere to put it.
+  const branches = [
+    ...block.matchAll(
+      /error instanceof (\w+)\)\s*\{\s*sendJson\(\s*req,\s*res,\s*(\d{3}),\s*\{\s*error:\s*"([a-z_]+)",\s*message:\s*"([^"]*)",?\s*\}\s*\);/g,
+    ),
+  ].map((match) => ({
+    type: match[1],
+    status: Number(match[2]),
+    body: JSON.stringify({ error: match[3], message: match[4] }),
+  }));
+
+  assert.deepEqual(branches, [
+    {
+      type: "SessionNotFoundError",
+      status: 404,
+      body: '{"error":"session_not_found","message":"Session not found."}',
+    },
+    {
+      type: "EventNotFoundError",
+      status: 404,
+      body: '{"error":"event_not_found","message":"Event not found."}',
+    },
+    {
+      type: "EpisodeNotFoundError",
+      status: 404,
+      body: '{"error":"episode_not_found","message":"Episode not found."}',
+    },
+    {
+      type: "DatabaseBusyError",
+      status: 503,
+      body: '{"error":"database_busy","message":"The OpenCode database is locked. Retry when the session is idle."}',
+    },
+    {
+      type: "UnsupportedSchemaError",
+      status: 500,
+      body: '{"error":"unsupported_schema","message":"The database schema is not supported by this build."}',
+    },
+    {
+      type: "URIError",
+      status: 400,
+      body: '{"error":"invalid_path","message":"Malformed request path."}',
+    },
+    {
+      type: "SyntaxError",
+      status: 400,
+      body: '{"error":"invalid_query","message":"Invalid request."}',
+    },
+  ]);
+
+  // The fallback is the one generic body; the last send in the block is it.
+  const fallback = block.slice(block.lastIndexOf("sendJson("));
+  assert.match(
+    fallback,
+    /^sendJson\(\s*req,\s*res,\s*500,\s*\{\s*error:\s*"internal_error",\s*message:\s*"Internal error\.",?\s*\}\s*\);/,
   );
-  assert.equal(missing.status, 404);
-  assert.equal(missing.payload.error, "session_not_found");
-  assert.doesNotMatch(missing.payload.message, /script|alert/);
-
-  const missingEvent = responseForError(
-    new EventNotFoundError("<script>alert(1)</script>"),
-  );
-  assert.equal(missingEvent.status, 404);
-  assert.equal(missingEvent.payload.error, "event_not_found");
-  assert.doesNotMatch(missingEvent.payload.message, /script|alert/);
-
-  const missingEpisode = responseForError(
-    new EpisodeNotFoundError("<script>alert(1)</script>"),
-  );
-  assert.equal(missingEpisode.status, 404);
-  assert.equal(missingEpisode.payload.error, "episode_not_found");
-  assert.doesNotMatch(missingEpisode.payload.message, /script|alert/);
-
-  for (const mapped of [
-    responseForError(new EventNotFoundError("<script>alert(1)</script>")),
-    responseForError(new EpisodeNotFoundError("<script>alert(1)</script>")),
-    responseForError(new URIError("Failed to decode param '%'")),
-    responseForError(new SyntaxError(`Unexpected token < in ${secretPath}`)),
-    responseForError("a bare string"),
-    responseForError(undefined),
-  ]) {
-    assert.match(mapped.payload.message, /^[A-Z][^<>]*\.$/, mapped.payload.message);
-  }
+  assert.doesNotMatch(block, /opencode\.db|alice|SECRET/);
 
   // The payload builder copies its two constant arguments and nothing else.
   assert.deepEqual(errorBody("sample_code", "Sample message."), {
@@ -365,8 +378,8 @@ test("every mapped error carries a fixed message, never the exception text", () 
 });
 
 test("an unknown exception from a route becomes a fixed 500 body", async () => {
-  // A subclass the mapper has never seen, carrying a marker that must not
-  // reach the wire even though the object does travel to the catch block.
+  // A subclass no branch tests for, carrying a marker that must not reach the
+  // wire even though the object does travel into the catch block.
   class UnknownRouteFailure extends Error {
     constructor() {
       super("SECRET-FAILURE-MARKER at C:\\Users\\alice\\.local\\share");
@@ -392,39 +405,60 @@ test("an unknown exception from a route becomes a fixed 500 body", async () => {
   }
 });
 
-test("the error mapper reads no exception property, text or identity", async () => {
+test("the error catch block consumes the exception only through instanceof", async () => {
   const source = await readFile(
     new URL("../src/server/http.ts", import.meta.url),
     "utf8",
   );
-  const mapper = uiFunctionBody(source, "export function responseForError(");
+  const block = handleCatchBlock(source);
 
-  // Identity-only: the instanceof order is the documented status contract.
-  assert.deepEqual(
-    [...mapper.matchAll(/error instanceof (\w+)/g)].map((match) => match[1]),
-    [
-      "SessionNotFoundError",
-      "EventNotFoundError",
-      "EpisodeNotFoundError",
-      "DatabaseBusyError",
-      "UnsupportedSchemaError",
-      "URIError",
-      "SyntaxError",
-    ],
-  );
-  // No property access on the parameter, no string conversion, no template
-  // interpolation: none of the dataflow families the scanner tracks. The
-  // message strings themselves end in "error." so the dot must be followed by
-  // an identifier to count as a read.
-  assert.doesNotMatch(mapper, /\berror\s*\.\s*[A-Za-z_$]/);
-  assert.doesNotMatch(mapper, /\berror\s*\[/);
-  assert.doesNotMatch(mapper, /\bString\s*\(/);
-  assert.doesNotMatch(mapper, /toString|JSON\.stringify/);
-  assert.doesNotMatch(mapper, /\$\{/);
-  // The router passes the mapped constants to the sink, never the exception.
+  // Every occurrence of the binding is either the catch parameter or an
+  // `instanceof` test. Comments and string literals are removed first: the wire
+  // bodies spell the `error` field name, and one message ends with the word
+  // "error.", but neither names the exception. Counting what is left is the
+  // tight assertion, because a property read, a string conversion or an
+  // interpolation would add an occurrence that neither form covers.
+  const code = block
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/\/\/[^\r\n]*/g, "");
+  const named = [...code.matchAll(/\berror\b(?!\s*:)/g)].length;
+  const identityTests = [
+    ...block.matchAll(/error instanceof (\w+)/g),
+  ].map((match) => match[1]);
+  assert.equal(named, identityTests.length + 1, code);
+  assert.match(block, /catch \(error\) \{/);
+  assert.deepEqual(identityTests, [
+    "SessionNotFoundError",
+    "EventNotFoundError",
+    "EpisodeNotFoundError",
+    "DatabaseBusyError",
+    "UnsupportedSchemaError",
+    "URIError",
+    "SyntaxError",
+  ]);
+  // No call receives the exception: only the catch declaration names it.
+  assert.doesNotMatch(code.replace("catch (error) {", ""), /\w+\(\s*error\b/);
+  // No property access, no string conversion, no template interpolation.
+  assert.doesNotMatch(code, /\berror\s*[.[]/);
+  assert.doesNotMatch(code, /String\s*\(|toString|JSON\.stringify/);
+  assert.doesNotMatch(block, /\$\{/);
+
+  // The bodies are constants, and the response-committed guard from the
+  // earlier review still runs before anything can be written.
+  for (const literal of [
+    "session_not_found",
+    "database_busy",
+    "Internal error.",
+  ]) {
+    assert.ok(block.includes(literal), literal);
+  }
   assert.match(
-    source,
-    /const mapped = responseForError\(error\);\s*sendJson\(req, res, mapped\.status, mapped\.payload\);/,
+    block,
+    /if \(\s*res\.headersSent\s*\) \{\s*try \{\s*res\.end\(\);\s*\} catch \{[\s\S]*?\}\s*return;\s*\}/,
+  );
+  assert.ok(
+    block.indexOf("res.headersSent") < block.indexOf("instanceof"),
+    "the guard must run before the chain",
   );
 });
 
@@ -992,6 +1026,33 @@ test("the analysis route delivers diagnostics without a schema change", async ()
 
 async function uiAppSource(): Promise<string> {
   return readFile(new URL("../src/ui/app.js", import.meta.url), "utf8");
+}
+
+/**
+ * The `catch (error)` block of `handle()`, brace-matched from its opening `{`.
+ * Anchored on the handler declaration so the server's other catch blocks (the
+ * request-error sink at the end of the file, the file-open path) can never be
+ * picked up by mistake.
+ */
+function handleCatchBlock(source: string): string {
+  const handler = source.indexOf("const handle = async (req: IncomingMessage");
+  assert.ok(handler >= 0, "handle() not found");
+  const catchAt = source.indexOf("} catch (error) {", handler);
+  assert.ok(catchAt >= 0, "handle() error catch not found");
+  const handlerEnd = source.slice(catchAt).search(/\r?\n {4}\}\r?\n {2}\};/);
+  assert.ok(handlerEnd >= 0, "the extracted catch escapes handle()");
+  const declarationStart = source.indexOf("catch", catchAt);
+  const open = source.indexOf("{", catchAt);
+  let depth = 0;
+  for (let index = open; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(declarationStart, index + 1);
+    }
+  }
+  assert.fail("unterminated catch block");
 }
 
 /**

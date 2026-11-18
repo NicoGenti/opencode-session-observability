@@ -6516,60 +6516,6 @@ function clientKey(req) {
 	return address.startsWith("::ffff:") ? address.slice(7) : address;
 }
 /**
-* Builds an error payload from two constants. The response shape lives here so
-* the mapper never has to read an exception to produce one. Exported so the
-* regression tests can pin the shape directly.
-*/
-function errorBody(code, message) {
-	return {
-		error: code,
-		message
-	};
-}
-/**
-* Maps a caught exception to a wire response by identity alone. Only
-* `instanceof` tests are used: the argument is never dereferenced,
-* stringified or interpolated, so no exception property, text or identity can
-* travel toward `sendJson`/`res.end`. Every status and payload below is a
-* compile-time constant, and the order mirrors the documented status contract.
-*
-* Exported so the regression tests can drive the mapping directly.
-*/
-function responseForError(error) {
-	if (error instanceof SessionNotFoundError) return {
-		status: 404,
-		payload: errorBody("session_not_found", "Session not found.")
-	};
-	if (error instanceof EventNotFoundError) return {
-		status: 404,
-		payload: errorBody("event_not_found", "Event not found.")
-	};
-	if (error instanceof EpisodeNotFoundError) return {
-		status: 404,
-		payload: errorBody("episode_not_found", "Episode not found.")
-	};
-	if (error instanceof DatabaseBusyError) return {
-		status: 503,
-		payload: errorBody("database_busy", "The OpenCode database is locked. Retry when the session is idle.")
-	};
-	if (error instanceof UnsupportedSchemaError) return {
-		status: 500,
-		payload: errorBody("unsupported_schema", "The database schema is not supported by this build.")
-	};
-	if (error instanceof URIError) return {
-		status: 400,
-		payload: errorBody("invalid_path", "Malformed request path.")
-	};
-	if (error instanceof SyntaxError) return {
-		status: 400,
-		payload: errorBody("invalid_query", "Invalid request.")
-	};
-	return {
-		status: 500,
-		payload: errorBody("internal_error", "Internal error.")
-	};
-}
-/**
 * Rejects requests whose Host/Origin do not belong to this listener. Without
 * this, a page that DNS-rebinds its own hostname to 127.0.0.1 is treated as
 * same-origin and can read the API.
@@ -7153,8 +7099,38 @@ async function createObservabilityServer(options = {}) {
 				} catch {}
 				return;
 			}
-			const mapped = responseForError(error);
-			sendJson(req, res, mapped.status, mapped.payload);
+			if (error instanceof SessionNotFoundError) sendJson(req, res, 404, {
+				error: "session_not_found",
+				message: "Session not found."
+			});
+			else if (error instanceof EventNotFoundError) sendJson(req, res, 404, {
+				error: "event_not_found",
+				message: "Event not found."
+			});
+			else if (error instanceof EpisodeNotFoundError) sendJson(req, res, 404, {
+				error: "episode_not_found",
+				message: "Episode not found."
+			});
+			else if (error instanceof DatabaseBusyError) sendJson(req, res, 503, {
+				error: "database_busy",
+				message: "The OpenCode database is locked. Retry when the session is idle."
+			});
+			else if (error instanceof UnsupportedSchemaError) sendJson(req, res, 500, {
+				error: "unsupported_schema",
+				message: "The database schema is not supported by this build."
+			});
+			else if (error instanceof URIError) sendJson(req, res, 400, {
+				error: "invalid_path",
+				message: "Malformed request path."
+			});
+			else if (error instanceof SyntaxError) sendJson(req, res, 400, {
+				error: "invalid_query",
+				message: "Invalid request."
+			});
+			else sendJson(req, res, 500, {
+				error: "internal_error",
+				message: "Internal error."
+			});
 		}
 	};
 	let inFlight = 0;
