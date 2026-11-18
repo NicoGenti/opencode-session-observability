@@ -1,5 +1,4 @@
 import {
-  DEFAULT_DOWNLOAD_NAME,
   badge,
   copyText,
   debounce,
@@ -18,6 +17,7 @@ import {
   metricHtml,
   modelLabel,
   modelParts,
+  safeDownloadName,
   statusClass,
   turnModelParts,
 } from "./format.js";
@@ -2722,30 +2722,6 @@ function renderDrawer(event) {
 // ---------------------------------------------------------------------------
 
 /**
- * The only filename alphabet the download anchor accepts. It covers every name
- * the export route produces (`<slug>-<stamp>.json|.md|.html`) and nothing else:
- * separators, quotes, control characters and markup fall back instead.
- */
-const DOWNLOAD_FILENAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
-
-/**
- * Normalizes a download name before it can reach the download anchor.
- *
- * The name is built client-side (`clientExportFilename`), so no response header
- * and no document location sits upstream of the anchor attribute — the dataflow
- * Snyk reported as alert 1 is gone, not merely validated. On top of the
- * allowlist the structural checks reject a trailing dot and any interior `..`,
- * so a name can never read as a relative path. Non-conforming values keep the
- * caller's fallback; `downloadBlob` re-checks at the sink (issue #56).
- */
-export function downloadFilename(name, fallback = DEFAULT_DOWNLOAD_NAME) {
-  if (typeof name !== "string") return fallback;
-  if (!DOWNLOAD_FILENAME.test(name)) return fallback;
-  if (name.endsWith(".") || name.includes("..")) return fallback;
-  return name;
-}
-
-/**
  * The export route's slug alphabet, mirrored from `slugify` in
  * `src/core/format.ts`: lowercase `[a-z0-9-]`, capped at 60 characters and
  * never empty. Copied rather than imported because the UI ships as plain
@@ -2773,10 +2749,49 @@ export function exportSlug(value) {
  * response data upstream of the download anchor (Snyk alert 1 / issue #56), so
  * the export flow no longer reads the header at all.
  */
-export function clientExportFilename(sessionID, format, now = new Date()) {
+export function clientExportFilename(displayName, format, now = new Date()) {
   const extension = format === "markdown" ? "md" : format;
   const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\..+$/, "Z");
-  return `${exportSlug(sessionID)}-${stamp}.${extension}`;
+  return `${exportSlug(displayName)}-${stamp}.${extension}`;
+}
+
+/**
+ * The download name for a session export, taken from the server-provided
+ * session record: its title, then its slug, then the constant `session`
+ * fallback (`exportSlug`). The session id is deliberately never a candidate —
+ * the selected id arrives from the document location (`#/s/<id>/...`), and
+ * letting it reach the download anchor is the dataflow Snyk reported as alert 1
+ * (issue #56). The record comes from `state.sessions`, which `loadSessions()`
+ * fills from the constant path `/api/sessions`.
+ */
+export function sessionExportName(record, format, now = new Date()) {
+  return clientExportFilename(record?.title ?? record?.slug ?? "", format, now);
+}
+
+/**
+ * The selected session as the server described it, or null.
+ *
+ * The record comes from `state.sessions`, which `loadSessions()` fills from the
+ * constant path `/api/sessions`, so its `title`, `slug` and `id` are the
+ * server's own metadata and not downstream of the document location. The
+ * selected id is only the lookup key here.
+ */
+function exportSessionRecord() {
+  const selected = state.sessionID;
+  if (!selected || !Array.isArray(state.sessions)) return null;
+  return state.sessions.find((session) => session.id === selected) ?? null;
+}
+
+/**
+ * The id to put in the export request path.
+ *
+ * Preferred value is the server record's own id. The selected id — the one that
+ * arrives from the document location (`#/s/<id>/...`) — is only the fallback
+ * for the window before the session list has loaded, or for a session the
+ * list's query filtered out. It never feeds the download name.
+ */
+function exportRequestID(record) {
+  return record?.id ?? state.sessionID ?? null;
 }
 
 /**
@@ -2798,10 +2813,12 @@ export function exportRequestPath(
 }
 
 async function exportCurrent(format) {
-  if (!state.sessionID) return;
+  const record = exportSessionRecord();
+  const requestID = exportRequestID(record);
+  if (!requestID) return;
   try {
     const response = await fetch(
-      exportRequestPath(state.sessionID, {
+      exportRequestPath(requestID, {
         format,
         includeEvents: true,
         reveal: state.reveal,
@@ -2820,11 +2837,10 @@ async function exportCurrent(format) {
       );
     }
     const blob = await response.blob();
-    // Named from the session id and the client clock, never from the response
-    // header: the anchor name must not be downstream of response data.
-    const filename = downloadFilename(
-      clientExportFilename(state.sessionID, format),
-    );
+    // Named from the server-provided session metadata and the client clock,
+    // never from the response header or the document location: the anchor name
+    // must not be downstream of either (Snyk alert 1 / issue #56).
+    const filename = safeDownloadName(sessionExportName(record, format));
     downloadBlob(filename, blob);
 
     toast(

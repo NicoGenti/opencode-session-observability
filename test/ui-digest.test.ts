@@ -2,9 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 // @ts-expect-error - plain browser module without type declarations
-import { REVEAL_COPY_WARNING, digestExportUrl, digestToastMessage } from "../src/ui/digestCopy.js";
-
-const ORIGIN = "http://127.0.0.1:4517";
+import { REVEAL_COPY_WARNING, digestToastMessage } from "../src/ui/digestCopy.js";
 
 async function appSource(): Promise<string> {
   return readFile(new URL("../src/ui/app.js", import.meta.url), "utf8");
@@ -17,43 +15,6 @@ function functionBody(source: string, header: string): string {
   const next = source.indexOf("\nfunction ", start + header.length);
   return source.slice(start, next === -1 ? source.length : next);
 }
-
-test("digestExportUrl targets the digest export and omits event flags", () => {
-  const url = digestExportUrl(ORIGIN, "ses_abc", {});
-  assert.equal(url.origin, ORIGIN);
-  assert.equal(url.pathname, "/api/sessions/ses_abc/export");
-  assert.equal(url.searchParams.get("format"), "digest");
-  assert.equal(url.searchParams.get("includeEvents"), null);
-  assert.equal(url.searchParams.get("prompt"), null);
-  assert.equal(url.searchParams.get("reveal"), null);
-});
-
-test("digestExportUrl adds prompt and reveal only when requested", () => {
-  const prompt = digestExportUrl(ORIGIN, "ses_abc", { prompt: true });
-  assert.equal(prompt.searchParams.get("format"), "digest");
-  assert.equal(prompt.searchParams.get("prompt"), "1");
-  assert.equal(prompt.searchParams.get("reveal"), null);
-
-  const revealed = digestExportUrl(ORIGIN, "ses_abc", { reveal: true });
-  assert.equal(revealed.searchParams.get("prompt"), null);
-  assert.equal(revealed.searchParams.get("reveal"), "1");
-
-  const both = digestExportUrl(ORIGIN, "ses_abc", {
-    prompt: true,
-    reveal: true,
-  });
-  assert.equal(both.searchParams.get("prompt"), "1");
-  assert.equal(both.searchParams.get("reveal"), "1");
-});
-
-test("digestExportUrl encodes the session id in the path", () => {
-  const url = digestExportUrl(ORIGIN, "ses/../../x y", {});
-  assert.equal(
-    url.pathname,
-    "/api/sessions/ses%2F..%2F..%2Fx%20y/export",
-  );
-  assert.ok(!url.pathname.includes("/../"));
-});
 
 test("REVEAL_COPY_WARNING names the clipboard risk", () => {
   assert.equal(typeof REVEAL_COPY_WARNING.title, "string");
@@ -104,4 +65,29 @@ test("the digest copy buttons live only in the Advanced statistics toolbar", asy
   const digestButton = advanced.indexOf('id="copy-digest"');
   assert.ok(promptButton > earlyReturn);
   assert.ok(digestButton > earlyReturn);
+});
+
+test("the digest copy path reuses the shared export request helper", async () => {
+  const source = await appSource();
+  const start = source.indexOf("async function copyDigest(");
+  const end = source.indexOf("async function toggleReveal(", start);
+  assert.ok(start >= 0 && end > start, "copyDigest must stay in app.js");
+  const copyDigest = source.slice(start, end);
+
+  // One relative helper for every export request, so the digest copy gets the
+  // same provenance guarantees as the download (no origin, no document
+  // location) and the two paths cannot drift.
+  assert.match(copyDigest, /exportRequestPath\(state\.sessionID, \{/);
+  assert.match(copyDigest, /format: "digest"/);
+  assert.doesNotMatch(copyDigest, /new URL\(/);
+  assert.doesNotMatch(copyDigest, /location\./);
+
+  // The now-unused second URL builder stays deleted: this module owns only the
+  // warning and toast copy.
+  const digestModule = await readFile(
+    new URL("../src/ui/digestCopy.js", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(digestModule, /digestExportUrl/);
+  assert.doesNotMatch(digestModule, /new URL\(/);
 });

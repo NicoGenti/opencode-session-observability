@@ -199,23 +199,38 @@ export async function copyText(text) {
 
 /**
  * The one filename alphabet the download anchor accepts, mirroring the export
- * route's `<slug>-<stamp>.<ext>` shape. Re-checked at the sink so a caller can
- * never hand `downloadBlob` something outside it (DOM-XSS alert #1 / issue #56).
+ * route's `<slug>-<stamp>.<ext>` shape. It covers every name that route
+ * produces and nothing else: separators, quotes, control characters and markup
+ * fall back instead.
  */
 const DOWNLOAD_FILENAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
 
 /** The name a non-conforming download falls back to. */
 export const DEFAULT_DOWNLOAD_NAME = "download";
 
+/**
+ * Normalizes a download name to the anchor's alphabet. This is the single rule
+ * set: the export flow (caller) and `downloadBlob` (sink) both use it, so the
+ * two checks can never drift apart (DOM-XSS alert #1 / issue #56).
+ *
+ * Beyond the allowlist the structural checks reject a trailing dot and any
+ * interior `..`, so a name can never read as a relative path. Non-conforming
+ * values keep the caller's fallback.
+ */
+export function safeDownloadName(name, fallback = DEFAULT_DOWNLOAD_NAME) {
+  if (typeof name !== "string") return fallback;
+  if (!DOWNLOAD_FILENAME.test(name)) return fallback;
+  if (name.endsWith(".") || name.includes("..")) return fallback;
+  return name;
+}
+
 export function downloadBlob(filename, blob) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  // The name is validated here, immediately before the attribute write, as the
-  // last line of defence: anything outside the allowlist becomes the default.
-  anchor.download = DOWNLOAD_FILENAME.test(filename ?? "")
-    ? filename
-    : DEFAULT_DOWNLOAD_NAME;
+  // Re-checked at the sink, immediately before the attribute write, with the
+  // same rule set the caller used: anything outside it becomes the default.
+  anchor.download = safeDownloadName(filename);
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
