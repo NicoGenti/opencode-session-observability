@@ -43,7 +43,9 @@ interface Recommendations {
 
 A test asserts the pairing for every hypothesis row (`test/recommendations.test.ts`). One rule (`concentrated-file-cost`) emits a fact only, because concentration is an observation, not an action.
 
-**Caps.** `MAX_EVENT_LINKS = 10` (shared with health), `MAX_RECOMMENDATION_TURN_LINKS = 6`, `MAX_RECOMMENDATION_ROWS = 16` (the closed rule set cannot exceed it). Ids are de-duplicated, empty ids dropped, and recorded order kept. The UI re-enforces the same caps.
+**Caps.** `MAX_EVENT_LINKS = 10` (shared with health), `MAX_RECOMMENDATION_TURN_LINKS = 6`, `MAX_RECOMMENDATION_ROWS = 11` (the closed rule set's true ceiling: six facts plus five paired hypotheses; `concentrated-file-cost` is fact-only, so `2 + 2 + 2 + 2 + 2 + 1 = 11`). Ids are de-duplicated, empty ids dropped, and recorded order kept. The UI re-enforces the same caps with literals, and `test/recommendations-ui.test.ts` asserts those literals equal the core constants.
+
+**Evidence links.** Every emitted row carries at least one event id that exists in `analysis.events`, because the UI only renders `data-event-id` buttons. A rule whose source yields turn ids but no event ids (health's `context-growth`) resolves its links through `turnAnchors(analysis, turnIDs)`, the single helper in `src/core/recommendations.ts` that maps a turn to `turn.trigger.eventID`, falling back to the turn's first recorded event id. If health ever gains another turn-only rule, that helper is the only place that needs to know.
 
 **Privacy.** Notes never embed prompt text, tool output, file content, patch text or a shell command line — the same payload boundary as diagnostics and attribution. The rider passes through `redactValue` with the rest of the analysis, and since it carries no payload text, redacted and revealed copies are identical.
 
@@ -54,9 +56,9 @@ Each rule is evidence-gated: it emits nothing when its source does not exist, is
 ### `reduce-context`
 
 - **Trigger:** the already-computed health rule `context-growth` is `triggered`.
-- **Evidence:** that health rule's capped `eventIDs` and `turnIDs`.
-- **Fact template:** `Health rule "Context growth" is triggered (<level>): <n> turn(s) added context[; final context <n>].`
-- **Hypothesis:** `Trim or summarize in-turn context` — `Hypothesis: trimming or summarizing in-turn context before the next prompt may keep the growth run shorter across the <n> recorded turn(s).`
+- **Evidence:** turn anchors resolved from that health rule's capped `turnIDs` (`turnAnchors`). `context-growth` records no event ids, so the helper supplies the drill links; the rule never restates the health event list.
+- **Fact template:** `Health rule "context-growth" is triggered (<level>): <health rule note>.` The health rule's deterministic `note` is restated verbatim; this rule does not recount growth turns.
+- **Hypothesis:** `Trim or summarize in-turn context` — `Hypothesis: trimming or summarizing in-turn context before the next prompt may keep the growth run shorter.`
 - **Source layer:** health.
 
 ### `retry-failed-tool`
@@ -77,27 +79,32 @@ Each rule is evidence-gated: it emits nothing when its source does not exist, is
 
 ### `reuse-subagent`
 
-- **Trigger:** `analysis.totals.subagentCalls >= REUSE_SUBAGENT_MIN_CALLS = 3`.
-- **Evidence:** the attributed turns that recorded a delegated subtask (`analysis.attribution.turns[].subtasks`), capped.
+- **Trigger:** `analysis.totals.subagentCalls >= REUSE_SUBAGENT_MIN_CALLS = 3` **and** at least one attributed turn recorded a delegated subtask. The count alone is not evidence: without an attributed subtask the row would have nowhere to drill, so the rule emits nothing.
+- **Evidence:** turn anchors resolved from the attributed turns that recorded a delegated subtask (`analysis.attribution.turns[].subtasks`), capped.
 - **Fact template:** `<n> subagent call(s) were recorded in this analysis.`
 - **Hypothesis:** `Reuse a subagent for the repeated workload` — `Hypothesis: <n> delegated calls may be served by one reusable subagent instead of starting a fresh delegate each time.`
 - **Source layer:** totals (with attribution as the drill source).
 
 ### `avoid-unnecessary-compaction`
 
-- **Trigger:** at least one compaction whose `contextBefore` is recorded (non-null) and below `COMPACTION_CONTEXT_FLOOR = 20_000`. An unavailable `contextBefore` never triggers it.
+- **Trigger:** at least one compaction whose `contextBefore` is recorded (non-null) and below `COMPACTION_CONTEXT_CEILING = 20_000` prompt tokens. An unavailable `contextBefore` never triggers it.
 - **Evidence:** each matching compaction's `eventID` (and `turnID` when recorded).
-- **Fact template:** `<n> of <total> compaction(s) were recorded with less than 20000 of context before them.`
-- **Hypothesis:** `Check whether the compaction was needed` — `Hypothesis: a compaction recorded below 20000 of context may not have been necessary; checking its trigger may avoid the summary cost next time.`
+- **Fact template:** `<n> of <total> compaction(s) were recorded with less than 20000 prompt tokens of context before them.`
+- **Hypothesis:** `Check whether the compaction was needed` — `Hypothesis: a compaction recorded below 20000 prompt tokens of context may not have been necessary; checking its trigger may avoid the summary cost next time.`
 - **Source layer:** compactions.
 
 ### `concentrated-file-cost`
 
-- **Trigger:** at least `CONCENTRATED_FILE_MIN_FILES = 2` distinct attributed file paths with a positive derived cost share, **and** the top path carries at least `CONCENTRATED_FILE_SHARE = 0.5` of the summed shares. Shares are aggregated per path across turns.
-- **Evidence:** that path's capped tool-event ids and the turns that touched it.
-- **Fact template:** `<path> carries <n>% of the attributed file cost (<$amount> across <n> turn(s)).`
+- **Trigger:** at least `CONCENTRATED_FILE_MIN_FILES = 2` distinct attributed file identities with a positive derived cost share, **and** the top identity carries at least `CONCENTRATED_FILE_SHARE = 0.5` of the summed shares. Shares are aggregated per identity across turns.
+- **Identity:** entries are keyed on `pathIdentity` from `src/core/attribution.ts` (separators unified, leading `./` dropped, case-folded on a case-insensitive filesystem). `src\hot.ts` and `src/hot.ts` are one entry; the first-seen spelling is displayed.
+- **Evidence:** that identity's capped tool-event ids (turn anchors when a file row recorded none) and the turns that touched it.
+- **Fact template:** `<path> carries <n>% of the attributed file cost (<cost> across <n> turn(s)).`
 - **Fact only** — concentration is an observation, not an action. The cost base is the attribution layer's derived per-file share (step cost divided evenly across the step's tool calls and the files each call touched); the session row's auxiliary-inclusive cost is never used.
 - **Source layer:** attribution.
+
+## Windowed analyses
+
+When `analysis.coverage.complete === false`, every aggregate describes the analysed window, not the session. The aggregating rules (`concentrated-file-cost`, `avoid-unnecessary-compaction`, `reuse-subagent`, `split-task`) append the qualifier ` (in the analysed window)` to their notes, and the rider adds one basis note: `The analysis covers a window, not the full session: every aggregate describes that window only.` This mirrors health's insufficiency wording (`the analysis covers a window, not the full session`) instead of stating a window total as a session fact.
 
 ## Surfaces
 

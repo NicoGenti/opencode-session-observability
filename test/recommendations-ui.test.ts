@@ -8,6 +8,8 @@ import {
   recommendationsSectionHtml,
   // @ts-expect-error - plain browser module without type declarations
 } from "../src/ui/recommendations.js";
+import { MAX_EVENT_LINKS as CORE_MAX_EVENT_LINKS } from "../src/core/health.ts";
+import { MAX_RECOMMENDATION_ROWS as CORE_MAX_RECOMMENDATION_ROWS } from "../src/core/recommendations.ts";
 
 interface Row {
   id: string;
@@ -154,6 +156,13 @@ test("an absent, empty or malformed rider renders nothing", () => {
   assert.equal(recommendationsSectionHtml({ rows: [{ id: "x" }] }), "");
 });
 
+test("the UI cap literals mirror the core constants", () => {
+  // The browser module cannot import core, so these literals are the drift
+  // surface; this test keeps them equal to the exported source of truth.
+  assert.equal(MAX_RECOMMENDATION_ROWS, CORE_MAX_RECOMMENDATION_ROWS);
+  assert.equal(MAX_EVENT_LINKS, CORE_MAX_EVENT_LINKS);
+});
+
 test("rows and evidence are capped in the renderer", () => {
   const rows = Array.from({ length: MAX_RECOMMENDATION_ROWS + 6 }, (_, index) =>
     fact({
@@ -171,6 +180,39 @@ test("rows and evidence are capped in the renderer", () => {
     (markup.match(/data-event-id="evt_0_\d+"/g) ?? []).length,
     MAX_EVENT_LINKS,
   );
+});
+
+test("counts include only the rows that actually render", () => {
+  const markup = recommendationsSectionHtml({
+    rows: [
+      fact(),
+      {
+        id: "unrenderable:fact",
+        kind: "fact",
+        severity: "info",
+        ruleID: "split-task",
+        label: "",
+        note: "Turn 1 recorded 12 step(s).",
+        eventIDs: [],
+        turnIDs: [],
+      },
+      hypothesis(),
+      {
+        id: "unrenderable:hypothesis",
+        kind: "hypothesis",
+        severity: "advisory",
+        ruleID: "split-task",
+        label: "Split the task",
+        note: "",
+        eventIDs: [],
+        turnIDs: [],
+      },
+    ],
+    basisNotes: [],
+  });
+
+  assert.match(markup, /1 fact · 1 hypothesis/);
+  assert.equal((markup.match(/class="recommendation-row /g) ?? []).length, 2);
 });
 
 test("every dynamic string is escaped", () => {

@@ -19,7 +19,7 @@
 import { escapeAttr, escapeHtml, formatNumber } from "./format.js";
 
 /** Mirrors of the core caps; a hostile payload cannot grow the section. */
-export const MAX_RECOMMENDATION_ROWS = 16;
+export const MAX_RECOMMENDATION_ROWS = 11;
 export const MAX_EVENT_LINKS = 10;
 
 /** The standing hypothesis copy. Fixed, independent of the payload. */
@@ -114,31 +114,37 @@ function rowHtml(row, position) {
       </li>`;
 }
 
-function countText(rows, kind) {
-  const count = rows.filter((row) => row?.kind === kind).length;
-  if (kind === "fact") {
-    return `${formatNumber(count)} ${count === 1 ? "fact" : "facts"}`;
-  }
-  return `${formatNumber(count)} ${count === 1 ? "hypothesis" : "hypotheses"}`;
+function countLabel(count, noun) {
+  const plural = noun === "hypothesis" ? "hypotheses" : "facts";
+  return `${formatNumber(count)} ${count === 1 ? noun : plural}`;
 }
 
 /**
  * The section rendered in Advanced Statistics. An absent, empty or malformed
  * rider renders nothing, so a session with nothing to say leaves no frame
  * behind.
+ *
+ * Rows that cannot render (an empty label or note) are skipped before the
+ * counts, the provenance rail and the list are built, so the header never
+ * claims a row the section does not show. One pass collects all four.
  */
 export function recommendationsSectionHtml(recommendations) {
   const rows = asArray(recommendations?.rows).slice(0, MAX_RECOMMENDATION_ROWS);
-  const rendered = rows
-    .map((row, index) => rowHtml(row, index + 1))
-    .filter((row) => row.length > 0);
-  if (rendered.length === 0) return "";
-
+  const rendered = [];
   const sources = [];
+  let facts = 0;
+  let hypotheses = 0;
   for (const row of rows) {
+    const html = rowHtml(row, rendered.length + 1);
+    if (html.length === 0) continue;
+    rendered.push(html);
+    if (row?.kind === "hypothesis") hypotheses += 1;
+    else facts += 1;
     const source = sourceOf(row?.ruleID);
     if (!sources.includes(source)) sources.push(source);
   }
+  if (rendered.length === 0) return "";
+
   const rail = `Sources — ${sources.join(" · ")}`;
   const notes = asArray(recommendations?.basisNotes).filter(
     (note) => typeof note === "string" && note.length > 0,
@@ -153,7 +159,7 @@ export function recommendationsSectionHtml(recommendations) {
       <div class="recommendations-head">
         <h2 class="stats-title">Recommendations</h2>
         <span class="recommendation-counts">${escapeHtml(
-          `${countText(rows, "fact")} · ${countText(rows, "hypothesis")}`,
+          `${countLabel(facts, "fact")} · ${countLabel(hypotheses, "hypothesis")}`,
         )}</span>
         <span class="muted small">${escapeHtml(rail)}</span>
       </div>
