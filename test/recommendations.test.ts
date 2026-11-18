@@ -26,6 +26,7 @@ import { metric } from "../src/core/types.ts";
 import {
   BASE,
   assistant,
+  compaction,
   compactionFixture,
   fixture,
   idle,
@@ -956,16 +957,35 @@ test("the rider rides the analysis and survives redaction unchanged", async () =
   );
 });
 
-test("the redacted secret fixture keeps its rider identical to the revealed one", async () => {
-  const service = new ObservabilityService(memorySource(secretsFixture()));
+test("a secret-bearing fixture keeps its rider identical between redacted and revealed copies", async () => {
+  const data = secretsFixture();
+  data.sessions[0]!.messages.push(
+    compaction("msg_secret_compaction", 4, BASE + 800, {
+      tokens: { input: 8_000, output: 400, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+      summary: "Bearer hunter2 PROMPT_SENTINEL",
+    }),
+  );
+  // The source really carries the payload; only then is parity meaningful.
+  assert.ok(JSON.stringify(data).includes("hunter2"));
+
+  const service = new ObservabilityService(memorySource(data));
   const presented = await service.analyze("ses_secrets");
   const revealed = await service.analyze("ses_secrets", { reveal: true });
+  const rows = presented.analysis.recommendations?.rows ?? [];
 
+  assert.ok(
+    rows.some((row) => row.ruleID === "avoid-unnecessary-compaction"),
+    "the injected compaction must trigger a row",
+  );
   assert.deepEqual(
     presented.analysis.recommendations,
     revealed.analysis.recommendations,
     "a payload-free rider cannot differ between redacted and revealed copies",
   );
+  const text = JSON.stringify(presented.analysis.recommendations);
+  for (const sentinel of ["hunter2", "Bearer", "PROMPT_SENTINEL"]) {
+    assert.equal(text.includes(sentinel), false, `payload leaked: ${sentinel}`);
+  }
 });
 
 test("turn evidence is capped and the fact/hypothesis rows are in fixed rule order", async () => {
