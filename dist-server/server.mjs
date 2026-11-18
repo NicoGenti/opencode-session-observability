@@ -3046,8 +3046,11 @@ function pathShaped(value) {
 * Accumulator identity for a path: separators unified to `/`, leading `./`
 * dropped, and case-folded where the recorded filesystem is case-insensitive.
 * The first spelling seen is what the DTO displays.
+*
+* Exported so downstream aggregates (recommendations) key on the same identity
+* instead of the raw display spelling; this is the single path-identity rule.
 */
-function pathKey(path) {
+function pathIdentity(path) {
 	let key = path.replace(/\\/g, "/");
 	while (key.startsWith("./")) key = key.slice(2);
 	return CASE_INSENSITIVE_PATHS ? key.toLowerCase() : key;
@@ -3070,7 +3073,7 @@ function toolPaths(tool) {
 		if (typeof value !== "string" || !pathShaped(value)) return;
 		const path = cleanPath(value);
 		if (path === null) return;
-		const key = pathKey(path);
+		const key = pathIdentity(path);
 		if (seen.has(key)) return;
 		seen.add(key);
 		out.push({
@@ -3216,7 +3219,7 @@ function attributeTurn(turn, eventByID) {
 			const paths = toolPaths(tool);
 			const share = shareOf(cost, callCount, paths.length);
 			for (const item of paths) {
-				const key = pathKey(item.path);
+				const key = pathIdentity(item.path);
 				let accumulator = files.get(key);
 				if (!accumulator) {
 					accumulator = {
@@ -3307,8 +3310,70 @@ function evaluateAttribution(analysis) {
 		basisNotes: [...BASIS_NOTES$1]
 	};
 }
-/** A compaction below this context size invites the "was it needed?" question. */
-var COMPACTION_CONTEXT_FLOOR = 2e4;
+// src/core/format.ts
+var numberFormat = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
+function formatNumber(value) {
+	if (value === null || value === void 0 || !Number.isFinite(value)) return "—";
+	return numberFormat.format(value);
+}
+function formatDuration(ms) {
+	if (ms === null || ms === void 0 || !Number.isFinite(ms)) return "—";
+	const abs = Math.abs(ms);
+	if (abs < 1e3) return `${Math.round(ms)} ms`;
+	if (abs < 6e4) return `${(ms / 1e3).toFixed(2)} s`;
+	if (abs < 36e5) {
+		const minutes = Math.floor(abs / 6e4);
+		const seconds = Math.round(abs % 6e4 / 1e3);
+		return `${ms < 0 ? "-" : ""}${minutes}m ${seconds}s`;
+	}
+	const hours = Math.floor(abs / 36e5);
+	const minutes = Math.round(abs % 36e5 / 6e4);
+	return `${ms < 0 ? "-" : ""}${hours}h ${minutes}m`;
+}
+function formatPercent(ratio) {
+	if (ratio === null || ratio === void 0 || !Number.isFinite(ratio)) return "—";
+	return `${(ratio * 100).toFixed(1)}%`;
+}
+function formatCost(value) {
+	if (value === null || value === void 0 || !Number.isFinite(value)) return "—";
+	if (value === 0) return "$0";
+	if (Math.abs(value) >= 1) return `$${value.toFixed(2)}`;
+	if (Math.abs(value) >= .01) return `$${value.toFixed(4)}`;
+	return `$${value.toFixed(6)}`;
+}
+function formatDateTime(ms) {
+	if (ms === null || ms === void 0 || !Number.isFinite(ms)) return "—";
+	return new Date(ms).toISOString();
+}
+function formatTime(ms) {
+	if (ms === null || ms === void 0 || !Number.isFinite(ms)) return "—";
+	return `${new Date(ms).toISOString().slice(11, 23)}Z`;
+}
+function basisMark(basis) {
+	if (basis === "measured") return "M";
+	if (basis === "derived") return "D";
+	if (basis === "estimated") return "E";
+	return "—";
+}
+function slugify(value, max = 60) {
+	return value.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, max).replace(/-+$/g, "") || "session";
+}
+function timestampForFilename(ms) {
+	return new Date(ms).toISOString().replace(/[-:]/g, "").replace(/\..+$/, "Z");
+}
+/**
+* Escapes text interpolated into a Markdown line so it cannot open raw HTML
+* or a Markdown link/code span. Emphasis markers are left alone to keep
+* identifiers readable.
+*/
+function escapeMarkdownInline(value) {
+	return value.replaceAll("\\", "\\\\").replace(/[`[\]<>&]/g, "\\$&").replace(/\r?\n/g, " ").trim();
+}
+function escapeMarkdownCell(value) {
+	return escapeMarkdownInline(value).replaceAll("|", "\\|");
+}
+/** A compaction below this prompt-token context size invites the "was it needed?" question. */
+var COMPACTION_CONTEXT_CEILING = 2e4;
 /**
 * The standing basis notes. Deterministic phrases only: they restate where the
 * rows come from and what the layer refuses to do.
@@ -3337,11 +3402,34 @@ function capIDs$1(ids, limit) {
 function asArray(value) {
 	return Array.isArray(value) ? value : [];
 }
-function money(value) {
-	return `$${value.toFixed(2)}`;
-}
 function minutes(ms) {
 	return (ms / 6e4).toFixed(1);
+}
+/**
+* A windowed analysis computes every aggregate over its window, so an
+* aggregate rule appends this qualifier instead of stating the number as a
+* session fact. Health words the same caveat in its insufficiency reasons
+* ("the analysis covers a window, not the full session").
+*/
+function scopeNote(analysis) {
+	return analysis.coverage?.complete === false ? " (in the analysed window)" : "";
+}
+/**
+* Resolves turn ids to the event that best anchors them in the trajectory:
+* the turn's trigger event, falling back to the turn's first recorded event.
+* This is the single place that turns a turn-only finding into a drill link,
+* so a health rule that yields turn ids but no event ids still links somewhere.
+*/
+function turnAnchors(analysis, turnIDs) {
+	const byID = new Map(asArray(analysis.turns).map((turn) => [turn.id, turn]));
+	const out = [];
+	for (const turnID of turnIDs) {
+		const turn = byID.get(turnID);
+		if (!turn) continue;
+		const anchor = turn.trigger?.eventID ?? asArray(turn.eventIDs)[0] ?? null;
+		if (typeof anchor === "string" && anchor.length > 0) out.push(anchor);
+	}
+	return out;
 }
 function row(ruleID, kind, label, note, eventIDs = [], turnIDs = []) {
 	return {
@@ -3361,15 +3449,16 @@ function pair(ruleID, factLabel, factNote, hypothesisLabel, hypothesisNote, even
 }
 /**
 * Rule 1 — reads the already-computed `context-growth` health rule. The rule is
-* the trigger; the notes are regenerated from counts so no free text is copied.
+* the trigger and its deterministic note is restated verbatim; this rule never
+* recounts turns. The health rule records turn ids but no event ids, so the
+* turn anchors supply the drill link.
 */
 function reduceContextRows(analysis) {
 	const rule = asArray(analysis.health?.rules).find((item) => item.id === "context-growth");
 	if (!rule?.triggered) return [];
 	const level = rule.level ?? "watch";
-	const growthTurns = asArray(analysis.turns).filter((turn) => (turn.contextDelta.value ?? 0) > 0).length;
-	const finalContext = analysis.totals?.finalContext?.value ?? null;
-	return pair("reduce-context", "Context growth", `Health rule "Context growth" is triggered (${level}): ${finalContext === null ? `${growthTurns} turn(s) added context` : `${growthTurns} turn(s) added context; final context ${finalContext}`}.`, "Trim or summarize in-turn context", `Hypothesis: trimming or summarizing in-turn context before the next prompt may keep the growth run shorter across the ${growthTurns} recorded turn(s).`, rule.eventIDs, rule.turnIDs);
+	const anchors = turnAnchors(analysis, rule.turnIDs);
+	return pair("reduce-context", rule.label, `Health rule "${rule.id}" is triggered (${level}): ${rule.note}.`, "Trim or summarize in-turn context", "Hypothesis: trimming or summarizing in-turn context before the next prompt may keep the growth run shorter.", anchors, rule.turnIDs);
 }
 /**
 * Rule 2 — unrecovered diagnostic incidents. `possible-recovery` and
@@ -3399,7 +3488,9 @@ function splitTaskRows(analysis) {
 	if (turn === null) return [];
 	const steps = asArray(turn.steps).length;
 	const elapsed = turn.totalTime?.value ?? 0;
-	return pair("split-task", "Large turn", `Turn ${turn.index} recorded ${steps} step(s) and ${minutes(elapsed)} min of recorded turn time.`, "Split the task", "Hypothesis: splitting this turn into smaller prompts may keep each turn's context, step count and cost per turn lower.", asArray(turn.eventIDs), [turn.id]);
+	const suffix = scopeNote(analysis);
+	const anchors = asArray(turn.eventIDs);
+	return pair("split-task", "Large turn", `Turn ${turn.index} recorded ${steps} step(s) and ${minutes(elapsed)} min of recorded turn time${suffix}.`, "Split the task", `Hypothesis: splitting this turn into smaller prompts may keep each turn's context, step count and cost per turn lower${suffix}.`, anchors.length > 0 ? anchors : turnAnchors(analysis, [turn.id]), [turn.id]);
 }
 /** Rule 4 — repeated subagent calls, evidenced by the attributed subtasks. */
 function reuseSubagentRows(analysis) {
@@ -3407,7 +3498,9 @@ function reuseSubagentRows(analysis) {
 	if (calls < 3) return [];
 	const turnIDs = [];
 	for (const turn of asArray(analysis.attribution?.turns)) if (asArray(turn.subtasks).length > 0) turnIDs.push(turn.turnID);
-	return pair("reuse-subagent", "Repeated subagent calls", `${calls} subagent call(s) were recorded in this analysis.`, "Reuse a subagent for the repeated workload", `Hypothesis: ${calls} delegated calls may be served by one reusable subagent instead of starting a fresh delegate each time.`, [], turnIDs);
+	if (turnIDs.length === 0) return [];
+	const suffix = scopeNote(analysis);
+	return pair("reuse-subagent", "Repeated subagent calls", `${calls} subagent call(s) were recorded in this analysis${suffix}.`, "Reuse a subagent for the repeated workload", `Hypothesis: ${calls} delegated calls may be served by one reusable subagent instead of starting a fresh delegate each time${suffix}.`, turnAnchors(analysis, turnIDs), turnIDs);
 }
 /** Rule 5 — compactions recorded while the context was still small. */
 function avoidCompactionRows(analysis) {
@@ -3417,19 +3510,24 @@ function avoidCompactionRows(analysis) {
 		return before !== null && before < 2e4;
 	});
 	if (small.length === 0) return [];
-	return pair("avoid-unnecessary-compaction", "Small-context compactions", `${small.length} of ${compactions.length} compaction(s) were recorded with less than ${COMPACTION_CONTEXT_FLOOR} of context before them.`, "Check whether the compaction was needed", `Hypothesis: a compaction recorded below ${COMPACTION_CONTEXT_FLOOR} of context may not have been necessary; checking its trigger may avoid the summary cost next time.`, small.map((item) => item.eventID), small.map((item) => item.turnID ?? ""));
+	const suffix = scopeNote(analysis);
+	return pair("avoid-unnecessary-compaction", "Small-context compactions", `${small.length} of ${compactions.length} compaction(s) were recorded with less than ${COMPACTION_CONTEXT_CEILING} prompt tokens of context before them${suffix}.`, "Check whether the compaction was needed", `Hypothesis: a compaction recorded below ${COMPACTION_CONTEXT_CEILING} prompt tokens of context may not have been necessary; checking its trigger may avoid the summary cost next time${suffix}.`, small.map((item) => item.eventID), small.map((item) => item.turnID ?? ""));
 }
 /**
 * Rule 6 — the attribution layer's own aggregates. A single path carrying at
 * least half of the attributed file cost is a fact worth naming; concentration
 * needs two attributed files to be meaningful.
+*
+* Entries are keyed on attribution's `pathIdentity`, so two spellings of the
+* same file across turns (`src\hot.ts`, `src/hot.ts`) aggregate into one entry.
+* The first-seen spelling is what the note displays.
 */
 function concentratedFileRows(analysis) {
 	const byPath = /* @__PURE__ */ new Map();
 	for (const turn of asArray(analysis.attribution?.turns)) for (const file of asArray(turn.files)) {
 		const value = file.costShare?.value ?? null;
 		if (value === null || !(value > 0)) continue;
-		const key = file.path;
+		const key = pathIdentity(file.path);
 		let entry = byPath.get(key);
 		if (!entry) {
 			entry = {
@@ -3452,7 +3550,9 @@ function concentratedFileRows(analysis) {
 	const share = top.cost / total;
 	if (share < .5) return [];
 	const percent = Math.round(share * 100);
-	return [row("concentrated-file-cost", "fact", "Concentrated file cost", `${top.path} carries ${percent}% of the attributed file cost (${money(top.cost)} across ${new Set(top.turnIDs).size} turn(s)).`, top.eventIDs, top.turnIDs)];
+	const suffix = scopeNote(analysis);
+	const anchors = top.eventIDs.length > 0 ? top.eventIDs : turnAnchors(analysis, top.turnIDs);
+	return [row("concentrated-file-cost", "fact", "Concentrated file cost", `${top.path} carries ${percent}% of the attributed file cost (${formatCost(top.cost)} across ${new Set(top.turnIDs).size} turn(s))${suffix}.`, anchors, top.turnIDs)];
 }
 /**
 * Primary entry point. Pure, deterministic and local.
@@ -3473,9 +3573,10 @@ function evaluateRecommendations(analysis) {
 		...concentratedFileRows(analysis)
 	];
 	if (rows.length === 0) return null;
+	const basisNotes = analysis.coverage?.complete === false ? [...BASIS_NOTES, "The analysis covers a window, not the full session: every aggregate describes that window only."] : [...BASIS_NOTES];
 	return {
-		rows: rows.slice(0, 16),
-		basisNotes: [...BASIS_NOTES]
+		rows: rows.slice(0, 11),
+		basisNotes
 	};
 }
 /**
@@ -3654,68 +3755,6 @@ function deriveLiveSnapshot(analysis, options = {}) {
 		of: analysis.turns.length
 	};
 	return snapshot;
-}
-// src/core/format.ts
-var numberFormat = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
-function formatNumber(value) {
-	if (value === null || value === void 0 || !Number.isFinite(value)) return "—";
-	return numberFormat.format(value);
-}
-function formatDuration(ms) {
-	if (ms === null || ms === void 0 || !Number.isFinite(ms)) return "—";
-	const abs = Math.abs(ms);
-	if (abs < 1e3) return `${Math.round(ms)} ms`;
-	if (abs < 6e4) return `${(ms / 1e3).toFixed(2)} s`;
-	if (abs < 36e5) {
-		const minutes = Math.floor(abs / 6e4);
-		const seconds = Math.round(abs % 6e4 / 1e3);
-		return `${ms < 0 ? "-" : ""}${minutes}m ${seconds}s`;
-	}
-	const hours = Math.floor(abs / 36e5);
-	const minutes = Math.round(abs % 36e5 / 6e4);
-	return `${ms < 0 ? "-" : ""}${hours}h ${minutes}m`;
-}
-function formatPercent(ratio) {
-	if (ratio === null || ratio === void 0 || !Number.isFinite(ratio)) return "—";
-	return `${(ratio * 100).toFixed(1)}%`;
-}
-function formatCost(value) {
-	if (value === null || value === void 0 || !Number.isFinite(value)) return "—";
-	if (value === 0) return "$0";
-	if (Math.abs(value) >= 1) return `$${value.toFixed(2)}`;
-	if (Math.abs(value) >= .01) return `$${value.toFixed(4)}`;
-	return `$${value.toFixed(6)}`;
-}
-function formatDateTime(ms) {
-	if (ms === null || ms === void 0 || !Number.isFinite(ms)) return "—";
-	return new Date(ms).toISOString();
-}
-function formatTime(ms) {
-	if (ms === null || ms === void 0 || !Number.isFinite(ms)) return "—";
-	return `${new Date(ms).toISOString().slice(11, 23)}Z`;
-}
-function basisMark(basis) {
-	if (basis === "measured") return "M";
-	if (basis === "derived") return "D";
-	if (basis === "estimated") return "E";
-	return "—";
-}
-function slugify(value, max = 60) {
-	return value.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, max).replace(/-+$/g, "") || "session";
-}
-function timestampForFilename(ms) {
-	return new Date(ms).toISOString().replace(/[-:]/g, "").replace(/\..+$/, "Z");
-}
-/**
-* Escapes text interpolated into a Markdown line so it cannot open raw HTML
-* or a Markdown link/code span. Emphasis markers are left alone to keep
-* identifiers readable.
-*/
-function escapeMarkdownInline(value) {
-	return value.replaceAll("\\", "\\\\").replace(/[`[\]<>&]/g, "\\$&").replace(/\r?\n/g, " ").trim();
-}
-function escapeMarkdownCell(value) {
-	return escapeMarkdownInline(value).replaceAll("|", "\\|");
 }
 // src/core/digest.ts
 /**

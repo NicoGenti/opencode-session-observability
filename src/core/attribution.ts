@@ -206,8 +206,11 @@ function pathShaped(value: string): boolean {
  * Accumulator identity for a path: separators unified to `/`, leading `./`
  * dropped, and case-folded where the recorded filesystem is case-insensitive.
  * The first spelling seen is what the DTO displays.
+ *
+ * Exported so downstream aggregates (recommendations) key on the same identity
+ * instead of the raw display spelling; this is the single path-identity rule.
  */
-function pathKey(path: string): string {
+export function pathIdentity(path: string): string {
   let key = path.replace(/\\/g, "/");
   while (key.startsWith("./")) key = key.slice(2);
   return CASE_INSENSITIVE_PATHS ? key.toLowerCase() : key;
@@ -238,7 +241,7 @@ function toolPaths(tool: ToolCallDetail): ToolPath[] {
     if (typeof value !== "string" || !pathShaped(value)) return;
     const path = cleanPath(value);
     if (path === null) return;
-    const key = pathKey(path);
+    const key = pathIdentity(path);
     if (seen.has(key)) return;
     seen.add(key);
     out.push({ path, op: kind });
@@ -445,7 +448,7 @@ function attributeTurn(
       const paths = toolPaths(tool);
       const share = shareOf(cost, callCount, paths.length);
       for (const item of paths) {
-        const key = pathKey(item.path);
+        const key = pathIdentity(item.path);
         let accumulator = files.get(key);
         if (!accumulator) {
           accumulator = {

@@ -26,6 +26,8 @@
  * shell command line ever enters this DTO.
  */
 
+import { pathIdentity } from "./attribution.ts";
+import { formatCost } from "./format.ts";
 import { MAX_EVENT_LINKS } from "./health.ts";
 import type { Analysis, CompactionTransaction, Turn } from "./types.ts";
 
@@ -66,16 +68,20 @@ export interface Recommendations {
 
 /** Turn evidence links kept per row; the same cap as the health rules. */
 export const MAX_RECOMMENDATION_TURN_LINKS = 6;
-/** Rows the fixed rule set can emit: six facts plus five paired hypotheses. */
-export const MAX_RECOMMENDATION_ROWS = 16;
+/**
+ * Rows the fixed rule set can emit, and the true ceiling: six facts plus five
+ * paired hypotheses. `concentrated-file-cost` is fact-only, so the maximum is
+ * 2 + 2 + 2 + 2 + 2 + 1 = 11. Nothing in the evaluator can exceed it.
+ */
+export const MAX_RECOMMENDATION_ROWS = 11;
 /** A turn with this many recorded steps is large enough to consider splitting. */
 export const SPLIT_TASK_MIN_STEPS = 12;
 /** Fifteen minutes of recorded turn time is the second split-task trigger. */
 export const SPLIT_TASK_MIN_DURATION_MS = 900_000;
 /** Repeated delegation only suggests a reusable subagent from three calls up. */
 export const REUSE_SUBAGENT_MIN_CALLS = 3;
-/** A compaction below this context size invites the "was it needed?" question. */
-export const COMPACTION_CONTEXT_FLOOR = 20_000;
+/** A compaction below this prompt-token context size invites the "was it needed?" question. */
+export const COMPACTION_CONTEXT_CEILING = 20_000;
 /** Share of the attributed file cost a single path must carry to be named. */
 export const CONCENTRATED_FILE_SHARE = 0.5;
 /** Concentration needs at least two attributed files to mean anything. */
@@ -113,12 +119,39 @@ function asArray<T>(value: T[] | undefined): T[] {
   return Array.isArray(value) ? value : [];
 }
 
-function money(value: number): string {
-  return `$${value.toFixed(2)}`;
-}
-
 function minutes(ms: number): string {
   return (ms / 60_000).toFixed(1);
+}
+
+/**
+ * A windowed analysis computes every aggregate over its window, so an
+ * aggregate rule appends this qualifier instead of stating the number as a
+ * session fact. Health words the same caveat in its insufficiency reasons
+ * ("the analysis covers a window, not the full session").
+ */
+function scopeNote(analysis: Analysis): string {
+  return analysis.coverage?.complete === false ? " (in the analysed window)" : "";
+}
+
+/**
+ * Resolves turn ids to the event that best anchors them in the trajectory:
+ * the turn's trigger event, falling back to the turn's first recorded event.
+ * This is the single place that turns a turn-only finding into a drill link,
+ * so a health rule that yields turn ids but no event ids still links somewhere.
+ */
+export function turnAnchors(
+  analysis: Analysis,
+  turnIDs: readonly string[],
+): string[] {
+  const byID = new Map(asArray(analysis.turns).map((turn) => [turn.id, turn] as const));
+  const out: string[] = [];
+  for (const turnID of turnIDs) {
+    const turn = byID.get(turnID);
+    if (!turn) continue;
+    const anchor = turn.trigger?.eventID ?? asArray(turn.eventIDs)[0] ?? null;
+    if (typeof anchor === "string" && anchor.length > 0) out.push(anchor);
+  }
+  return out;
 }
 
 function row(
@@ -166,7 +199,9 @@ function pair(
 
 /**
  * Rule 1 — reads the already-computed `context-growth` health rule. The rule is
- * the trigger; the notes are regenerated from counts so no free text is copied.
+ * the trigger and its deterministic note is restated verbatim; this rule never
+ * recounts turns. The health rule records turn ids but no event ids, so the
+ * turn anchors supply the drill link.
  */
 function reduceContextRows(analysis: Analysis): Recommendation[] {
   const rule = asArray(analysis.health?.rules).find(
@@ -174,21 +209,14 @@ function reduceContextRows(analysis: Analysis): Recommendation[] {
   );
   if (!rule?.triggered) return [];
   const level = rule.level ?? "watch";
-  const growthTurns = asArray(analysis.turns).filter(
-    (turn) => (turn.contextDelta.value ?? 0) > 0,
-  ).length;
-  const finalContext = analysis.totals?.finalContext?.value ?? null;
-  const observed =
-    finalContext === null
-      ? `${growthTurns} turn(s) added context`
-      : `${growthTurns} turn(s) added context; final context ${finalContext}`;
+  const anchors = turnAnchors(analysis, rule.turnIDs);
   return pair(
     "reduce-context",
-    "Context growth",
-    `Health rule "Context growth" is triggered (${level}): ${observed}.`,
+    rule.label,
+    `Health rule "${rule.id}" is triggered (${level}): ${rule.note}.`,
     "Trim or summarize in-turn context",
-    `Hypothesis: trimming or summarizing in-turn context before the next prompt may keep the growth run shorter across the ${growthTurns} recorded turn(s).`,
-    rule.eventIDs,
+    "Hypothesis: trimming or summarizing in-turn context before the next prompt may keep the growth run shorter.",
+    anchors,
     rule.turnIDs,
   );
 }
@@ -238,13 +266,15 @@ function splitTaskRows(analysis: Analysis): Recommendation[] {
   if (turn === null) return [];
   const steps = asArray(turn.steps).length;
   const elapsed = turn.totalTime?.value ?? 0;
+  const suffix = scopeNote(analysis);
+  const anchors = asArray(turn.eventIDs);
   return pair(
     "split-task",
     "Large turn",
-    `Turn ${turn.index} recorded ${steps} step(s) and ${minutes(elapsed)} min of recorded turn time.`,
+    `Turn ${turn.index} recorded ${steps} step(s) and ${minutes(elapsed)} min of recorded turn time${suffix}.`,
     "Split the task",
-    "Hypothesis: splitting this turn into smaller prompts may keep each turn's context, step count and cost per turn lower.",
-    asArray(turn.eventIDs),
+    `Hypothesis: splitting this turn into smaller prompts may keep each turn's context, step count and cost per turn lower${suffix}.`,
+    anchors.length > 0 ? anchors : turnAnchors(analysis, [turn.id]),
     [turn.id],
   );
 }
@@ -257,13 +287,17 @@ function reuseSubagentRows(analysis: Analysis): Recommendation[] {
   for (const turn of asArray(analysis.attribution?.turns)) {
     if (asArray(turn.subtasks).length > 0) turnIDs.push(turn.turnID);
   }
+  // Attribution is the evidence, `totals.subagentCalls` only the count: a count
+  // with no attributed subtask row would have nowhere to drill.
+  if (turnIDs.length === 0) return [];
+  const suffix = scopeNote(analysis);
   return pair(
     "reuse-subagent",
     "Repeated subagent calls",
-    `${calls} subagent call(s) were recorded in this analysis.`,
+    `${calls} subagent call(s) were recorded in this analysis${suffix}.`,
     "Reuse a subagent for the repeated workload",
-    `Hypothesis: ${calls} delegated calls may be served by one reusable subagent instead of starting a fresh delegate each time.`,
-    [],
+    `Hypothesis: ${calls} delegated calls may be served by one reusable subagent instead of starting a fresh delegate each time${suffix}.`,
+    turnAnchors(analysis, turnIDs),
     turnIDs,
   );
 }
@@ -273,15 +307,16 @@ function avoidCompactionRows(analysis: Analysis): Recommendation[] {
   const compactions = asArray<CompactionTransaction>(analysis.compactions);
   const small = compactions.filter((item) => {
     const before = item.contextBefore?.value ?? null;
-    return before !== null && before < COMPACTION_CONTEXT_FLOOR;
+    return before !== null && before < COMPACTION_CONTEXT_CEILING;
   });
   if (small.length === 0) return [];
+  const suffix = scopeNote(analysis);
   return pair(
     "avoid-unnecessary-compaction",
     "Small-context compactions",
-    `${small.length} of ${compactions.length} compaction(s) were recorded with less than ${COMPACTION_CONTEXT_FLOOR} of context before them.`,
+    `${small.length} of ${compactions.length} compaction(s) were recorded with less than ${COMPACTION_CONTEXT_CEILING} prompt tokens of context before them${suffix}.`,
     "Check whether the compaction was needed",
-    `Hypothesis: a compaction recorded below ${COMPACTION_CONTEXT_FLOOR} of context may not have been necessary; checking its trigger may avoid the summary cost next time.`,
+    `Hypothesis: a compaction recorded below ${COMPACTION_CONTEXT_CEILING} prompt tokens of context may not have been necessary; checking its trigger may avoid the summary cost next time${suffix}.`,
     small.map((item) => item.eventID),
     small.map((item) => item.turnID ?? ""),
   );
@@ -298,6 +333,10 @@ interface FileCost {
  * Rule 6 — the attribution layer's own aggregates. A single path carrying at
  * least half of the attributed file cost is a fact worth naming; concentration
  * needs two attributed files to be meaningful.
+ *
+ * Entries are keyed on attribution's `pathIdentity`, so two spellings of the
+ * same file across turns (`src\hot.ts`, `src/hot.ts`) aggregate into one entry.
+ * The first-seen spelling is what the note displays.
  */
 function concentratedFileRows(analysis: Analysis): Recommendation[] {
   const byPath = new Map<string, FileCost>();
@@ -305,7 +344,7 @@ function concentratedFileRows(analysis: Analysis): Recommendation[] {
     for (const file of asArray(turn.files)) {
       const value = file.costShare?.value ?? null;
       if (value === null || !(value > 0)) continue;
-      const key = file.path;
+      const key = pathIdentity(file.path);
       let entry = byPath.get(key);
       if (!entry) {
         entry = { path: file.path, cost: 0, turnIDs: [], eventIDs: [] };
@@ -327,13 +366,17 @@ function concentratedFileRows(analysis: Analysis): Recommendation[] {
   const share = top.cost / total;
   if (share < CONCENTRATED_FILE_SHARE) return [];
   const percent = Math.round(share * 100);
+  const suffix = scopeNote(analysis);
+  const anchors = top.eventIDs.length > 0
+    ? top.eventIDs
+    : turnAnchors(analysis, top.turnIDs);
   return [
     row(
       "concentrated-file-cost",
       "fact",
       "Concentrated file cost",
-      `${top.path} carries ${percent}% of the attributed file cost (${money(top.cost)} across ${new Set(top.turnIDs).size} turn(s)).`,
-      top.eventIDs,
+      `${top.path} carries ${percent}% of the attributed file cost (${formatCost(top.cost)} across ${new Set(top.turnIDs).size} turn(s))${suffix}.`,
+      anchors,
       top.turnIDs,
     ),
   ];
@@ -367,8 +410,15 @@ export function evaluateRecommendations(
     ...concentratedFileRows(analysis),
   ];
   if (rows.length === 0) return null;
+  const windowed = analysis.coverage?.complete === false;
+  const basisNotes = windowed
+    ? [
+        ...BASIS_NOTES,
+        "The analysis covers a window, not the full session: every aggregate describes that window only.",
+      ]
+    : [...BASIS_NOTES];
   return {
     rows: rows.slice(0, MAX_RECOMMENDATION_ROWS),
-    basisNotes: [...BASIS_NOTES],
+    basisNotes,
   };
 }
