@@ -47,6 +47,10 @@ export const LIVE_WARNING_RULE_IDS: readonly HealthRuleId[] = Object.freeze([
 
 /** The still-open turn, carrying its already-computed metrics. */
 export interface LiveOpenTurn {
+  /**
+   * Global turn index in the session. With `lastTurns` the snapshot inspects a
+   * turn suffix, so this is never a position inside `turnWindow`.
+   */
   index: number;
   id: string;
   startedAt: number;
@@ -78,7 +82,10 @@ export interface LiveSnapshot {
   totalInSession: number;
   /** Events with `orderKey > since`; `null` when no `since` was supplied. */
   newEvents: EventIndexEntry[] | null;
-  /** Present only when `lastTurns` bounded the snapshot. */
+  /**
+   * Present only when `lastTurns` bounded the snapshot. `last` is the *count*
+   * of turns the snapshot inspected (the suffix size), `of` the session total.
+   */
   turnWindow?: { last: number; of: number };
 }
 
@@ -126,21 +133,40 @@ function hasTerminalIdle(analysis: Analysis, turn: Turn): boolean {
   );
 }
 
-function openTurnOf(turns: readonly Turn[]): LiveOpenTurn | null {
-  for (let index = turns.length - 1; index >= 0; index -= 1) {
-    const turn = turns[index]!;
-    if (turn.status !== "running") continue;
-    return {
-      index: turn.index,
-      id: turn.id,
-      startedAt: turn.startTime,
-      steps: turn.steps.length,
-      tokens: { ...turn.tokens },
-      cost: turn.cost,
-      uncertainty: ["session-in-progress"],
-    };
-  }
-  return null;
+/**
+ * Turn statuses that mean the turn has settled. No open turn can follow them:
+ * a later step-less turn does not re-open a finished one.
+ */
+const TERMINAL_TURN_STATUS: ReadonlySet<string> = new Set([
+  "completed",
+  "error",
+  "interrupted",
+]);
+
+/**
+ * The last turn of the inspected list is the only candidate for the open turn.
+ * Selecting it (never searching backwards) fixes two leaks: a just-opened turn
+ * that has only its user message reads `unknown` with zero steps and is still
+ * open, while a session whose last turn already settled reports no open turn
+ * even when an earlier turn is still `running`. A session with a recorded
+ * terminal outcome never has an open turn.
+ */
+function openTurnOf(
+  turns: readonly Turn[],
+  state: LiveState,
+): LiveOpenTurn | null {
+  if (state === "ended") return null;
+  const turn = turns[turns.length - 1];
+  if (turn === undefined || TERMINAL_TURN_STATUS.has(turn.status)) return null;
+  return {
+    index: turn.index,
+    id: turn.id,
+    startedAt: turn.startTime,
+    steps: turn.steps.length,
+    tokens: { ...turn.tokens },
+    cost: turn.cost,
+    uncertainty: ["session-in-progress"],
+  };
 }
 
 /** Deduplicates, drops empty ids and caps the list in recorded order. */
@@ -156,9 +182,16 @@ function capIDs(ids: readonly string[], limit: number): string[] {
   return out;
 }
 
-function eventTurnsByID(analysis: Analysis): Map<string, string | null> {
-  const map = new Map<string, string | null>();
-  for (const event of analysis.events) map.set(event.id, event.turnID);
+/**
+ * Event id → turn id, built once per snapshot from the turns that are actually
+ * in scope. `Turn.eventIDs` already carries every event the turn owns, so a
+ * windowed poll never walks the whole event stream again.
+ */
+function eventTurnsByID(turns: readonly Turn[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const turn of turns) {
+    for (const eventID of turn.eventIDs) map.set(eventID, turn.id);
+  }
   return map;
 }
 
@@ -166,14 +199,19 @@ function eventTurnsByID(analysis: Analysis): Map<string, string | null> {
  * Triggered operational rules in the health order. When a turn window is
  * supplied, evidence outside it is dropped and a rule with no in-window
  * evidence is not reported: the snapshot describes the window, not the whole
- * session.
+ * session. The note keeps its session-wide wording but is annotated, because
+ * the counts stay session-wide while only the evidence is windowed.
  */
 function warningsOf(
   analysis: Analysis,
-  window: ReadonlySet<string> | null,
+  windowTurns: readonly Turn[] | null,
 ): LiveWarning[] {
   const rules = analysis.health?.rules ?? [];
-  const turnByEvent = window === null ? null : eventTurnsByID(analysis);
+  const window =
+    windowTurns === null ? null : new Set(windowTurns.map((turn) => turn.id));
+  const turnByEvent =
+    windowTurns === null ? null : eventTurnsByID(windowTurns);
+  const windowSize = windowTurns?.length ?? 0;
   const out: LiveWarning[] = [];
   for (const rule of rules) {
     if (!rule.triggered) continue;
@@ -201,6 +239,12 @@ function warningsOf(
       triggered: true,
       eventIDs: inWindowEvents,
       turnIDs: inWindowTurns,
+      note:
+        window === null
+          ? rule.note
+          : `${rule.note} (session-wide counts; evidence limited to the last ${windowSize} turn${
+              windowSize === 1 ? "" : "s"
+            })`,
       basis: "derived",
       uncertainty: ["session-in-progress"],
     });
@@ -248,16 +292,16 @@ export function deriveLiveSnapshot(
   options: LiveSnapshotOptions = {},
 ): LiveSnapshot {
   const lastTurns = normalizeLastTurns(options.lastTurns);
-  const turns =
-    lastTurns === null ? analysis.turns : analysis.turns.slice(-lastTurns);
-  const window =
-    lastTurns === null ? null : new Set(turns.map((turn) => turn.id));
+  const windowTurns =
+    lastTurns === null ? null : analysis.turns.slice(-lastTurns);
+  const turns = windowTurns ?? analysis.turns;
+  const state = deriveState(analysis);
   const snapshot: LiveSnapshot = {
-    state: deriveState(analysis),
+    state,
     basis: "derived",
     asOf: asOf(analysis),
-    openTurn: openTurnOf(turns),
-    warnings: warningsOf(analysis, window),
+    openTurn: openTurnOf(turns, state),
+    warnings: warningsOf(analysis, windowTurns),
     coverage: analysis.coverage,
     totalInSession: analysis.events.length,
     newEvents: newEventsOf(analysis, options.since),

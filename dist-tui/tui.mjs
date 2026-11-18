@@ -1407,6 +1407,32 @@ function parseAnalysisResponse(response) {
 	};
 }
 var init_analysisResponse = __esmMin((() => {}));
+// src/plugin/tui/polling.ts
+/**
+* True when the session recorded a terminal outcome, no turn is running and
+* the recorded clock says the session is not busy (`busy <= idle`, or no busy
+* stamp at all).
+*/
+function isSettledAnalysis(analysis) {
+	if (!analysis) return false;
+	const session = analysis.session;
+	if (!session) return false;
+	const { busy, idle } = session.time ?? {};
+	if (typeof busy === "number" && (typeof idle !== "number" || busy > idle)) return false;
+	const turns = Array.isArray(analysis.turns) ? analysis.turns : [];
+	if (turns.some((turn) => turn.status === "running")) return false;
+	if (session.outcome) return true;
+	const last = turns[turns.length - 1];
+	return last !== void 0 && TERMINAL_TURN_STATUS.has(last.status);
+}
+var TERMINAL_TURN_STATUS;
+var init_polling = __esmMin((() => {
+	TERMINAL_TURN_STATUS = /* @__PURE__ */ new Set([
+		"completed",
+		"error",
+		"interrupted"
+	]);
+}));
 // src/plugin/tui/statistics/state.ts
 /** Clamps an index into `[0, count - 1]`; an empty list always yields 0. */
 function clampIndex(index, count) {
@@ -1539,7 +1565,7 @@ function createStatisticsState(client) {
 			if (ticket !== request) return;
 			const parsed = parseAnalysisResponse(response);
 			if (!parsed.ok) {
-				setAnalysis(null);
+				if (!sameSession) setAnalysis(null);
 				setError(parsed.message);
 				return;
 			}
@@ -1565,7 +1591,9 @@ function createStatisticsState(client) {
 	/**
 	* Re-fetches the current analysis every `LIVE_POLL_MS` while the panel is
 	* open. The RPC is the existing `analysis` one — no new surface — and one
-	* request at a time keeps a slow host from piling up polls.
+	* request at a time keeps a slow host from piling up polls. A settled
+	* session (terminal outcome, nothing busy, no running turn) stops the timer:
+	* there is nothing left to re-fetch.
 	*/
 	function startLivePolling(nextSessionID) {
 		stopLivePolling();
@@ -1577,6 +1605,7 @@ function createStatisticsState(client) {
 			liveInFlight = true;
 			fetchAnalysis(liveTarget).finally(() => {
 				liveInFlight = false;
+				if (isSettledAnalysis(analysis())) stopLivePolling();
 			});
 		}, LIVE_POLL_MS);
 	}
@@ -1622,6 +1651,7 @@ var LIVE_POLL_MS, UNAVAILABLE;
 var init_state$1 = __esmMin((() => {
 	init_rpc();
 	init_analysisResponse();
+	init_polling();
 	LIVE_POLL_MS = 5e3;
 	UNAVAILABLE = {
 		value: null,
@@ -2106,7 +2136,7 @@ function createTrajectoryState(client) {
 			if (ticket !== request) return;
 			const parsed = parseAnalysisResponse(response);
 			if (!parsed.ok) {
-				setAnalysis(null);
+				if (!sameSession) setAnalysis(null);
 				setError(parsed.message);
 				return;
 			}
@@ -2132,7 +2162,9 @@ function createTrajectoryState(client) {
 	/**
 	* Re-fetches the current analysis every `LIVE_POLL_MS` while the panel is
 	* open. The RPC is the existing `analysis` one — no new surface — and one
-	* request at a time keeps a slow host from piling up polls.
+	* request at a time keeps a slow host from piling up polls. A settled
+	* session (terminal outcome, nothing busy, no running turn) stops the timer:
+	* there is nothing left to re-fetch.
 	*/
 	function startLivePolling(nextSessionID) {
 		stopLivePolling();
@@ -2144,6 +2176,7 @@ function createTrajectoryState(client) {
 			liveInFlight = true;
 			fetchAnalysis(liveTarget).finally(() => {
 				liveInFlight = false;
+				if (isSettledAnalysis(analysis())) stopLivePolling();
 			});
 		}, LIVE_POLL_MS);
 	}
@@ -2167,6 +2200,7 @@ function createTrajectoryState(client) {
 var init_state = __esmMin((() => {
 	init_rpc();
 	init_analysisResponse();
+	init_polling();
 	init_state$1();
 }));
 // src/plugin/tui/trajectory/TrajectoryView.tsx

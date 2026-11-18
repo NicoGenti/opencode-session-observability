@@ -719,6 +719,49 @@ test("HTTP family recovery clears the dataset cache when ?refresh is set", async
   }
 });
 
+test("HTTP live never clears the dataset cache, even with ?refresh=1", async () => {
+  const { path } = writeFixtureDb(simpleFixture());
+  const server = await createObservabilityServer({
+    dbPath: path,
+    port: 0,
+    allowReveal: true,
+  });
+  try {
+    let cleared = 0;
+    const clear = server.service.clearCache.bind(server.service);
+    server.service.clearCache = () => {
+      cleared += 1;
+      clear();
+    };
+
+    const warm = await fetch(liveURL(server.url, "ses_simple"));
+    assert.equal(warm.status, 200);
+    const before = (await warm.json()) as any;
+    assert.equal(cleared, 0);
+    assert.equal(server.service.describe().cacheEntries, 1);
+
+    // The live route is polled: a per-poll global flush would defeat the
+    // requestKey coherence the route relies on.
+    const polled = await fetch(
+      `${liveURL(server.url, "ses_simple")}?refresh=1&since=0`,
+    );
+    assert.equal(polled.status, 200);
+    const after = (await polled.json()) as any;
+    assert.equal(cleared, 0);
+    assert.equal(server.service.describe().cacheEntries, 1);
+    assert.equal(after.totalInSession, before.totalInSession);
+
+    // Every other route keeps its explicit refresh.
+    const analysis = await fetch(
+      `${server.url}/api/sessions/ses_simple/analysis?refresh=1`,
+    );
+    assert.equal(analysis.status, 200);
+    assert.equal(cleared, 1);
+  } finally {
+    await server.close();
+  }
+});
+
 test("HTTP live returns the derived snapshot shape", async () => {
   await withServer(toolsFixture(), async (base) => {
     const response = await fetch(liveURL(base, "ses_tools"));

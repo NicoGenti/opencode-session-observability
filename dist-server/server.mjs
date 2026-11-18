@@ -2670,21 +2670,36 @@ function hasTerminalIdle(analysis, turn) {
 	const attached = new Set(turn.nonStepEventIDs);
 	return analysis.events.some((event) => attached.has(event.id) && event.kind === "idle" && isTerminalOutcome(event.status));
 }
-function openTurnOf(turns) {
-	for (let index = turns.length - 1; index >= 0; index -= 1) {
-		const turn = turns[index];
-		if (turn.status !== "running") continue;
-		return {
-			index: turn.index,
-			id: turn.id,
-			startedAt: turn.startTime,
-			steps: turn.steps.length,
-			tokens: { ...turn.tokens },
-			cost: turn.cost,
-			uncertainty: ["session-in-progress"]
-		};
-	}
-	return null;
+/**
+* Turn statuses that mean the turn has settled. No open turn can follow them:
+* a later step-less turn does not re-open a finished one.
+*/
+var TERMINAL_TURN_STATUS = /* @__PURE__ */ new Set([
+	"completed",
+	"error",
+	"interrupted"
+]);
+/**
+* The last turn of the inspected list is the only candidate for the open turn.
+* Selecting it (never searching backwards) fixes two leaks: a just-opened turn
+* that has only its user message reads `unknown` with zero steps and is still
+* open, while a session whose last turn already settled reports no open turn
+* even when an earlier turn is still `running`. A session with a recorded
+* terminal outcome never has an open turn.
+*/
+function openTurnOf(turns, state) {
+	if (state === "ended") return null;
+	const turn = turns[turns.length - 1];
+	if (turn === void 0 || TERMINAL_TURN_STATUS.has(turn.status)) return null;
+	return {
+		index: turn.index,
+		id: turn.id,
+		startedAt: turn.startTime,
+		steps: turn.steps.length,
+		tokens: { ...turn.tokens },
+		cost: turn.cost,
+		uncertainty: ["session-in-progress"]
+	};
 }
 /** Deduplicates, drops empty ids and caps the list in recorded order. */
 function capIDs(ids, limit) {
@@ -2698,20 +2713,28 @@ function capIDs(ids, limit) {
 	}
 	return out;
 }
-function eventTurnsByID(analysis) {
+/**
+* Event id → turn id, built once per snapshot from the turns that are actually
+* in scope. `Turn.eventIDs` already carries every event the turn owns, so a
+* windowed poll never walks the whole event stream again.
+*/
+function eventTurnsByID(turns) {
 	const map = /* @__PURE__ */ new Map();
-	for (const event of analysis.events) map.set(event.id, event.turnID);
+	for (const turn of turns) for (const eventID of turn.eventIDs) map.set(eventID, turn.id);
 	return map;
 }
 /**
 * Triggered operational rules in the health order. When a turn window is
 * supplied, evidence outside it is dropped and a rule with no in-window
 * evidence is not reported: the snapshot describes the window, not the whole
-* session.
+* session. The note keeps its session-wide wording but is annotated, because
+* the counts stay session-wide while only the evidence is windowed.
 */
-function warningsOf(analysis, window) {
+function warningsOf(analysis, windowTurns) {
 	const rules = analysis.health?.rules ?? [];
-	const turnByEvent = window === null ? null : eventTurnsByID(analysis);
+	const window = windowTurns === null ? null : new Set(windowTurns.map((turn) => turn.id));
+	const turnByEvent = windowTurns === null ? null : eventTurnsByID(windowTurns);
+	const windowSize = windowTurns?.length ?? 0;
 	const out = [];
 	for (const rule of rules) {
 		if (!rule.triggered) continue;
@@ -2729,6 +2752,7 @@ function warningsOf(analysis, window) {
 			triggered: true,
 			eventIDs: inWindowEvents,
 			turnIDs: inWindowTurns,
+			note: window === null ? rule.note : `${rule.note} (session-wide counts; evidence limited to the last ${windowSize} turn${windowSize === 1 ? "" : "s"})`,
 			basis: "derived",
 			uncertainty: ["session-in-progress"]
 		});
@@ -2766,14 +2790,15 @@ function normalizeLastTurns(value) {
 */
 function deriveLiveSnapshot(analysis, options = {}) {
 	const lastTurns = normalizeLastTurns(options.lastTurns);
-	const turns = lastTurns === null ? analysis.turns : analysis.turns.slice(-lastTurns);
-	const window = lastTurns === null ? null : new Set(turns.map((turn) => turn.id));
+	const windowTurns = lastTurns === null ? null : analysis.turns.slice(-lastTurns);
+	const turns = windowTurns ?? analysis.turns;
+	const state = deriveState(analysis);
 	const snapshot = {
-		state: deriveState(analysis),
+		state,
 		basis: "derived",
 		asOf: asOf(analysis),
-		openTurn: openTurnOf(turns),
-		warnings: warningsOf(analysis, window),
+		openTurn: openTurnOf(turns, state),
+		warnings: warningsOf(analysis, windowTurns),
 		coverage: analysis.coverage,
 		totalInSession: analysis.events.length,
 		newEvents: newEventsOf(analysis, options.since)
@@ -5331,7 +5356,7 @@ async function createObservabilityServer(options = {}) {
 				return;
 			}
 			const reveal = revealRequested && allowReveal;
-			if (bool(search, "refresh")) service.clearCache();
+			if (!SESSION_LIVE_PATTERN.test(path) && bool(search, "refresh")) service.clearCache();
 			if (path === "/api/health") {
 				sendJson(req, res, 200, {
 					ok: true,
