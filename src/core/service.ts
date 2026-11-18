@@ -4,6 +4,7 @@ import { promptTokensMetric } from "./metrics.ts";
 import { evaluateDiagnostics } from "./diagnostics.ts";
 import { evaluateSessionHealth } from "./health.ts";
 import { evaluateAttribution } from "./attribution.ts";
+import { evaluateRecommendations } from "./recommendations.ts";
 import { deriveLiveSnapshot } from "./live.ts";
 import { redactValue, truncate } from "./util.ts";
 import { exportSession } from "./export.ts";
@@ -253,6 +254,13 @@ export class ObservabilityService {
     const attribution = evaluateAttribution(analysis);
     if (attribution !== null) {
       analysis.attribution = attribution;
+    }
+    // Recommendations read diagnostics, health and attribution of this same
+    // projection, so they attach last. Only triggered rules produce rows; a
+    // session with nothing to say keeps the field absent.
+    const recommendations = evaluateRecommendations(analysis);
+    if (recommendations !== null) {
+      analysis.recommendations = recommendations;
     }
     const dataset: Dataset = {
       session,

@@ -15,7 +15,7 @@ function isRecord(value) {
 function asRecord(value) {
 	return isRecord(value) ? value : {};
 }
-function asArray(value) {
+function asArray$1(value) {
 	return Array.isArray(value) ? value : [];
 }
 function str(value) {
@@ -872,7 +872,7 @@ function toolError(value) {
 }
 function outputFromContent(value) {
 	const parts = [];
-	for (const item of asArray(value)) {
+	for (const item of asArray$1(value)) {
 		const type = str(item.type);
 		if (type === "text") {
 			const text = str(item.text);
@@ -1105,15 +1105,15 @@ function normalizeMessages(messages, options = {}) {
 					flags: EMPTY_FLAGS,
 					payload: data,
 					meta: {
-						files: asArray(data.files).length,
-						agents: asArray(data.agents).map((item) => str(asRecord(item).name)).filter(Boolean),
-						skills: asArray(data.skills).map((item) => str(asRecord(item).name)).filter(Boolean)
+						files: asArray$1(data.files).length,
+						agents: asArray$1(data.agents).map((item) => str(asRecord(item).name)).filter(Boolean),
+						skills: asArray$1(data.skills).map((item) => str(asRecord(item).name)).filter(Boolean)
 					}
 				}));
 				break;
 			}
 			case "assistant": {
-				const content = asArray(data.content);
+				const content = asArray$1(data.content);
 				const agent = str(data.agent);
 				const model = normalizeModel(data.model);
 				const tokens = normalizeTokens(data.tokens);
@@ -2457,12 +2457,12 @@ function rule(id, label, level, evaluable, note, eventIDs = [], turnIDs = []) {
 		level,
 		evaluable,
 		note,
-		eventIDs: capIDs$1(eventIDs, 10),
-		turnIDs: capIDs$1(turnIDs, 6)
+		eventIDs: capIDs$2(eventIDs, 10),
+		turnIDs: capIDs$2(turnIDs, 6)
 	};
 }
 /** Deduplicates, drops empty ids and caps the list in recorded order. */
-function capIDs$1(ids, limit) {
+function capIDs$2(ids, limit) {
 	const out = [];
 	const seen = /* @__PURE__ */ new Set();
 	for (const id of ids) {
@@ -2954,7 +2954,7 @@ function evaluateDelegationRecovery(input) {
 * The standing basis notes. Deterministic phrases only: they restate where each
 * value comes from and which linkage the recorder cannot supply.
 */
-var BASIS_NOTES = Object.freeze([
+var BASIS_NOTES$1 = Object.freeze([
 	"File paths are measured: they come from recorded tool inputs and write-tool file lists.",
 	"Per-file cost shares are derived: each step's recorded cost is divided evenly across its tool calls, then across the files a call touched; calls that touch no file are not allocated.",
 	"Command names are derived: the first recorded shell token only; full command text is never included.",
@@ -3304,6 +3304,177 @@ function evaluateAttribution(analysis) {
 	if (turns.length === 0) return null;
 	return {
 		turns,
+		basisNotes: [...BASIS_NOTES$1]
+	};
+}
+/** A compaction below this context size invites the "was it needed?" question. */
+var COMPACTION_CONTEXT_FLOOR = 2e4;
+/**
+* The standing basis notes. Deterministic phrases only: they restate where the
+* rows come from and what the layer refuses to do.
+*/
+var BASIS_NOTES = Object.freeze([
+	"Recommendations are derived from this analysis: diagnostics incidents, session health rules, turns, compactions and attribution rows.",
+	"Every hypothesis ships with a fact row naming the finding it rests on; a hypothesis is a suggestion, not a diagnosis.",
+	"Notes are deterministic phrases plus counts: no prompt, tool output, file content, patch text or shell command line is included.",
+	"Rows follow the fixed rule order, fact before its hypothesis; no numeric ordering artifact is computed.",
+	"Recommendations are local and deterministic: no model and no network call is involved, and nothing here can act on a session."
+]);
+/** Recovery states that prove the failure run continued without a resolution. */
+var UNRECOVERED = /* @__PURE__ */ new Set(["no-recovery-evidence"]);
+/** Deduplicates, drops empty ids and caps the list in recorded order. */
+function capIDs$1(ids, limit) {
+	const out = [];
+	const seen = /* @__PURE__ */ new Set();
+	for (const id of ids) {
+		if (typeof id !== "string" || id.length === 0 || seen.has(id)) continue;
+		seen.add(id);
+		out.push(id);
+		if (out.length >= limit) break;
+	}
+	return out;
+}
+function asArray(value) {
+	return Array.isArray(value) ? value : [];
+}
+function money(value) {
+	return `$${value.toFixed(2)}`;
+}
+function minutes(ms) {
+	return (ms / 6e4).toFixed(1);
+}
+function row(ruleID, kind, label, note, eventIDs = [], turnIDs = []) {
+	return {
+		id: `${ruleID}:${kind}`,
+		kind,
+		severity: kind === "fact" ? "info" : "advisory",
+		ruleID,
+		label,
+		note,
+		eventIDs: capIDs$1(eventIDs, 10),
+		turnIDs: capIDs$1(turnIDs, 6)
+	};
+}
+/** A fact row plus the hypothesis it supports, in that order. */
+function pair(ruleID, factLabel, factNote, hypothesisLabel, hypothesisNote, eventIDs, turnIDs) {
+	return [row(ruleID, "fact", factLabel, factNote, eventIDs, turnIDs), row(ruleID, "hypothesis", hypothesisLabel, hypothesisNote, eventIDs, turnIDs)];
+}
+/**
+* Rule 1 — reads the already-computed `context-growth` health rule. The rule is
+* the trigger; the notes are regenerated from counts so no free text is copied.
+*/
+function reduceContextRows(analysis) {
+	const rule = asArray(analysis.health?.rules).find((item) => item.id === "context-growth");
+	if (!rule?.triggered) return [];
+	const level = rule.level ?? "watch";
+	const growthTurns = asArray(analysis.turns).filter((turn) => (turn.contextDelta.value ?? 0) > 0).length;
+	const finalContext = analysis.totals?.finalContext?.value ?? null;
+	return pair("reduce-context", "Context growth", `Health rule "Context growth" is triggered (${level}): ${finalContext === null ? `${growthTurns} turn(s) added context` : `${growthTurns} turn(s) added context; final context ${finalContext}`}.`, "Trim or summarize in-turn context", `Hypothesis: trimming or summarizing in-turn context before the next prompt may keep the growth run shorter across the ${growthTurns} recorded turn(s).`, rule.eventIDs, rule.turnIDs);
+}
+/**
+* Rule 2 — unrecovered diagnostic incidents. `possible-recovery` and
+* `insufficient-data` are deliberately excluded: neither proves that the run
+* continued unresolved.
+*/
+function retryFailedToolRows(analysis) {
+	const unrecovered = asArray(analysis.diagnostics?.incidents).filter((incident) => UNRECOVERED.has(incident.recovery));
+	if (unrecovered.length === 0) return [];
+	let top = unrecovered[0];
+	for (const incident of unrecovered) if (incident.attempts > top.attempts) top = incident;
+	const tools = new Set(unrecovered.map((incident) => incident.tool));
+	return pair("retry-failed-tool", "Unrecovered tool failures", `${unrecovered.length} incident(s) across ${tools.size} tool(s) have no recovery evidence; ${top.tool} failed ${top.attempts} time(s) in one run.`, "Verify the tool precondition before retrying", `Hypothesis: retrying ${top.tool} immediately may repeat the same failure; checking its precondition or configuration first may end the run sooner.`, unrecovered.map((incident) => incident.firstFailureEventID), unrecovered.map((incident) => incident.turnID));
+}
+/** First turn, in recorded order, that exceeds either split-task bound. */
+function oversizedTurn(turns) {
+	for (const turn of turns) {
+		if (!turn) continue;
+		if (asArray(turn.steps).length >= 12) return turn;
+		if ((turn.totalTime?.value ?? 0) >= 9e5) return turn;
+	}
+	return null;
+}
+/** Rule 3 — one oversized turn, by step count or recorded turn time. */
+function splitTaskRows(analysis) {
+	const turn = oversizedTurn(asArray(analysis.turns));
+	if (turn === null) return [];
+	const steps = asArray(turn.steps).length;
+	const elapsed = turn.totalTime?.value ?? 0;
+	return pair("split-task", "Large turn", `Turn ${turn.index} recorded ${steps} step(s) and ${minutes(elapsed)} min of recorded turn time.`, "Split the task", "Hypothesis: splitting this turn into smaller prompts may keep each turn's context, step count and cost per turn lower.", asArray(turn.eventIDs), [turn.id]);
+}
+/** Rule 4 — repeated subagent calls, evidenced by the attributed subtasks. */
+function reuseSubagentRows(analysis) {
+	const calls = analysis.totals?.subagentCalls ?? 0;
+	if (calls < 3) return [];
+	const turnIDs = [];
+	for (const turn of asArray(analysis.attribution?.turns)) if (asArray(turn.subtasks).length > 0) turnIDs.push(turn.turnID);
+	return pair("reuse-subagent", "Repeated subagent calls", `${calls} subagent call(s) were recorded in this analysis.`, "Reuse a subagent for the repeated workload", `Hypothesis: ${calls} delegated calls may be served by one reusable subagent instead of starting a fresh delegate each time.`, [], turnIDs);
+}
+/** Rule 5 — compactions recorded while the context was still small. */
+function avoidCompactionRows(analysis) {
+	const compactions = asArray(analysis.compactions);
+	const small = compactions.filter((item) => {
+		const before = item.contextBefore?.value ?? null;
+		return before !== null && before < 2e4;
+	});
+	if (small.length === 0) return [];
+	return pair("avoid-unnecessary-compaction", "Small-context compactions", `${small.length} of ${compactions.length} compaction(s) were recorded with less than ${COMPACTION_CONTEXT_FLOOR} of context before them.`, "Check whether the compaction was needed", `Hypothesis: a compaction recorded below ${COMPACTION_CONTEXT_FLOOR} of context may not have been necessary; checking its trigger may avoid the summary cost next time.`, small.map((item) => item.eventID), small.map((item) => item.turnID ?? ""));
+}
+/**
+* Rule 6 — the attribution layer's own aggregates. A single path carrying at
+* least half of the attributed file cost is a fact worth naming; concentration
+* needs two attributed files to be meaningful.
+*/
+function concentratedFileRows(analysis) {
+	const byPath = /* @__PURE__ */ new Map();
+	for (const turn of asArray(analysis.attribution?.turns)) for (const file of asArray(turn.files)) {
+		const value = file.costShare?.value ?? null;
+		if (value === null || !(value > 0)) continue;
+		const key = file.path;
+		let entry = byPath.get(key);
+		if (!entry) {
+			entry = {
+				path: file.path,
+				cost: 0,
+				turnIDs: [],
+				eventIDs: []
+			};
+			byPath.set(key, entry);
+		}
+		entry.cost += value;
+		entry.turnIDs.push(turn.turnID);
+		for (const eventID of asArray(file.eventIDs)) entry.eventIDs.push(eventID);
+	}
+	const files = [...byPath.values()].sort((left, right) => right.cost - left.cost || (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+	if (files.length < 2) return [];
+	const total = files.reduce((sum, file) => sum + file.cost, 0);
+	if (!(total > 0)) return [];
+	const top = files[0];
+	const share = top.cost / total;
+	if (share < .5) return [];
+	const percent = Math.round(share * 100);
+	return [row("concentrated-file-cost", "fact", "Concentrated file cost", `${top.path} carries ${percent}% of the attributed file cost (${money(top.cost)} across ${new Set(top.turnIDs).size} turn(s)).`, top.eventIDs, top.turnIDs)];
+}
+/**
+* Primary entry point. Pure, deterministic and local.
+*
+* Returns `null` when no rule triggers: the rider then stays absent instead of
+* asserting an empty recommendation list, mirroring the diagnostics and
+* attribution precedent. A malformed analysis also yields `null` rather than
+* throwing, matching `delegation.ts` and `attribution.ts`.
+*/
+function evaluateRecommendations(analysis) {
+	if (!analysis || !Array.isArray(analysis.turns) || !Array.isArray(analysis.events) || !Array.isArray(analysis.compactions)) return null;
+	const rows = [
+		...reduceContextRows(analysis),
+		...retryFailedToolRows(analysis),
+		...splitTaskRows(analysis),
+		...reuseSubagentRows(analysis),
+		...avoidCompactionRows(analysis),
+		...concentratedFileRows(analysis)
+	];
+	if (rows.length === 0) return null;
+	return {
+		rows: rows.slice(0, 16),
 		basisNotes: [...BASIS_NOTES]
 	};
 }
@@ -4990,6 +5161,8 @@ var ObservabilityService = class {
 		analysis.health = evaluateSessionHealth(analysis);
 		const attribution = evaluateAttribution(analysis);
 		if (attribution !== null) analysis.attribution = attribution;
+		const recommendations = evaluateRecommendations(analysis);
+		if (recommendations !== null) analysis.recommendations = recommendations;
 		const dataset = {
 			session,
 			family,
