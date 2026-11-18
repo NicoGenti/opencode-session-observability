@@ -74,11 +74,16 @@ test("the digest copy path reuses the shared export request helper", async () =>
   assert.ok(start >= 0 && end > start, "copyDigest must stay in app.js");
   const copyDigest = source.slice(start, end);
 
-  // One relative helper for every export request, so the digest copy gets the
-  // same provenance guarantees as the download (no origin, no document
-  // location) and the two paths cannot drift.
-  assert.match(copyDigest, /exportRequestPath\(state\.sessionID, \{/);
+  // Both the digest copy and the download resolve their target through the same
+  // server-list helper, so the digest copy gets the same provenance guarantees
+  // (no origin, no document location) and the two paths cannot drift.
+  assert.match(copyDigest, /const requestID = await resolveExportTarget\(\);/);
+  assert.match(copyDigest, /exportRequestPath\(requestID, \{/);
   assert.match(copyDigest, /format: "digest"/);
+  assert.doesNotMatch(copyDigest, /exportRequestPath\(state\.sessionID/);
+  // The selected id survives only as the early no-op guard.
+  assert.equal([...copyDigest.matchAll(/state\.sessionID/g)].length, 1);
+  assert.match(copyDigest, /if \(!state\.sessionID\) return;/);
   assert.doesNotMatch(copyDigest, /new URL\(/);
   assert.doesNotMatch(copyDigest, /location\./);
 

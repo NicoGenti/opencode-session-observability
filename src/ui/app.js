@@ -2783,15 +2783,17 @@ function exportSessionRecord() {
 }
 
 /**
- * The id to put in the export request path.
+ * The id to put in the export request path: the server record's own id, or
+ * null. There is deliberately no fallback.
  *
- * Preferred value is the server record's own id. The selected id — the one that
- * arrives from the document location (`#/s/<id>/...`) — is only the fallback
- * for the window before the session list has loaded, or for a session the
- * list's query filtered out. It never feeds the download name.
+ * The selected id arrives from the document location (`#/s/<id>/...`), so
+ * falling back to it whenever the record was missing put location data at the
+ * head of the request path (Snyk alert 23 / issue #81). A missing record is
+ * resolved through the server's session list instead (`resolveExportTarget`),
+ * and a session that list does not carry aborts the operation.
  */
 function exportRequestID(record) {
-  return record?.id ?? state.sessionID ?? null;
+  return record?.id ?? null;
 }
 
 /**
@@ -2812,11 +2814,60 @@ export function exportRequestPath(
   return `/api/sessions/${encodeURIComponent(sessionID)}/export?${params}`;
 }
 
+/** Shown when the selected session is in neither the loaded nor the refreshed list. */
+const EXPORT_SESSION_MISSING =
+  "Session not in the loaded list — reload and retry.";
+
+/**
+ * Re-reads the session list from the constant `/api/sessions` path, unfiltered:
+ * the same call shape `loadSessions()` makes, without the search term, so a
+ * session the sidebar query filtered out is still found.
+ */
+async function refreshSessionList() {
+  const data = await api("/api/sessions", { limit: 300 });
+  state.sessions = data.sessions ?? [];
+  renderSessionList();
+  return state.sessions;
+}
+
+/**
+ * Resolves the id an export or digest request may target.
+ *
+ * `sourceID` is the selected session — the value that arrives from the document
+ * location (`#/s/<id>/...`) — and it is only ever a lookup key. The returned id
+ * is the `id` of the matching record in the `/api/sessions` list: first the
+ * list already in memory, then, when the record is absent, a single unfiltered
+ * refresh of that same constant path. A session the server does not return
+ * aborts the operation with the UI's toast instead of issuing a request whose
+ * target came from the route (Snyk alert 23 / issue #81).
+ */
+export async function resolveExportTarget(
+  sourceID = state.sessionID,
+  {
+    sessions = state.sessions,
+    refresh = refreshSessionList,
+    notify = toast,
+  } = {},
+) {
+  const lookup = (list) =>
+    exportRequestID(
+      Array.isArray(list)
+        ? (list.find((session) => session.id === sourceID) ?? null)
+        : null,
+    );
+  let requestID = lookup(sessions);
+  if (!requestID) requestID = lookup(await refresh());
+  if (!requestID) {
+    notify(EXPORT_SESSION_MISSING);
+    return null;
+  }
+  return requestID;
+}
+
 async function exportCurrent(format) {
-  const record = exportSessionRecord();
-  const requestID = exportRequestID(record);
-  if (!requestID) return;
   try {
+    const requestID = await resolveExportTarget();
+    if (!requestID) return;
     const response = await fetch(
       exportRequestPath(requestID, {
         format,
@@ -2837,6 +2888,9 @@ async function exportCurrent(format) {
       );
     }
     const blob = await response.blob();
+    // Read after resolution, so a session found by the refresh contributes its
+    // server metadata too.
+    const record = exportSessionRecord();
     // Named from the server-provided session metadata and the client clock,
     // never from the response header or the document location: the anchor name
     // must not be downstream of either (Snyk alert 1 / issue #56).
@@ -2868,10 +2922,13 @@ async function copyDigest({ prompt }) {
       const confirmed = await askConfirm(REVEAL_COPY_WARNING);
       if (!confirmed) return;
     }
-    // Same relative target the export flow uses: no document location in the
-    // path (DOM-XSS alert #1 / issue #56).
+    // Same clean target as the export flow: the id is resolved from the server
+    // session list, so no document location value reaches the path (DOM-XSS
+    // alert 1 / issue #56, alert 23 / issue #81).
+    const requestID = await resolveExportTarget();
+    if (!requestID) return;
     const response = await fetch(
-      exportRequestPath(state.sessionID, {
+      exportRequestPath(requestID, {
         format: "digest",
         prompt,
         reveal,
