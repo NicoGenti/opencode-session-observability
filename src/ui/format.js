@@ -197,19 +197,27 @@ export async function copyText(text) {
   }
 }
 
+/**
+ * The one filename alphabet the download anchor accepts, mirroring the export
+ * route's `<slug>-<stamp>.<ext>` shape. Re-checked at the sink so a caller can
+ * never hand `downloadBlob` something outside it (DOM-XSS alert #1 / issue #56).
+ */
+const DOWNLOAD_FILENAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
+
+/** The name a non-conforming download falls back to. */
+export const DEFAULT_DOWNLOAD_NAME = "download";
+
 export function downloadBlob(filename, blob) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = filename;
+  // The name is validated here, immediately before the attribute write, as the
+  // last line of defence: anything outside the allowlist becomes the default.
+  anchor.download = DOWNLOAD_FILENAME.test(filename ?? "")
+    ? filename
+    : DEFAULT_DOWNLOAD_NAME;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2_000);
-}
-
-export function parseFilename(disposition, fallback) {
-  if (!disposition) return fallback;
-  const match = /filename=\"?([^\";]+)\"?/i.exec(disposition);
-  return match?.[1] ?? fallback;
 }

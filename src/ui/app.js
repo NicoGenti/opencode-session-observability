@@ -1,4 +1,5 @@
 import {
+  DEFAULT_DOWNLOAD_NAME,
   badge,
   copyText,
   debounce,
@@ -17,7 +18,6 @@ import {
   metricHtml,
   modelLabel,
   modelParts,
-  parseFilename,
   statusClass,
   turnModelParts,
 } from "./format.js";
@@ -58,7 +58,6 @@ import {
 } from "./auth.js";
 import {
   REVEAL_COPY_WARNING,
-  digestExportUrl,
   digestToastMessage,
 } from "./digestCopy.js";
 import { renderMarkdown } from "./markdown.js";
@@ -249,19 +248,29 @@ function activeFilterCount() {
 }
 
 async function api(path, params = {}, options = {}) {
-  const url = new URL(path, location.origin);
+  // Request target stays relative: neither the document location nor anything
+  // it resolves to may sit upstream of a response the UI renders or downloads
+  // (DOM-XSS alert #1 / issue #56). The UI and /api share an origin and
+  // index.html declares no <base>, so a root-relative path is equivalent.
+  const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === null || value === "" || value === false) continue;
     if (Array.isArray(value)) {
-      if (value.length > 0) url.searchParams.set(key, value.join(","));
+      if (value.length > 0) search.set(key, value.join(","));
     } else if (value === true) {
-      url.searchParams.set(key, "1");
+      search.set(key, "1");
     } else {
-      url.searchParams.set(key, String(value));
+      search.set(key, String(value));
     }
   }
-  if (state.reveal && !options.noReveal) url.searchParams.set("reveal", "1");
-  const response = await fetch(url, {
+  if (state.reveal && !options.noReveal) search.set("reveal", "1");
+  const query = search.toString();
+  // Some callers hand over a path that already carries filters (the benchmark
+  // builder); append with the right separator instead of double `?`.
+  const target = query
+    ? `${path}${path.includes("?") ? "&" : "?"}${query}`
+    : path;
+  const response = await fetch(target, {
     headers: { Accept: "application/json", ...authHeaders(state.token) },
     cache: "no-store",
   });
@@ -1148,22 +1157,23 @@ function renderLive() {
   const slot = $("#live-badge-slot");
   if (slot) {
     // Both markers are static templates; the poll error is the only fragment
-    // that originates in an exception, so it is appended as a text node. No
-    // error string may reach an HTML sink: the escaped template is built from
-    // the snapshot with `staleError` removed, and the detail is inserted with
-    // DOM APIs (DOM-XSS alert #21 / issue #78).
+    // that originates in an exception, so it is written as text. No error string
+    // may reach an HTML sink or the append family Snyk also tracks as DOM
+    // insertion: the escaped template is built from the snapshot with
+    // `staleError` removed, and the detail is set through `textContent`
+    // (DOM-XSS alert #21 / issue #78).
     if (state.live) {
       const detail = liveErrorDetail(state.live.staleError);
       slot.innerHTML = liveBadgeHtml(
         detail ? { ...state.live, staleError: undefined } : state.live,
       );
       const marker = detail ? slot.querySelector(".live-stale") : null;
-      if (marker) marker.append(` — ${detail}`);
+      if (marker) marker.textContent = `${marker.textContent} — ${detail}`;
     } else if (state.liveError) {
       const detail = liveErrorDetail(state.liveError);
       slot.innerHTML = liveUnavailableHtml();
       const basis = detail ? slot.querySelector(".live-badge-basis") : null;
-      if (basis) basis.append(` — ${detail}`);
+      if (basis) basis.textContent = `${basis.textContent} — ${detail}`;
     } else {
       slot.replaceChildren();
     }
@@ -2719,26 +2729,83 @@ function renderDrawer(event) {
 const DOWNLOAD_FILENAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
 
 /**
- * Resolves the `Content-Disposition` name to a value that can safely reach the
- * download anchor. The header is response data, so only a conservative
- * filename shape is accepted; anything else keeps the caller's local fallback.
- * The anchor receives an attribute value, never markup (DOM-XSS alert #1 /
- * issue #56).
+ * Normalizes a download name before it can reach the download anchor.
+ *
+ * The name is built client-side (`clientExportFilename`), so no response header
+ * and no document location sits upstream of the anchor attribute — the dataflow
+ * Snyk reported as alert 1 is gone, not merely validated. On top of the
+ * allowlist the structural checks reject a trailing dot and any interior `..`,
+ * so a name can never read as a relative path. Non-conforming values keep the
+ * caller's fallback; `downloadBlob` re-checks at the sink (issue #56).
  */
-export function downloadFilename(disposition, fallback) {
-  const parsed = parseFilename(disposition, fallback);
-  return DOWNLOAD_FILENAME.test(parsed) ? parsed : fallback;
+export function downloadFilename(name, fallback = DEFAULT_DOWNLOAD_NAME) {
+  if (typeof name !== "string") return fallback;
+  if (!DOWNLOAD_FILENAME.test(name)) return fallback;
+  if (name.endsWith(".") || name.includes("..")) return fallback;
+  return name;
+}
+
+/**
+ * The export route's slug alphabet, mirrored from `slugify` in
+ * `src/core/format.ts`: lowercase `[a-z0-9-]`, capped at 60 characters and
+ * never empty. Copied rather than imported because the UI ships as plain
+ * browser JavaScript and cannot load the TypeScript core modules.
+ */
+export function exportSlug(value) {
+  const slug = String(value ?? "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60)
+    .replace(/-+$/g, "");
+  return slug || "session";
+}
+
+/**
+ * The download name for an export, built entirely client-side as
+ * `<slug>-<stamp>.<ext>` — the same recognizable shape the server puts in the
+ * attachment header of its export response.
+ *
+ * The name may differ from the server's header name because the stamp comes
+ * from the client clock while the server stamps the analysis timestamp. That
+ * difference is deliberate: reading the name back out of the response put
+ * response data upstream of the download anchor (Snyk alert 1 / issue #56), so
+ * the export flow no longer reads the header at all.
+ */
+export function clientExportFilename(sessionID, format, now = new Date()) {
+  const extension = format === "markdown" ? "md" : format;
+  const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\..+$/, "Z");
+  return `${exportSlug(sessionID)}-${stamp}.${extension}`;
+}
+
+/**
+ * Relative request target for a session export. No origin and no document
+ * location: the UI and `/api` share an origin and `index.html` declares no
+ * `<base>`, so a root-relative path resolves exactly as an origin-anchored URL
+ * did — without giving the document location a role in the export flow
+ * (DOM-XSS alert #1 / issue #56).
+ */
+export function exportRequestPath(
+  sessionID,
+  { format, reveal = false, prompt = false, includeEvents = false } = {},
+) {
+  const params = new URLSearchParams({ format });
+  if (includeEvents) params.set("includeEvents", "1");
+  if (prompt) params.set("prompt", "1");
+  if (reveal) params.set("reveal", "1");
+  return `/api/sessions/${encodeURIComponent(sessionID)}/export?${params}`;
 }
 
 async function exportCurrent(format) {
   if (!state.sessionID) return;
   try {
-    // Relative on purpose: the document location must not sit upstream of the
-    // export response whose filename ends up on the download anchor.
-    const params = new URLSearchParams({ format, includeEvents: "1" });
-    if (state.reveal) params.set("reveal", "1");
     const response = await fetch(
-      `/api/sessions/${encodeURIComponent(state.sessionID)}/export?${params}`,
+      exportRequestPath(state.sessionID, {
+        format,
+        includeEvents: true,
+        reveal: state.reveal,
+      }),
       {
         cache: "no-store",
         headers: authHeaders(state.token),
@@ -2753,12 +2820,13 @@ async function exportCurrent(format) {
       );
     }
     const blob = await response.blob();
-    const fallback = `session.${format === "markdown" ? "md" : format}`;
+    // Named from the session id and the client clock, never from the response
+    // header: the anchor name must not be downstream of response data.
     const filename = downloadFilename(
-      response.headers.get("Content-Disposition"),
-      fallback,
+      clientExportFilename(state.sessionID, format),
     );
     downloadBlob(filename, blob);
+
     toast(
       state.reveal
         ? "Exported with raw secrets"
@@ -2784,14 +2852,19 @@ async function copyDigest({ prompt }) {
       const confirmed = await askConfirm(REVEAL_COPY_WARNING);
       if (!confirmed) return;
     }
-    const url = digestExportUrl(location.origin, state.sessionID, {
-      prompt,
-      reveal,
-    });
-    const response = await fetch(url, {
-      cache: "no-store",
-      headers: authHeaders(state.token),
-    });
+    // Same relative target the export flow uses: no document location in the
+    // path (DOM-XSS alert #1 / issue #56).
+    const response = await fetch(
+      exportRequestPath(state.sessionID, {
+        format: "digest",
+        prompt,
+        reveal,
+      }),
+      {
+        cache: "no-store",
+        headers: authHeaders(state.token),
+      },
+    );
     if (!response.ok) {
       const body = await response.json().catch(() => null);
       throw new ApiError(

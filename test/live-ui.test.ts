@@ -79,6 +79,8 @@ test("a stale frame keeps its badge and adds the retry marker", () => {
   assert.match(markup, /Live — recording/);
   assert.match(markup, /stale, retrying/);
   assert.match(markup, /live-stale/);
+  // app.js finds this marker by class to write the poll error as text.
+  assert.match(liveBadgeHtml(snapshot({ stale: true })), /class="live-stale"/);
   assert.equal(liveStaleHtml(), '<span class="live-stale" role="status">stale, retrying</span>');
 });
 
@@ -97,12 +99,14 @@ test("a first-poll failure with no frame renders a visible unavailable state", (
   assert.match(markup, /Live unavailable/);
   assert.match(markup, /poll failed — Request failed \(503\)/);
   assert.match(markup, /live-badge-unavailable/);
+  // app.js finds this basis span by class to write the poll error as text.
+  assert.match(liveUnavailableHtml(), /class="live-badge-basis"/);
   assert.equal(liveUnavailableHtml(), liveUnavailableHtml(undefined));
   assert.match(liveUnavailableHtml(), /Live unavailable/);
 });
 
 /**
- * The text app.js appends to the static marker must be the same text
+ * The text app.js writes after the static marker must be the same text
  * `live.js` would have escaped into the template: same whitespace collapse,
  * same cap, same words.
  */
@@ -413,14 +417,23 @@ test("the badge renders in the session header and warnings above the pane", asyn
   assert.match(renderLive, /liveWarningsHtml\(warnings\)/);
   assert.match(renderLive, /shouldReplaceLiveWarnings\(liveWarningsMarkup, markup\)/);
   assert.match(renderLive, /dom\.liveWarnings\.hidden/);
-  // The poll error never reaches the HTML sink: the escaped template is built
-  // without it and the detail is appended as text (issue #78).
+  // The poll error never reaches an HTML sink or the append family: the escaped
+  // template is built without it and the detail is written as text (issue #78).
   assert.match(renderLive, /liveErrorDetail\(state\.live\.staleError\)/);
   assert.match(renderLive, /liveErrorDetail\(state\.liveError\)/);
   assert.match(renderLive, /\{ \.\.\.state\.live, staleError: undefined \}/);
   assert.match(renderLive, /querySelector\("\.live-stale"\)/);
   assert.match(renderLive, /querySelector\("\.live-badge-basis"\)/);
-  assert.match(renderLive, /\.append\(` — \$\{detail\}`\)/);
+  assert.match(
+    renderLive,
+    /marker\.textContent = `\$\{marker\.textContent\} — \$\{detail\}`/,
+  );
+  assert.match(
+    renderLive,
+    /basis\.textContent = `\$\{basis\.textContent\} — \$\{detail\}`/,
+  );
+  assert.doesNotMatch(renderLive, /\.append\(/);
+  assert.doesNotMatch(renderLive, /\.appendChild\(/);
   assert.doesNotMatch(renderLive, /liveUnavailableHtml\(state\.liveError\)/);
   assert.doesNotMatch(renderLive, /innerHTML = state\.live/);
   assert.match(
