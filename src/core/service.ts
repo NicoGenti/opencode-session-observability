@@ -6,6 +6,13 @@ import { evaluateSessionHealth } from "./health.ts";
 import { evaluateAttribution } from "./attribution.ts";
 import { evaluateRecommendations } from "./recommendations.ts";
 import { deriveLiveSnapshot } from "./live.ts";
+import {
+  MAX_BENCHMARK_SESSIONS,
+  benchmarkInputFrom,
+  computeBenchmark,
+  matchesBenchmarkFilters,
+  matchesBenchmarkTaskType,
+} from "./benchmark.ts";
 import { redactValue, truncate } from "./util.ts";
 import { exportSession } from "./export.ts";
 import { listDiagnosticEpisodes } from "./episodes.ts";
@@ -14,6 +21,11 @@ import { evaluateDelegationRecovery } from "./delegation.ts";
 import type { Diagnostics } from "./diagnostics.ts";
 import type { DiagnosticEpisode } from "./episodes.ts";
 import type { LiveSnapshot } from "./live.ts";
+import type {
+  Benchmark,
+  BenchmarkFilters,
+  BenchmarkSessionInput,
+} from "./benchmark.ts";
 import type {
   DelegationChildInput,
   FamilyDelegationRecovery,
@@ -447,6 +459,60 @@ export class ObservabilityService {
     return options.reveal === true
       ? snapshot
       : (redactValue(snapshot) as LiveSnapshot);
+  }
+
+  /**
+   * Cross-session benchmark over a bounded, recency-sorted candidate set.
+   *
+   * Candidates come from `listSessions`, so they are redacted when `reveal` is
+   * false: an in-memory filter can never turn a redacted value into a
+   * match/no-match oracle. Summary-level filters run first, the survivors are
+   * sorted by `timeUpdated` descending and capped at `MAX_BENCHMARK_SESSIONS`,
+   * and only then is each dataset loaded through the shared requestKey-coherent
+   * cache — the benchmark never clears it and never keeps the event streams.
+   * The task-type filter runs last, because turn triggers only exist after
+   * projection.
+   */
+  async benchmark(
+    filters: BenchmarkFilters = {},
+    options: { reveal?: boolean } = {},
+  ): Promise<Benchmark> {
+    const reveal = options.reveal === true;
+    const summaries = await this.listSessions({ limit: 1000, reveal });
+    const matched = summaries.filter((summary) =>
+      matchesBenchmarkFilters(summary, filters),
+    );
+    const ordered = [...matched].sort(
+      (left, right) =>
+        (right.timeUpdated ?? right.timeCreated) -
+          (left.timeUpdated ?? left.timeCreated) ||
+        (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
+    );
+    const capped = ordered.slice(0, MAX_BENCHMARK_SESSIONS);
+    const inputs: BenchmarkSessionInput[] = [];
+    let skipped = 0;
+    for (const summary of capped) {
+      let dataset: Dataset;
+      try {
+        dataset = await this.loadDataset(summary.id);
+      } catch (error) {
+        // A session that disappeared between listing and loading is counted as
+        // skipped; storage failures still reach the route as 503/500.
+        if (!(error instanceof SessionNotFoundError)) throw error;
+        skipped += 1;
+        continue;
+      }
+      const input = benchmarkInputFrom(summary, dataset.analysis);
+      if (!matchesBenchmarkTaskType(input, filters.taskType)) continue;
+      inputs.push(input);
+    }
+    const benchmark = computeBenchmark(inputs, {
+      groupBy: filters.groupBy,
+      sessionsCapped: ordered.length > capped.length,
+      candidatesConsidered: ordered.length,
+      skippedSessions: skipped,
+    });
+    return reveal ? benchmark : (redactValue(benchmark) as Benchmark);
   }
 
   /**
