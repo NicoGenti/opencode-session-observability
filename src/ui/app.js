@@ -40,7 +40,7 @@ import {
   healthBreakdownHtml,
   missingHealth,
 } from "./health.js";
-import { liveBadgeHtml, liveWarningsHtml } from "./live.js";
+import { liveBadgeHtml, liveUnavailableHtml, liveWarningsHtml, nextLiveCursor, shouldHeavyRefresh, shouldReplaceLiveWarnings, withStaleMarker } from "./live.js";
 import {
   authHeaders,
   consumeTokenFromLocation,
@@ -138,7 +138,10 @@ const state = {
   // Latest live snapshot from GET /api/sessions/:id/live. `stale` marks a kept
   // frame whose newest poll failed (including the 503 database-busy path).
   live: null,
-  // Last orderKey the live poll has already accounted for.
+  // First-poll failure with no frame to keep: rendered as "Live unavailable".
+  liveError: null,
+  // Last orderKey the live poll has already accounted for. Reset whenever the
+  // analysis is replaced, so a cursor can never be seeded from another session.
   liveSince: null,
   sessionQuery: "",
   responseLimit: responseLimitSetting(),
@@ -372,7 +375,9 @@ async function selectSession(sessionID, view = state.view, eventID = null) {
     state.detailEvent = null;
     state.drawerOpener = null;
     state.live = null;
+    state.liveError = null;
     state.liveSince = null;
+    liveWarningsMarkup = null;
     liveRequestSeq += 1;
     setDiagnosticHighlight([]);
     closeDrawer();
@@ -395,7 +400,9 @@ async function loadSessionData(options = {}) {
     const [sessionData, analysisData] = await Promise.all([
       api(`/api/sessions/${encodeURIComponent(requestedSession)}`),
       api(`/api/sessions/${encodeURIComponent(requestedSession)}/analysis`, {
-        refresh: options.refresh ? 1 : undefined,
+        // Only a forced refresh asks the server to drop its dataset cache; the
+        // live poll relies on the requestKey/session.time.updated coherence.
+        refresh: options.force === true ? 1 : undefined,
       }),
     ]);
     if (state.sessionID !== requestedSession) return;
@@ -403,6 +410,9 @@ async function loadSessionData(options = {}) {
     state.family = sessionData.family;
     state.analysis = analysisData.analysis;
     state.facets = buildFacets(state.analysis);
+    // The cursor is derived from the analysis just replaced; keeping the old
+    // one would replay or skip events of the previous session/frame.
+    state.liveSince = null;
     state.revealAllowed = sessionData.revealAllowed !== false && analysisData.revealAllowed !== false;
     // D1: rebuild the highlight from the deep-linked/open event so it survives
     // a refresh. A session switch already cleared it, and an event that is not
@@ -515,7 +525,14 @@ async function loadNewer() {
   await loadEvents({ reset: false, forward: true });
 }
 
-async function refreshCurrent() {
+/**
+ * Re-reads the session list and the current session.
+ *
+ * `force` is the only thing that may drop the server-side dataset cache: the
+ * live poll calls this on every meaningful change, and a global cache flush per
+ * poll would defeat the requestKey coherence the live route relies on.
+ */
+async function refreshCurrent(options = {}) {
   if (state.refreshing) return;
   state.refreshing = true;
   try {
@@ -548,7 +565,10 @@ async function refreshCurrent() {
     // Best effort: the focused session may have moved outside the reloaded
     // window, in which case there is nothing to focus and no error either.
     if (focusSelector) dom.sessionList?.querySelector(focusSelector)?.focus();
-    await loadSessionData({ preserveScroll: hadEarlier, refresh: true });
+    await loadSessionData({
+      preserveScroll: hadEarlier,
+      force: options.force === true,
+    });
     if (dom.ledger?.scroller) dom.ledger.scroller.scrollTop = scrollTop;
   } finally {
     // Cleared on every exit path: loadSessions() swallows its own errors but
@@ -1064,12 +1084,32 @@ function renderHeader() {
  * lives in the session header; the warning container sits above the active
  * pane so both Trajectory and Statistics show the same frame.
  */
+/** Last markup written to `#live-warnings`; identical markup is skipped. */
+let liveWarningsMarkup = null;
+
+/**
+ * Renders the live badge and the warning list from `state.live`. The badge
+ * lives in the session header; the warning container sits above the active
+ * pane so both Trajectory and Statistics show the same frame.
+ *
+ * The container is an `aria-live` region re-rendered on every poll, so its
+ * markup is only replaced when the string changed: an unchanged rule set must
+ * not be announced again every five seconds.
+ */
 function renderLive() {
   const slot = $("#live-badge-slot");
-  if (slot) slot.innerHTML = state.live ? liveBadgeHtml(state.live) : "";
+  if (slot) {
+    slot.innerHTML = state.live
+      ? liveBadgeHtml(state.live)
+      : state.liveError
+        ? liveUnavailableHtml(state.liveError)
+        : "";
+  }
   if (!dom.liveWarnings) return;
   const warnings = state.live?.warnings ?? [];
   const markup = state.live ? liveWarningsHtml(warnings) : "";
+  if (!shouldReplaceLiveWarnings(liveWarningsMarkup, markup)) return;
+  liveWarningsMarkup = markup;
   dom.liveWarnings.innerHTML = markup;
   dom.liveWarnings.hidden = markup.length === 0;
 }
@@ -3513,19 +3553,32 @@ function lastSeenOrderKey() {
 }
 
 /**
+ * The cursor sent to the next poll: the tracked cursor, else the last event of
+ * the live frame, else the last event of the loaded analysis. Preferring the
+ * frame keeps a long-running panel from re-reading an analysis it does not own.
+ */
+function liveSinceCursor() {
+  if (typeof state.liveSince === "string" && state.liveSince.length > 0) {
+    return state.liveSince;
+  }
+  return nextLiveCursor(null, state.live?.newEvents) ?? lastSeenOrderKey();
+}
+
+/**
  * One live tick: fetch the compact snapshot, then decide whether the heavy
  * `refreshCurrent()` is needed. The heavy pass runs only when the open turn
  * changed, the session recorded more events, or the liveness state moved; the
  * cheap snapshot itself re-renders the badge and warnings every tick.
  *
  * A failed poll (including the 503 database-busy mapping) keeps the previous
- * frame and marks it stale instead of blanking the view.
+ * frame and marks it stale instead of blanking the view; with no frame yet it
+ * leaves `state.liveError` for the badge slot to render.
  */
 async function pollLive() {
   if (!state.sessionID) return;
   const requestedSession = state.sessionID;
   const ticket = ++liveRequestSeq;
-  const since = state.liveSince ?? lastSeenOrderKey();
+  const since = liveSinceCursor();
   try {
     const data = await api(
       `/api/sessions/${encodeURIComponent(requestedSession)}/live`,
@@ -3533,26 +3586,17 @@ async function pollLive() {
     );
     if (ticket !== liveRequestSeq || state.sessionID !== requestedSession) return;
     const previous = state.live;
-    const openTurnChanged = (data.openTurn?.id ?? null) !== (previous?.openTurn?.id ?? null);
-    const grew = (data.totalInSession ?? 0) > (previous?.totalInSession ?? 0);
-    const stateChanged = data.state !== previous?.state;
+    const heavy = shouldHeavyRefresh(previous, data);
     state.live = data;
-    if (Array.isArray(data.newEvents) && data.newEvents.length > 0) {
-      state.liveSince = data.newEvents[data.newEvents.length - 1].orderKey;
-    } else if (state.liveSince === null || state.liveSince === undefined) {
-      state.liveSince = since ?? lastSeenOrderKey() ?? null;
-    }
+    state.liveError = null;
+    // Advance the cursor only on the page just read; an empty page keeps it.
+    state.liveSince = nextLiveCursor(since ?? null, data.newEvents);
     renderLive();
-    // No previous frame: the session is already loaded for the toggle, so the
-    // first tick only establishes the live frame.
-    if (previous && (openTurnChanged || grew || stateChanged)) {
-      await refreshCurrent();
-    }
+    if (heavy) await refreshCurrent();
   } catch (error) {
     if (ticket !== liveRequestSeq) return;
-    if (state.live) {
-      state.live = { ...state.live, stale: true, staleError: error.message };
-    }
+    state.live = withStaleMarker(state.live, error.message);
+    state.liveError = state.live === null ? error.message : null;
     renderLive();
   }
 }
@@ -3569,11 +3613,16 @@ function toggleLive() {
   stopLive();
   if (!dom.liveToggle?.checked) {
     state.live = null;
+    state.liveError = null;
     state.liveSince = null;
+    liveWarningsMarkup = null;
     renderLive();
     return;
   }
-  state.liveSince = lastSeenOrderKey() ?? null;
+  // Seeded from the loaded analysis by the first tick: the cursor follows the
+  // session on screen, never a previous one.
+  state.liveSince = null;
+  state.liveError = null;
   void pollLive();
   state.liveTimer = setInterval(() => {
     if (document.visibilityState === "visible" && !state.loading && !state.refreshing) {
@@ -3679,7 +3728,7 @@ function bindStaticEvents() {
       renderView();
     });
   }
-  $("#refresh")?.addEventListener("click", () => void refreshCurrent());
+  $("#refresh")?.addEventListener("click", () => void refreshCurrent({ force: true }));
   dom.liveToggle?.addEventListener("change", toggleLive);
   dom.liveWarnings?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-event-id]");
