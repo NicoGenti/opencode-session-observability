@@ -29,6 +29,10 @@
 // Host binary: `OPENCODE_BIN` when set, otherwise `opencode` on PATH. A host
 // that is not OpenCode 2 (today's PATH `opencode` is the 1.x CLI) cannot be
 // driven this way, so the script exits 2 (MANUAL-REQUIRED) instead of guessing.
+// Every command is spawned from an argument array with no shell, and `npm` is
+// run as its CLI script through this Node binary, so no argument is ever parsed
+// by a shell; a Windows `.cmd` shim cannot be launched that way, so it is
+// reported as MANUAL-REQUIRED instead of being handed to cmd.exe.
 // Budget: `HOST_SMOKE_TIMEOUT_MS` (default 45000, clamped to 5000..600000).
 //
 // Exit codes: 0 PASS, 1 FAIL (a real failure, blocks publication), 2
@@ -91,7 +95,7 @@ import {
 } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -242,19 +246,53 @@ function fail(message) {
 // Process helpers
 // ---------------------------------------------------------------------------
 
-/** Quotes an argument for the cmd.exe command line npm and `.cmd` shims run under. */
-function quoteArg(arg) {
-  if (arg === "") return '""';
-  if (!/[\s"&|<>^()]/.test(arg)) return arg;
-  return `"${arg.split('"').join('""')}"`;
+/**
+ * `npm` is a `.cmd` batch shim on Windows that Node refuses to spawn without a
+ * shell, and joining a command line for a shell is the injection surface this
+ * script must not have. The shim is a thin wrapper around the npm CLI script,
+ * so the script is located and handed to this Node binary as an argument
+ * array: no shell, no quoting, same entry point.
+ */
+const NPM_CLI_FILES = { npm: "npm-cli.js", npx: "npx-cli.js" };
+
+/** The npm CLI script behind `npm`/`npx`, or null when this Node installation has no npm. */
+function npmCliScript(name, env) {
+  const file = NPM_CLI_FILES[name];
+  if (!file) return null;
+  const pathValue = env?.PATH ?? env?.Path ?? process.env.PATH ?? process.env.Path ?? "";
+  const directories = new Set([dirname(process.execPath)]);
+  for (const entry of pathValue.split(delimiter)) {
+    if (entry !== "") directories.add(entry);
+  }
+  for (const directory of directories) {
+    // <node>/node_modules/npm/bin (Windows, nvm), <prefix>/lib/node_modules/npm/bin
+    // (POSIX, actions/setup-node) and <prefix>/libexec/lib/node_modules/npm/bin.
+    const roots = [
+      join(directory, "node_modules", "npm", "bin"),
+      resolve(directory, "..", "lib", "node_modules", "npm", "bin"),
+      resolve(directory, "..", "libexec", "lib", "node_modules", "npm", "bin"),
+    ];
+    for (const root of roots) {
+      const candidate = join(root, file);
+      try {
+        if (statSync(candidate).isFile()) return candidate;
+      } catch {
+        continue;
+      }
+    }
+  }
+  return null;
 }
 
-/** True when the command has to go through cmd.exe on Windows. */
-function needsShell(command) {
+/**
+ * True when Windows cannot start the file itself: a batch shim or an
+ * extensionless wrapper needs cmd.exe, and this script launches nothing through
+ * a shell.
+ */
+function cannotStartWithoutShell(command) {
   if (!isWindows) return false;
-  if (/[\\/]/u.test(command)) return /\.(cmd|bat)$/iu.test(command);
-  // A bare name (npm, npx) resolves to a .cmd shim that Node cannot spawn directly.
-  return true;
+  const extension = extname(command).toLowerCase();
+  return extension === ".cmd" || extension === ".bat" || extension === "";
 }
 
 function describeFailure(result) {
@@ -266,6 +304,11 @@ function describeFailure(result) {
   return parts.join("\n");
 }
 
+/**
+ * Runs a command synchronously without a shell. `npm`/`npx` resolve to their
+ * CLI script run by this Node binary; every other command is spawned as a
+ * program with an argument array, so no argument is ever parsed by a shell.
+ */
 function runSync(command, args, options = {}) {
   const {
     cwd = repoRoot,
@@ -279,12 +322,17 @@ function runSync(command, args, options = {}) {
     encoding: "utf8",
     maxBuffer: MAX_BUFFER,
     windowsHide: true,
+    shell: false,
   };
-  if (needsShell(command)) {
-    return spawnSync([command, ...args.map(quoteArg)].join(" "), {
-      ...common,
-      shell: true,
-    });
+  if (NPM_CLI_FILES[command]) {
+    const script = npmCliScript(command, env);
+    if (!script) {
+      throw fail(
+        `could not locate the \`${command}\` CLI script next to ${process.execPath}; ` +
+          "this script never builds command lines for a shell, so the npm installation on PATH is required",
+      );
+    }
+    return spawnSync(process.execPath, [script, ...args], common);
   }
   return spawnSync(command, args, common);
 }
@@ -525,6 +573,14 @@ async function stepHostBinary() {
       `OPENCODE_BIN points at a missing file: ${command}. Fix the path or unset it to use PATH; the manual checklist then applies.`,
     );
   }
+  if (cannotStartWithoutShell(command)) {
+    throw manual(
+      `${command} is a Windows batch shim (or an extensionless wrapper), which only cmd.exe can start. ` +
+        "This script launches no command line through a shell, so it cannot drive that shim: point " +
+        "OPENCODE_BIN at the native executable (for example %USERPROFILE%\\.opencode2\\node_modules\\@opencode\\cli\\bin\\opencode.exe) " +
+        "or put its directory on PATH. Until then the manual checklist at the top of this file is the gate.",
+    );
+  }
   state.hostBin = command;
 
   const version = runSync(command, ["--version"], { timeout: COMMAND_TIMEOUT_MS });
@@ -665,10 +721,9 @@ async function stepSpawn() {
     env,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
+    shell: false,
   };
-  const child = needsShell(state.hostBin)
-    ? spawn([state.hostBin, ...args.map(quoteArg)].join(" "), { ...options, shell: true })
-    : spawn(state.hostBin, args, options);
+  const child = spawn(state.hostBin, args, options);
   state.child = child;
   state.capture = { stdout: "", stderr: "" };
   child.stdout.on("data", (chunk) => {

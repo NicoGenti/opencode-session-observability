@@ -35,7 +35,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -133,11 +133,42 @@ function readJson(path) {
 // Process helpers
 // ---------------------------------------------------------------------------
 
-/** Quotes an argument for the cmd.exe command line npm/npx run under. */
-function quoteArg(arg) {
-  if (arg === "") return '""';
-  if (!/[\s"&|<>^()]/.test(arg)) return arg;
-  return `"${arg.split('"').join('""')}"`;
+/**
+ * `npm` and `npx` are `.cmd` batch shims on Windows that Node refuses to spawn
+ * without a shell, and joining a command line for a shell is the injection
+ * surface this script must not have. Both shims are thin wrappers around the
+ * npm CLI scripts, so the script is located and handed to this Node binary as
+ * an argument array: no shell, no quoting, same entry point.
+ */
+const NPM_CLI_FILES = { npm: "npm-cli.js", npx: "npx-cli.js" };
+
+/** The npm CLI script behind `npm`/`npx`, or null when this Node installation has no npm. */
+function npmCliScript(name, env) {
+  const file = NPM_CLI_FILES[name];
+  if (!file) return null;
+  const pathValue = env?.PATH ?? env?.Path ?? process.env.PATH ?? process.env.Path ?? "";
+  const directories = new Set([dirname(process.execPath)]);
+  for (const entry of pathValue.split(delimiter)) {
+    if (entry !== "") directories.add(entry);
+  }
+  for (const directory of directories) {
+    // <node>/node_modules/npm/bin (Windows, nvm), <prefix>/lib/node_modules/npm/bin
+    // (POSIX, actions/setup-node) and <prefix>/libexec/lib/node_modules/npm/bin.
+    const roots = [
+      join(directory, "node_modules", "npm", "bin"),
+      resolve(directory, "..", "lib", "node_modules", "npm", "bin"),
+      resolve(directory, "..", "libexec", "lib", "node_modules", "npm", "bin"),
+    ];
+    for (const root of roots) {
+      const candidate = join(root, file);
+      try {
+        if (statSync(candidate).isFile()) return candidate;
+      } catch {
+        continue;
+      }
+    }
+  }
+  return null;
 }
 
 function describeFailure(result) {
@@ -150,9 +181,9 @@ function describeFailure(result) {
 }
 
 /**
- * Runs a command synchronously. On Windows `npm`/`npx` are `.cmd` shims that
- * Node refuses to spawn without a shell, so the command line goes through
- * cmd.exe with every argument quoted by hand.
+ * Runs a command synchronously without a shell. `npm`/`npx` resolve to their
+ * CLI script run by this Node binary; every other command is spawned as a
+ * program with an argument array, so no argument is ever parsed by a shell.
  */
 function runSync(command, args, options = {}) {
   const {
@@ -167,12 +198,17 @@ function runSync(command, args, options = {}) {
     encoding: "utf8",
     maxBuffer: MAX_BUFFER,
     windowsHide: true,
+    shell: false,
   };
-  if (isWindows) {
-    return spawnSync([command, ...args.map(quoteArg)].join(" "), {
-      ...common,
-      shell: true,
-    });
+  if (NPM_CLI_FILES[command]) {
+    const script = npmCliScript(command, env);
+    if (!script) {
+      throw new Error(
+        `could not locate the \`${command}\` CLI script next to ${process.execPath}; ` +
+          "this script never builds command lines for a shell, so the npm installation on PATH is required",
+      );
+    }
+    return spawnSync(process.execPath, [script, ...args], common);
   }
   return spawnSync(command, args, common);
 }
