@@ -20,6 +20,11 @@ type Tsconfig = {
   include?: string[];
 };
 
+type PackageLock = {
+  version?: string;
+  packages?: Record<string, { version?: string }>;
+};
+
 async function readJson<T>(name: string): Promise<T> {
   return JSON.parse(await readFile(new URL(name, import.meta.url), "utf8")) as T;
 }
@@ -50,6 +55,12 @@ test("the CLI version literal stays in sync with the package version", async () 
   const declared = /^const VERSION = "([^"]+)";$/m.exec(source);
   assert.ok(declared, "src/server/index.ts declares `const VERSION = \"...\"`");
   assert.equal(declared[1], pkg.version);
+});
+
+test("the lockfile root version stays in sync with the package version", async () => {
+  const pkg = await readJson<PackageJson>("../package.json");
+  const lock = await readJson<PackageLock>("../package-lock.json");
+  assert.equal(lock.packages?.[""]?.version, pkg.version);
 });
 
 test("tsconfig.tui.json type-checks the sidecar with Solid JSX", async () => {
