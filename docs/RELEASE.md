@@ -378,3 +378,34 @@ explicit maintainer action.
    the `npm` environment's required reviewer, so later releases are OIDC-only with provenance.
 7. Close out: record the published version, checksum, host version and date in the release
    notes and the issue.
+
+---
+
+## A. Field notes — the v0.1.0 first release (2026-11-19)
+
+The worked example for §5 and §11, not a new procedure.
+
+- `v0.1.0` pushed **first** and triggered nothing (expected — §3 step 7), then
+  `release/v0.1.0` pushed and started `release.yml` (run #1).
+- Run #1: `verify` (Node 22 + 24) → `pack` → `consumer` (Node 22 + 24), all green.
+- `github-release` created the Release `v0.1.0` automatically with the tested tarball and its
+  `.sha256`.
+- `npm-publish` failed closed within seconds because the `npm` environment and the trusted
+  publisher did not exist yet. That is the designed first-release outcome (§5), not a defect.
+- The maintainer published manually from the **downloaded Release tarball**:
+  `npm publish <release-asset>.tgz --access public` — no provenance, since provenance needs a
+  CI OIDC identity.
+- `latest` became `0.1.0` about two minutes later, after registry replication.
+
+Three things to carry into the next release:
+
+1. **Publish the Release asset, never a local `npm pack` output.** Identical sources still
+   hash differently — gzip records an mtime — so a local pack breaks the "tested bytes are the
+   published bytes" chain (§4).
+2. **Close the bootstrap after the first manual publish**: create the `npm` environment with a
+   required reviewer (**Settings → Environments**), then register trusted publishing on
+   npmjs.com (**Settings → Trusted publishing**: repository
+   `NicoGenti/opencode-session-observability`, workflow `release.yml`, environment `npm`).
+   Later releases are then OIDC-only with provenance.
+3. **Treat an empty `npm view` right after publishing as lag, not failure.** Check the package
+   page, or re-run `npm view` after a couple of minutes.
