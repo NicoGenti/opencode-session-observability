@@ -1,10 +1,21 @@
 # Release pipeline: pack once, test the artifact, ship that exact artifact.
 #
-# Triggers
-#   push of a `v*` tag  -> verify -> pack -> consumer -> { github-release, npm-publish }
-#   workflow_dispatch   -> verify -> pack -> consumer (dry run). The release and publish
-#                          jobs are `if: github.ref_type == 'tag'`, so a manual run can
-#                          never publish or release from a branch.
+# TRIGGERS
+#   push of a `release/vX.Y.Z` branch
+#       -> verify -> pack -> consumer -> { github-release, npm-publish }
+#   workflow_dispatch
+#       -> verify -> pack -> consumer (dry run; never publishes, never creates a Release)
+#       Both publishing jobs require `github.event_name == 'push'`, so a manual run
+#       cannot release even when it is dispatched on a release/v* branch.
+#   A git tag is NOT a trigger. `vX.Y.Z` remains the version signature and `pack`
+#   verifies it, but pushing the tag starts nothing on its own.
+#
+# PUSH ORDER (docs/RELEASE.md §3)
+#   Tag first, branch second:
+#       git push origin vX.Y.Z           # triggers nothing (tags are no longer a trigger)
+#       git push origin release/vX.Y.Z   # triggers this workflow; `pack` finds the tag at HEAD
+#   A single `git push --follow-tags` is not the procedure: `pack` requires the tag to
+#   exist on the pushed commit before the branch push starts the run.
 #
 # TRUSTED PUBLISHING — bootstrap (chicken-and-egg), read before the first release
 #   * `npm-publish` authenticates with OIDC trusted publishing only: `id-token: write`
@@ -41,7 +52,7 @@
 #
 # CONCURRENCY
 #   One run per ref and `cancel-in-progress: false`, so a publish is never torn in
-#   half by a newer run on the same tag.
+#   half by a newer run on the same release branch.
 #
 # Runners: Linux (ubuntu-latest) only; every `run:` step is bash.
 
@@ -49,11 +60,11 @@ name: Release
 
 on:
   push:
-    tags: ['v*']
+    branches: ['release/v*']
   workflow_dispatch:
     inputs:
       expected_version:
-        description: "Optional version this ref should build, e.g. 0.1.0 or v0.1.0 (tag pushes are checked against the git tag instead)"
+        description: "Optional version this ref should build, e.g. 0.1.0 or v0.1.0 (release-branch pushes are checked against the branch name and the git tag instead)"
         required: false
         type: string
 
@@ -122,7 +133,7 @@ jobs:
       filename: ${{ steps.pack.outputs.filename }}
       sha256: ${{ steps.pack.outputs.sha256 }}
     steps:
-      # fetch-depth: 0 so `git describe --exact-match --tags HEAD` can see the tag.
+      # fetch-depth: 0 so `git rev-parse --verify refs/tags/...` can see the tag.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -132,10 +143,10 @@ jobs:
       # No `npm ci` and no build step on purpose: this package has no runtime
       # dependencies, no `prepack` hook, and `npm pack` must capture the committed
       # bundles exactly as verified above.
-      - name: Version / tag / CLI consistency
+      - name: Version / branch / tag / CLI consistency
         id: version
         env:
-          REF_TYPE: ${{ github.ref_type }}
+          EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
           EXPECTED_VERSION_INPUT: ${{ inputs.expected_version }}
         run: |
@@ -153,26 +164,48 @@ jobs:
             exit 1
           fi
 
-          if [ "${REF_TYPE}" = "tag" ]; then
-            tag="$(git describe --exact-match --tags HEAD 2>/dev/null || true)"
-            if [ -z "${tag}" ]; then
-              echo "::error::No tag points at HEAD (build ref ${REF_NAME}); a tag ref without a reachable tag means fetch-depth: 0 was not honoured."
+          if [ "${EVENT_NAME}" = "push" ]; then
+            # Fail closed: the branch is the release declaration, so its name must
+            # be `release/v<semver>` and that semver must equal the package version.
+            if [[ ! "${REF_NAME}" =~ ^release/v([0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?)$ ]]; then
+              echo "::error::Push ref '${REF_NAME}' is not a release branch. Releases run only from a branch named release/vX.Y.Z (e.g. release/v0.1.0)."
               exit 1
             fi
-            if [ "${tag}" != "v${pkg_version}" ]; then
-              echo "::error::Git tag ${tag} does not match v${pkg_version} from package.json. Fix the version or retag; never release a tag whose name disagrees with the package."
+            branch_version="${BASH_REMATCH[1]}"
+            echo "release branch:       ${REF_NAME} (version ${branch_version})"
+
+            if [ "${branch_version}" != "${pkg_version}" ]; then
+              echo "::error::Release branch version ${branch_version} does not match package.json ${pkg_version}. Bump package.json (and src/server/index.ts VERSION) or rename the branch."
               exit 1
             fi
-            echo "git tag:              ${tag}"
-          elif [ -n "${EXPECTED_VERSION_INPUT}" ]; then
-            expected="${EXPECTED_VERSION_INPUT#v}"
-            if [ "${expected}" != "${pkg_version}" ]; then
-              echo "::error::workflow_dispatch expected_version ${EXPECTED_VERSION_INPUT} does not match package.json ${pkg_version}."
+
+            # The tag is the version signature, not the trigger: it must already
+            # exist on the pushed commit. Push the tag before the branch (§3).
+            tag_ref="refs/tags/v${pkg_version}"
+            if ! tag_commit="$(git rev-parse --verify "${tag_ref}^{}" 2>/dev/null)"; then
+              echo "::error::Tag 'v${pkg_version}' does not exist. Create it on this commit and push it BEFORE the release branch: git tag v${pkg_version} && git push origin v${pkg_version} && git push origin ${REF_NAME}."
               exit 1
             fi
-            echo "workflow_dispatch expected version: ${expected} (dry run: no release, no publish)"
+            head_commit="$(git rev-parse HEAD)"
+            if [ "${tag_commit}" != "${head_commit}" ]; then
+              echo "::error::Tag v${pkg_version} points at ${tag_commit}, but HEAD is ${head_commit}. The tag must point at the released commit; retag it before pushing the release branch."
+              exit 1
+            fi
+            echo "git tag:              v${pkg_version} -> ${tag_commit} (HEAD)"
+          elif [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            if [ -n "${EXPECTED_VERSION_INPUT}" ]; then
+              expected="${EXPECTED_VERSION_INPUT#v}"
+              if [ "${expected}" != "${pkg_version}" ]; then
+                echo "::error::workflow_dispatch expected_version ${EXPECTED_VERSION_INPUT} does not match package.json ${pkg_version}."
+                exit 1
+              fi
+              echo "workflow_dispatch expected version: ${expected} (dry run: no tag required, no release, no publish)"
+            else
+              echo "::notice::workflow_dispatch without expected_version: tag consistency unchecked (dry run: no release, no publish)."
+            fi
           else
-            echo "::notice::workflow_dispatch without expected_version: tag consistency unchecked (dry run)."
+            echo "::error::Unsupported event '${EVENT_NAME}'. This workflow releases only on a release/v* branch push (or a workflow_dispatch dry run)."
+            exit 1
           fi
 
           echo "version=${pkg_version}" >> "$GITHUB_OUTPUT"
@@ -260,11 +293,24 @@ jobs:
   github-release:
     name: GitHub Release (GitHub-only fallback)
     needs: consumer
-    if: github.ref_type == 'tag'
+    # Branch-push only: a tag push starts nothing, and a workflow_dispatch dry run
+    # (even on a release/v* branch) must not create a Release.
+    if: github.event_name == 'push' && startsWith(github.ref_name, 'release/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      # Defense in depth: never release from main, whatever the trigger filter says.
+      - name: Refuse to publish from main
+        env:
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "${REF}" = "refs/heads/main" ] || [ "${REF_NAME}" = "main" ]; then
+            echo "::error::Refusing to create a release from main (${REF}); releases run only from a release/v* branch push."
+            exit 1
+          fi
       - uses: actions/download-artifact@v4
         with:
           name: package-tarball
@@ -330,7 +376,7 @@ jobs:
             - **Read-only by design:** sessions, messages and configuration are never written; no telemetry; the server binds loopback only, and payload reveal stays opt-in.
 
             Release process, artifact-reuse policy and the gated first-release checklist:
-            https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/docs/RELEASE.md
+            https://github.com/${{ github.repository }}/blob/v${{ needs.pack.outputs.version }}/docs/RELEASE.md
 
   npm-publish:
     name: npm publish (trusted publishing, approval gated)
@@ -338,7 +384,9 @@ jobs:
     # Sibling of `github-release`, not a dependent: a failed or skipped GitHub
     # Release must neither block nor silently skip the publish, and vice versa.
     # Both still require the shared `consumer` gate.
-    if: github.ref_type == 'tag'
+    # Branch-push only: tags are not a trigger and a workflow_dispatch dry run
+    # must never publish.
+    if: github.event_name == 'push' && startsWith(github.ref_name, 'release/v')
     runs-on: ubuntu-latest
     # The explicit approval gate. A required-reviewer environment named `npm`
     # must exist in repository settings; this workflow cannot create it.
@@ -347,6 +395,17 @@ jobs:
       contents: read
       id-token: write
     steps:
+      # Defense in depth: never publish from main, whatever the trigger filter says.
+      - name: Refuse to publish from main
+        env:
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "${REF}" = "refs/heads/main" ] || [ "${REF_NAME}" = "main" ]; then
+            echo "::error::Refusing to publish from main (${REF}); releases run only from a release/v* branch push."
+            exit 1
+          fi
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
