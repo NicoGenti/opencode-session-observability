@@ -167,7 +167,7 @@ jobs:
           if [ "${EVENT_NAME}" = "push" ]; then
             # Fail closed: the branch is the release declaration, so its name must
             # be `release/v<semver>` and that semver must equal the package version.
-            if [[ ! "${REF_NAME}" =~ ^release/v([0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?)$ ]]; then
+            if [[ ! "${REF_NAME}" =~ ^release/v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?)$ ]]; then
               echo "::error::Push ref '${REF_NAME}' is not a release branch. Releases run only from a branch named release/vX.Y.Z (e.g. release/v0.1.0)."
               exit 1
             fi
@@ -181,9 +181,12 @@ jobs:
 
             # The tag is the version signature, not the trigger: it must already
             # exist on the pushed commit. Push the tag before the branch (§3).
-            tag_ref="refs/tags/v${pkg_version}"
-            if ! tag_commit="$(git rev-parse --verify "${tag_ref}^{}" 2>/dev/null)"; then
+            if ! git rev-parse --verify "refs/tags/v${pkg_version}" >/dev/null 2>&1; then
               echo "::error::Tag 'v${pkg_version}' does not exist. Create it on this commit and push it BEFORE the release branch: git tag v${pkg_version} && git push origin v${pkg_version} && git push origin ${REF_NAME}."
+              exit 1
+            fi
+            if ! tag_commit="$(git rev-parse --verify "refs/tags/v${pkg_version}^{}" 2>/dev/null)"; then
+              echo "::error::Tag 'v${pkg_version}' exists but does not peel to a commit. Recreate it as an annotated tag on the release commit."
               exit 1
             fi
             head_commit="$(git rev-parse HEAD)"
@@ -292,7 +295,7 @@ jobs:
 
   github-release:
     name: GitHub Release (GitHub-only fallback)
-    needs: consumer
+    needs: [consumer, pack]
     # Branch-push only: a tag push starts nothing, and a workflow_dispatch dry run
     # (even on a release/v* branch) must not create a Release.
     if: github.event_name == 'push' && startsWith(github.ref_name, 'release/v')
@@ -301,7 +304,7 @@ jobs:
       contents: write
     steps:
       # Defense in depth: never release from main, whatever the trigger filter says.
-      - name: Refuse to publish from main
+      - name: Refuse to release from main
         env:
           REF: ${{ github.ref }}
           REF_NAME: ${{ github.ref_name }}
@@ -309,6 +312,10 @@ jobs:
           set -euo pipefail
           if [ "${REF}" = "refs/heads/main" ] || [ "${REF_NAME}" = "main" ]; then
             echo "::error::Refusing to create a release from main (${REF}); releases run only from a release/v* branch push."
+            exit 1
+          fi
+          if [[ ! "${REF_NAME}" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "::error::Refusing to release from '${REF_NAME}': only release/vX.Y.Z branches may publish."
             exit 1
           fi
       - uses: actions/download-artifact@v4
@@ -331,6 +338,10 @@ jobs:
       - name: Create the release from the tested artifact
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ needs.pack.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ contains(needs.pack.outputs.version, '-') }}
+          make_latest: ${{ !contains(needs.pack.outputs.version, '-') }}
           files: |
             release/*.tgz
             release/*.sha256
@@ -380,7 +391,7 @@ jobs:
 
   npm-publish:
     name: npm publish (trusted publishing, approval gated)
-    needs: consumer
+    needs: [consumer, pack]
     # Sibling of `github-release`, not a dependent: a failed or skipped GitHub
     # Release must neither block nor silently skip the publish, and vice versa.
     # Both still require the shared `consumer` gate.
@@ -406,6 +417,10 @@ jobs:
             echo "::error::Refusing to publish from main (${REF}); releases run only from a release/v* branch push."
             exit 1
           fi
+          if [[ ! "${REF_NAME}" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "::error::Refusing to release from '${REF_NAME}': only release/vX.Y.Z branches may publish."
+            exit 1
+          fi
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
@@ -429,6 +444,7 @@ jobs:
       - name: Publish the tested tarball via OIDC
         env:
           TARBALL_NAME: ${{ needs.pack.outputs.filename }}
+          VERSION: ${{ needs.pack.outputs.version }}
         run: |
           set -euo pipefail
           # No registry token is configured anywhere: `id-token: write` plus the
@@ -437,4 +453,10 @@ jobs:
           # Until the trusted publisher is registered on npmjs.com this step fails
           # closed; the first publish is the manual, gated step in docs/RELEASE.md.
           # Publishing a tarball runs no lifecycle scripts, so the tested bytes ship.
-          npm publish "release/${TARBALL_NAME}" --access public --provenance
+          # A prerelease (version contains '-') goes to the `beta` dist-tag and must
+          # never move `latest`; a stable version publishes to `latest`.
+          dist_tag=latest
+          case "${VERSION}" in
+            *-*) dist_tag=beta ;;
+          esac
+          npm publish "release/${TARBALL_NAME}" --access public --provenance --tag "${dist_tag}"

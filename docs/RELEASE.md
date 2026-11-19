@@ -86,7 +86,8 @@ Decision logic:
 
 1. **No published versions under the exact name** (E404 on the package document, empty
    `versions`/`dist-tags`, no owner data) → the first release is **`0.1.0`** — which is what
-   `package.json` and `const VERSION` in `src/server/index.ts` already say — tagged **`v0.1.0`**.
+   `package.json` and `const VERSION` in `src/server/index.ts` already say — tagged **`v0.1.0`**
+   on branch **`release/v0.1.0`**.
 2. **The name shows versions, owners, or any ambiguity** → **stop and escalate to the
    maintainer**. The maintainer chooses either a scoped name (e.g. `@nicogenti/opencode-session-observability`)
    or an unused version. Never bump silently, and never assume `0.1.0` is free because an
@@ -113,10 +114,16 @@ without sharing a name, so neither can shadow the other.
    git checkout -b release/vX.Y.Z
    ```
 2. **Bump both version literals together.** `package.json` `version` and
-   `const VERSION = "<same>"` in `src/server/index.ts` (line 18). The drift test
-   `test/plugin-tui-entry.test.ts` → *"the CLI version literal stays in sync with the package
-   version"* fails if they disagree, and the `pack` job re-checks `node bin/opencode-observability.mjs --version`
-   against `package.json`.
+   `const VERSION = "<same>"` in `src/server/index.ts` (line 18). Then resync the lockfile root
+   version, or `npm ci` will fail on the drift:
+   ```bash
+   npm install --package-lock-only
+   ```
+   (`npm version X.Y.Z --no-git-tag-version` is the one-command alternative: it rewrites
+   `package.json` and `package-lock.json` together without committing or tagging.) The drift
+   test `test/plugin-tui-entry.test.ts` fails if `package.json`, `src/server/index.ts` and
+   `package-lock.json` disagree, and the `pack` job re-checks
+   `node bin/opencode-observability.mjs --version` against `package.json`.
 3. **Rebuild both bundles.**
    ```bash
    npm run build:tui && npm run build:server
@@ -126,18 +133,20 @@ without sharing a name, so neither can shadow the other.
 4. **Run the local gate and commit on the release branch.**
    ```bash
    npm run release:gate
-   git add package.json src/server/index.ts dist-tui/tui.mjs dist-server/server.mjs
+   git add package.json package-lock.json src/server/index.ts dist-tui/tui.mjs dist-server/server.mjs
    git commit -m "chore(release): vX.Y.Z"
    ```
-5. **(Optional) dry-run the pipeline before tagging.** Dispatch `release.yml` on the release
-   branch with `expected_version=X.Y.Z` (a leading `v` is tolerated). It runs `verify` → `pack`
-   → `consumer` only: `github-release` and `npm-publish` require `github.event_name == 'push'`,
-   so a dispatch never creates a Release or publishes, even on a release branch.
+5. **(Optional) dry-run the pipeline before tagging.** Dispatch `release.yml` on `main` (or any
+   non-release ref) with `expected_version=X.Y.Z` (a leading `v` is tolerated). It runs
+   `verify` → `pack` → `consumer` only: `github-release` and `npm-publish` require
+   `github.event_name == 'push'`, so a dispatch never creates a Release or publishes.
+   Dispatching on `release/vX.Y.Z` itself is possible only after step 7 has pushed the branch,
+   and it queues behind the real run in the same concurrency group — it is not a pre-tag test.
 6. **Tag the release commit** so the tag equals `v` + `package.json` version:
    ```bash
    git tag vX.Y.Z
    ```
-7. **Push the tag first, then the branch.** The order matters:
+7. **Push the tag first, then the branch — exactly once.** The order matters:
    ```bash
    git push origin vX.Y.Z          # triggers nothing: tags are no longer a trigger
    git push origin release/vX.Y.Z  # triggers the workflow
@@ -147,9 +156,13 @@ without sharing a name, so neither can shadow the other.
    mismatch stops the run before packing. (`github.ref_type` is `branch` for both a branch
    push and a branch dispatch, which is why the publishing jobs also require `event_name ==
    'push'`.)
+   **Push invariant:** re-pushing an unchanged release branch does not re-trigger the
+   workflow. To retry a failed release, use **Re-run all jobs** on the failed run (it
+   re-checks the same SHA, and by then the tag exists); never re-push expecting a new run.
 8. **Watch the workflow to green before approving anything**: `verify` (Node 22 + 24) → `pack`
    → `consumer` (Node 22 + 24) → `github-release` and `npm-publish`. Both publishing jobs also
-   hard-fail on an explicit early step if the ref is `main`, as defense in depth.
+   hard-fail on an explicit early step unless the ref is a `release/vX.Y.Z` branch (and never
+   on `main`), as defense in depth.
 9. **Approve the `npm` environment deployment** when `npm-publish` waits on it (skip on the
    gated first release — see §5 and §11).
 
@@ -241,14 +254,21 @@ existing installs. That is why it is the default.
 
 1. Re-run the §2 registry checks and record the first-version decision.
 2. `git checkout main && git pull --ff-only`, then `git checkout -b release/vX.Y.Z`.
-3. Bump `package.json` and `src/server/index.ts` `const VERSION` together.
-4. `npm run build:tui && npm run build:server`; commit both bundles.
+3. Bump `package.json` and `src/server/index.ts` `const VERSION` together, then resync the
+   lockfile root version with `npm install --package-lock-only`.
+4. `npm run build:tui && npm run build:server`.
 5. `npm run check`, `npm run lint:package`, `npm run release:gate`, `npm run audit:prod`.
 6. `npm pack`; run `node scripts/consumer-smoke.mjs --tarball <tgz>` and
    `node scripts/host-smoke.mjs --tarball <tgz>` (plus the §10 manual checklist).
-7. Commit, tag `vX.Y.Z`, push the tag **first** and the release branch **second**:
-   `git push origin vX.Y.Z` (triggers nothing), then `git push origin release/vX.Y.Z`
-   (triggers `release.yml`).
+7. Commit everything in one go, tag `vX.Y.Z`, then push the tag **first** and the release
+   branch **second**:
+   ```bash
+   git add package.json package-lock.json src/server/index.ts dist-tui/tui.mjs dist-server/server.mjs
+   git commit -m "chore(release): vX.Y.Z"
+   git tag vX.Y.Z
+   git push origin vX.Y.Z          # triggers nothing
+   git push origin release/vX.Y.Z  # triggers release.yml, exactly once
+   ```
 8. Watch `release.yml` to green: `verify` → `pack` → `consumer`.
 9. Verify the GitHub Release assets: the tarball **and** its `.sha256`, matching the `pack` job
    output.
