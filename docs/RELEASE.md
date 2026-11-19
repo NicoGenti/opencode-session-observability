@@ -99,27 +99,59 @@ manual first publish, which needs an authenticated machine (see §5).
 
 ## 3. Release process
 
-A release is a version bump, two rebuilt bundles, one packed tarball, and a tag that drives
-the workflow.
+A release is a version bump, two rebuilt bundles, one packed tarball, a `release/vX.Y.Z`
+branch and a `vX.Y.Z` tag. The **branch push** drives the workflow; the tag is the version
+signature it verifies against. Pushing the tag starts nothing on its own.
 
-1. **Bump both version literals together.** `package.json` `version` and
+**Naming.** The branch is `release/vX.Y.Z` and the tag is `vX.Y.Z`. The different prefixes
+keep `refs/heads/...` and `refs/tags/...` unambiguous: a branch and a tag may both exist
+without sharing a name, so neither can shadow the other.
+
+1. **Start from an up-to-date `main`.**
+   ```bash
+   git checkout main && git pull --ff-only
+   git checkout -b release/vX.Y.Z
+   ```
+2. **Bump both version literals together.** `package.json` `version` and
    `const VERSION = "<same>"` in `src/server/index.ts` (line 18). The drift test
    `test/plugin-tui-entry.test.ts` → *"the CLI version literal stays in sync with the package
    version"* fails if they disagree, and the `pack` job re-checks `node bin/opencode-observability.mjs --version`
    against `package.json`.
-2. **Rebuild both bundles and commit them.**
+3. **Rebuild both bundles.**
    ```bash
    npm run build:tui && npm run build:server
    ```
    `dist-tui/tui.mjs` and `dist-server/server.mjs` are committed artifacts; `verify` re-runs
    both builds and fails on `git diff --exit-code`. Never release a tree whose bundles are stale.
-3. **Tag `vX.Y.Z`** so the tag equals `v` + `package.json` version. The `pack` job refuses any
-   other pairing (`git describe --exact-match --tags HEAD` must equal `v<version>`).
-4. **Push the tag**: `git push origin vX.Y.Z`. That is the only trigger that can release or
-   publish; `workflow_dispatch` is a dry run (the release and publish jobs are
-   `if: github.ref_type == 'tag'`).
-5. **Watch the workflow to green before approving anything**: `verify` (Node 22 + 24) → `pack`
-   → `consumer` (Node 22 + 24) → `github-release` and `npm-publish`.
+4. **Run the local gate and commit on the release branch.**
+   ```bash
+   npm run release:gate
+   git add package.json src/server/index.ts dist-tui/tui.mjs dist-server/server.mjs
+   git commit -m "chore(release): vX.Y.Z"
+   ```
+5. **(Optional) dry-run the pipeline before tagging.** Dispatch `release.yml` on the release
+   branch with `expected_version=X.Y.Z` (a leading `v` is tolerated). It runs `verify` → `pack`
+   → `consumer` only: `github-release` and `npm-publish` require `github.event_name == 'push'`,
+   so a dispatch never creates a Release or publishes, even on a release branch.
+6. **Tag the release commit** so the tag equals `v` + `package.json` version:
+   ```bash
+   git tag vX.Y.Z
+   ```
+7. **Push the tag first, then the branch.** The order matters:
+   ```bash
+   git push origin vX.Y.Z          # triggers nothing: tags are no longer a trigger
+   git push origin release/vX.Y.Z  # triggers the workflow
+   ```
+   `pack` fails closed unless the branch name matches `release/v<semver>`, that semver equals
+   `package.json`, and the tag `v<version>` exists and points at the pushed commit. Any
+   mismatch stops the run before packing. (`github.ref_type` is `branch` for both a branch
+   push and a branch dispatch, which is why the publishing jobs also require `event_name ==
+   'push'`.)
+8. **Watch the workflow to green before approving anything**: `verify` (Node 22 + 24) → `pack`
+   → `consumer` (Node 22 + 24) → `github-release` and `npm-publish`. Both publishing jobs also
+   hard-fail on an explicit early step if the ref is `main`, as defense in depth.
+9. **Approve the `npm` environment deployment** when `npm-publish` waits on it (skip on the
+   gated first release — see §5 and §11).
 
 ---
 
@@ -179,8 +211,10 @@ npm publish <tarball> --tag beta      # prerelease; does not move the `latest` d
 npm view opencode-session-observability dist-tags
 ```
 
-- Publish the prerelease from a tag like `v0.2.0-beta.1`; the same workflow and checksum chain
-  apply. Mark the GitHub Release as a pre-release so it is not offered as the stable download.
+- Publish the prerelease from a branch like `release/v0.2.0-beta.1` with tag `v0.2.0-beta.1` on
+  its HEAD, pushed in the §3 order (tag first, then branch); the same workflow enforcement and
+  checksum chain apply. Mark the GitHub Release as a pre-release so it is not offered as the
+  stable download.
 - Pre-1.0 semver policy (`0.x`): **minor = features, patch = fixes**, and a breaking change
   bumps **minor**. `0.x` releases may break compatibility — say so in the release notes and
   ask users to pin the exact version they validated.
@@ -196,7 +230,7 @@ A published version is immutable. Do not try to fix it in place.
 | Bad version published, a fixed one is possible | Deprecate the range, then ship a patch: `npm deprecate opencode-session-observability@"0.1.0" "Broken in <what>; use 0.1.1"` and release `0.1.1`. Prefer this. |
 | Version published minutes ago, nothing depends on it | `npm unpublish opencode-session-observability@<version>` — only within npm's 72-hour window and only with **zero dependents**. npm policy rejects the rest. |
 | Whole package must go | Do not unpublish the package to "start over". Deprecate the versions and publish corrected ones. |
-| Bad tag (`v0.1.0` points at the wrong commit) | Fix on `main`, bump the version, tag the new version. **Never re-tag or move a published tag.** If the tag is unreleased and no artifact left the workflow, delete it deliberately and retag once — never after a Release or a publish exists. |
+| Bad tag or release branch (`v0.1.0` / `release/v0.1.0` points at the wrong commit) | Fix on `main`, bump the version, then tag and open a fresh `release/vX.Y.Z` branch. **Never re-tag or move a published tag, and never force-push a released branch.** If nothing left the workflow, delete the unreleased tag and branch deliberately and redo once — never after a Release or a publish exists. |
 
 Deprecation is visible on the package page and in `npm install` output, and it does not break
 existing installs. That is why it is the default.
@@ -206,20 +240,23 @@ existing installs. That is why it is the default.
 ## 8. Maintainer release steps
 
 1. Re-run the §2 registry checks and record the first-version decision.
-2. Bump `package.json` and `src/server/index.ts` `const VERSION` together.
-3. `npm run build:tui && npm run build:server`; commit both bundles.
-4. `npm run check`, `npm run lint:package`, `npm run release:gate`, `npm run audit:prod`.
-5. `npm pack`; run `node scripts/consumer-smoke.mjs --tarball <tgz>` and
+2. `git checkout main && git pull --ff-only`, then `git checkout -b release/vX.Y.Z`.
+3. Bump `package.json` and `src/server/index.ts` `const VERSION` together.
+4. `npm run build:tui && npm run build:server`; commit both bundles.
+5. `npm run check`, `npm run lint:package`, `npm run release:gate`, `npm run audit:prod`.
+6. `npm pack`; run `node scripts/consumer-smoke.mjs --tarball <tgz>` and
    `node scripts/host-smoke.mjs --tarball <tgz>` (plus the §10 manual checklist).
-6. Commit, tag `vX.Y.Z`, push the tag.
-7. Watch `release.yml` to green: `verify` → `pack` → `consumer`.
-8. Verify the GitHub Release assets: the tarball **and** its `.sha256`, matching the `pack` job
+7. Commit, tag `vX.Y.Z`, push the tag **first** and the release branch **second**:
+   `git push origin vX.Y.Z` (triggers nothing), then `git push origin release/vX.Y.Z`
+   (triggers `release.yml`).
+8. Watch `release.yml` to green: `verify` → `pack` → `consumer`.
+9. Verify the GitHub Release assets: the tarball **and** its `.sha256`, matching the `pack` job
    output.
-9. First release only: perform the manual publish (§5) and then configure the trusted
-   publisher. Later releases: approve the `environment: npm` deployment.
-10. `npm view opencode-session-observability version dist-tags` and confirm provenance on the
+10. First release only: perform the manual publish (§5) and then configure the trusted
+    publisher. Later releases: approve the `environment: npm` deployment.
+11. `npm view opencode-session-observability version dist-tags` and confirm provenance on the
     package page.
-11. Post-publish smoke test: `npx -y opencode-session-observability@<version> --version`.
+12. Post-publish smoke test: `npx -y opencode-session-observability@<version> --version`.
 
 ---
 
@@ -307,7 +344,8 @@ explicit maintainer action.
    `scripts/host-smoke.mjs` (or the §10 checklist) — plus the §2 registry re-check.
 2. Record the host-validation record (host version, automated 13/13 result, manual checklist
    outcome) so it can go into the release notes.
-3. Maintainer explicitly approves the release (version, tag `vX.Y.Z`, publish target).
+3. Maintainer explicitly approves the release (version, `release/vX.Y.Z` branch, tag `vX.Y.Z`,
+   publish target).
 4. **First publish:** manual, authenticated publish of the tested tarball with an OTP from a
    machine with maintainer access — `npm publish <tarball>` (no provenance). If a trusted
    publisher already exists for this package, the equivalent first action is the first
