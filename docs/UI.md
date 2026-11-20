@@ -17,8 +17,8 @@ The topbar switches between two persisted modes:
 
 | Mode | Header | Trajectory filters | Statistics |
 |---|---|---|---|
-| **Basic** | Turns, input tokens, cost, errors | Search, kind and the error/tool/compaction/retry/subagent/context chips | Turns with trigger, duration, in/out tokens, cost, status; expandable steps |
-| **Advanced** | All eight tiles | Every filter and range control | Full 19-column turn/step table |
+| **Basic** | Turns, input tokens, cost, errors | Search, kind, the error/tool/compaction/retry/subagent/context chips and Clear, plus the **Advanced filters** dialog | Turns with trigger, duration, in/out tokens, cost, status; expandable steps |
+| **Advanced** | All eight tiles | The same bar and dialog (filters are not mode-gated) | Full 19-column turn/step table |
 
 The mode is stored per browser and can also be changed from Settings.
 
@@ -55,6 +55,8 @@ Rows are chronological by recorded session sequence. Turn headers and step heade
 | Clear | Clears all filters |
 
 Filters are applied on the server, so search spans the whole session, not only the loaded page. Changing a filter resets to the newest matching page.
+
+The essential controls (Search, Kind, the six chips and Clear) always sit in the filter bar. Agent, Model, Provider, Tool, Status, From/To and the prompt-token range live in the **Advanced filters** dialog opened from its button; the badge on that button counts the advanced controls currently set. The dialog is not gated by the view mode — its values always apply — and it closes on Esc, an outside click or any change, returning focus to the button.
 
 ### Recovery map
 
@@ -217,6 +219,8 @@ The native TUI panels re-fetch their existing `analysis` RPC on the same 5 secon
 ## Guardrails
 
 Advisory budget warnings sit directly below the live-warning rows and above the active pane, in **both** view modes: they are deliberately not an Advanced-only section. Every analysis load appends the browser's six `gr.*` budgets to the request, so the server evaluates them against the same analysis (contract in [HEALTH.md](HEALTH.md#guardrails)).
+
+The block is a native disclosure (`<details>`): the summary always carries the `Guardrails` heading and the `N advisory` count, while the rows are collapsed by default. Opening it is ordinary keyboard/pointer disclosure, and the open state persists per browser (`guardrailsExpanded` / `guardrailsCollapsed` in localStorage).
 
 - **Rows** — each crossed budget keeps the health-rule rhythm: the budget label, the `derived` basis, an `advisory` chip, the deterministic observation with the budget it crossed, and capped evidence buttons carrying `data-event-id` that jump to the event in Trajectory. Every budget shows evidence: the event-backed ones (`retries`, `tool-failures`, `elapsed-minutes`) render `Event N` buttons for their capped event ids, and the event-only ones (`tokens-total`, `cost-total`, `context-run`) render `Turn N` buttons whose anchor is the turn's trigger event (falling back to its first recorded event). A turn whose anchor cannot be resolved renders no button rather than an id that cannot be opened. The threshold keeps up to two decimals, so a `$12.75` cost budget is never displayed as `13`. The section header carries the count (`N advisory`) and the standing line `advisory — never blocks anything`; there is no score, no ranking and no ordering control. A budget that could not be evaluated appears as a `Not evaluated — …` line instead of a guess.
 - **Settings** — the settings panel has a Guardrails group with one numeric input per budget (total tokens, total cost, context growth run, retries, tool failures, elapsed minutes), each validated inline against its documented bounds, plus **Reset guardrail defaults**. A rejected value shows its message and is never stored or sent. Budgets persist in this browser's localStorage; the server keeps no configuration. Changing one re-requests the current session's analysis, which is where the budgets are evaluated.

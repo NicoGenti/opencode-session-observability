@@ -128,6 +128,8 @@ const DEFAULTS = {
   expandedProjects: [],
   expandedParents: [],
   guardrails: null,
+  guardrailsExpanded: false,
+  guardrailsCollapsed: true,
 };
 
 const KEY_PREFIX = "observability-";
