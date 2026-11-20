@@ -32,17 +32,94 @@ jobs:
             "repos/${REPO}/code-scanning/alerts?state=open&per_page=100" \
             --paginate)
 
+          # Some Snyk rules reach the alerts API without
+          # rule.security_severity_level, so the most recent Snyk Code SARIF
+          # analysis is the deterministic fallback for those alerts.
+          severity_map='{}'
+
+          analysis_id=$(gh api \
+            "repos/${REPO}/code-scanning/analyses?per_page=100" \
+            --paginate \
+            --jq '.[] | select((.category // "") == "snyk-code") | "\(.created_at)\t\(.id)"' \
+            2>/dev/null | sort -r | awk 'NR == 1 { print $2 }' || true)
+
+          if [[ -n "${analysis_id}" ]]; then
+            sarif=$(gh api \
+              -H "Accept: application/sarif+json" \
+              "repos/${REPO}/code-scanning/analyses/${analysis_id}" \
+              2>/dev/null || true)
+
+            if [[ -n "${sarif}" ]]; then
+              severity_map=$(echo "${sarif}" | jq -c '
+                [
+                  .runs[]?.tool.driver.rules[]?
+                  | (.properties | if type == "object" then . else {} end) as $props
+                  | {
+                      id: ((.id // "") | tostring),
+                      score: ($props["security-severity"] // null),
+                      text: (
+                        $props.severity
+                        // ($props.problem | if type == "object" then .severity else null end)
+                        // null
+                      ),
+                      level: ((.defaultConfiguration.level // "") | tostring | ascii_downcase)
+                    }
+                  | select(.id != "")
+                ]
+                | reduce .[] as $rule ({};
+                    .[$rule.id] = (
+                      if (try ($rule.score | tonumber) catch null) != null then
+                        ($rule.score | tonumber) as $score
+                        | if $score > 9.0 then "critical"
+                          elif $score >= 7.0 then "high"
+                          elif $score >= 4.0 then "medium"
+                          elif $score >= 0.1 then "low"
+                          else "none"
+                          end
+                      else
+                        (($rule.text // "") | tostring | ascii_downcase) as $text
+                        | if ($text == "critical" or $text == "high" or $text == "medium" or $text == "low") then
+                            $text
+                          elif $rule.level == "error" then "high"
+                          elif $rule.level == "warning" then "medium"
+                          elif $rule.level == "note" then "low"
+                          else "unknown"
+                          end
+                      end
+                    )
+                  )
+              ' 2>/dev/null || echo '{}')
+            else
+              echo "::notice::Unable to download SARIF for snyk-code analysis #${analysis_id}"
+            fi
+          else
+            echo "::notice::No snyk-code code-scanning analysis found; relying on alert metadata"
+          fi
+
+          echo "Resolved Snyk SARIF severity map: ${severity_map}"
+
           echo "$alerts" | jq -c '.[]' | while read -r alert; do
             alert_number=$(echo "$alert" | jq -r '.number')
             title=$(echo "$alert" | jq -r '.rule.description // .rule.id')
-            severity=$(echo "$alert" | jq -r '.rule.security_severity_level // "unknown"')
-            rule=$(echo "$alert" | jq -r '.rule.id')
+            rule=$(echo "$alert" | jq -r '.rule.id // empty')
             tool=$(echo "$alert" | jq -r '.tool.name')
             html_url=$(echo "$alert" | jq -r '.html_url')
             instance=$(echo "$alert" | jq -r '.most_recent_instance')
             file=$(echo "$instance" | jq -r '.location.path // "unknown"')
             line=$(echo "$instance" | jq -r '.location.start_line // "unknown"')
             message=$(echo "$instance" | jq -r '.message.text // "No message available."')
+
+            reported_severity=$(echo "$alert" | jq -r '.rule.security_severity_level // empty')
+            severity=""
+            if [[ -n "${reported_severity}" ]]; then
+              severity=$(echo "${reported_severity}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+            fi
+            if [[ -z "${severity}" || "${severity}" == "null" || "${severity}" == "unknown" ]]; then
+              severity=$(echo "${severity_map}" | jq -r --arg rule "${rule}" '.[$rule] // empty')
+            fi
+            if [[ -z "${severity}" || "${severity}" == "null" ]]; then
+              severity="unknown"
+            fi
 
             marker="<!-- code-scanning-alert:${alert_number} -->"
 
@@ -54,6 +131,15 @@ jobs:
 
             if [[ -n "$existing" ]]; then
               echo "Issue already exists for alert #${alert_number}: #$existing"
+              continue
+            fi
+
+            if [[ "${severity}" == "unknown" ]]; then
+              echo "::notice::Skipping alert #${alert_number} (${rule}): could not resolve an effective severity"
+              continue
+            fi
+            if [[ "${severity}" != "critical" && "${severity}" != "high" ]]; then
+              echo "::notice::Skipping alert #${alert_number} (${rule}): effective severity '${severity}' is below the high threshold"
               continue
             fi
 

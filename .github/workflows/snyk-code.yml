@@ -47,6 +47,35 @@ jobs:
           command: code test
           args: --sarif-file-output=snyk-code.sarif
 
+      - name: Sanitize SARIF severity values
+        if: steps.snyk-token.outputs.available == 'true' && hashFiles('snyk-code.sarif') != ''
+        run: |
+          set -euo pipefail
+
+          # Code Scanning rejects non-numeric properties.security-severity
+          # values, so drop invalid entries and let GitHub fall back to the
+          # rule level and severity metadata.
+          tmp=$(mktemp)
+          jq '
+            walk(
+              if type == "object" then
+                .properties as $properties
+                | if ($properties | type) == "object" then
+                    if ($properties | has("security-severity")) then
+                      ($properties["security-severity"]) as $severity
+                      | if (try ($severity | tonumber) catch null) != null then .
+                        else del(.properties["security-severity"])
+                        end
+                    else .
+                    end
+                  else .
+                  end
+              else .
+              end
+            )
+          ' snyk-code.sarif > "$tmp"
+          mv "$tmp" snyk-code.sarif
+
       - name: Upload SARIF to GitHub Code Scanning
         if: steps.snyk-token.outputs.available == 'true' && hashFiles('snyk-code.sarif') != ''
         uses: github/codeql-action/upload-sarif@v3
