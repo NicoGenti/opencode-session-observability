@@ -6805,7 +6805,10 @@ async function createObservabilityServer(options = {}) {
 					sendJson(req, res, 503, {
 						error: "busy",
 						message: "Too many concurrent requests."
-					}, { "Retry-After": "1" });
+					}, {
+						"Retry-After": "1",
+						Connection: "close"
+					});
 					return;
 				}
 				draining += 1;
@@ -7162,7 +7165,10 @@ async function createObservabilityServer(options = {}) {
 			sendJson(req, res, 503, {
 				error: "busy",
 				message: "Too many concurrent requests."
-			}, { "Retry-After": "1" });
+			}, {
+				"Retry-After": "1",
+				...declaresBody(req) ? { Connection: "close" } : {}
+			});
 			return;
 		}
 		inFlight++;

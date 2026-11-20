@@ -738,12 +738,14 @@ export async function createObservabilityServer(
         // over-cap request before the counter moves keeps the refusal cheap and
         // indistinguishable from the in-flight 503.
         if (draining >= MAX_CONCURRENT_DRAINS) {
+          // The payload is never read here, so the connection is closed with
+          // the refusal instead of lingering until the unread body times out.
           sendJson(
             req,
             res,
             503,
             { error: "busy", message: "Too many concurrent requests." },
-            { "Retry-After": "1" },
+            { "Retry-After": "1", Connection: "close" },
           );
           return;
         }
@@ -1178,12 +1180,17 @@ export async function createObservabilityServer(
       return;
     }
     if (inFlight >= MAX_IN_FLIGHT_REQUESTS) {
+      // Same treatment as the rate-limit refusal: a refused upload is never
+      // read, so it does not keep the connection open for its unread body.
       sendJson(
         req,
         res,
         503,
         { error: "busy", message: "Too many concurrent requests." },
-        { "Retry-After": "1" },
+        {
+          "Retry-After": "1",
+          ...(declaresBody(req) ? { Connection: "close" } : {}),
+        },
       );
       return;
     }
