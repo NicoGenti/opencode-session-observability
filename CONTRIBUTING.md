@@ -5,7 +5,7 @@ Thanks for taking a look. This project is a local-first, read-only observability
 ## Prerequisites
 
 - **Node.js** `>=22.18` (`engines`); **24.x** is recommended and is what CI runs. The app uses the built-in `node:sqlite`, so no native module is compiled.
-- **TypeScript 5.9** in strict mode, ESM, **no build step**: the sources run directly and `tsc` is used only for `--noEmit` typechecking.
+- **TypeScript 7.0.2** in strict mode, ESM, **no build step**: the sources run directly and `tsc` is used only for `--noEmit` typechecking.
 - An OpenCode 2 session database is only needed to run the app against real data; the test suite builds its own fixtures.
 
 ## Setup
@@ -22,13 +22,13 @@ Use `npm ci` rather than `npm install`: `package-lock.json` is committed and the
 npm run check        # typecheck + typecheck:tui + full test suite — the standard gate
 npm run typecheck    # tsc --noEmit only
 npm run typecheck:tui # tsc --noEmit -p tsconfig.tui.json (Solid JSX sidecar)
-npm test             # node:test, 51 files, 797 tests
+npm test             # node:test, 51 files, 828 tests
 npm run build:tui    # rebuild dist-tui/tui.mjs; CI verifies the artifact is fresh
 npm run audit:prod   # production dependency audit
 npm run serve        # start the local UI (alias of npm start)
 ```
 
-`npm run check` must be green before you open a pull request. The suite is at 797 tests across 51 files and grows with each new suite.
+`npm run check` must be green before you open a pull request. The suite is at 828 tests across 51 files and grows with each new suite.
 
 After any change under `src/plugin/tui.*`, rebuild the committed bundle and prove it is fresh:
 
