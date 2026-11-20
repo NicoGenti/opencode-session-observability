@@ -1383,30 +1383,33 @@ function buildLedgerRows() {
   return rows;
 }
 
-function ledgerRowHtml(row) {
-  if (row.type === "turn") {
+export function ledgerRowHtml(row) {
+  if (row?.type === "turn") {
     if (!row.turn) {
       return `<div class="row-turn-header"><span class="turn-index">Unattached</span><span class="turn-trigger">Events not attributable to a turn (preserved in recorded order)</span><span class="turn-spacer"></span>${badge(
         "uncertain",
         "uncertain",
       )}</div>`;
     }
-    return `<div class="row-turn-header"><span class="turn-index">Turn ${
-      row.turn.index
-    }</span><span class="turn-trigger">${escapeHtml(
+    return `<div class="row-turn-header"><span class="turn-index">Turn ${escapeHtml(
+      row.turn.index,
+    )}</span><span class="turn-trigger">${escapeHtml(
       row.turn.trigger.label,
     )}</span>${badge(row.turn.trigger.kind, "neutral")}<span class="turn-spacer"></span><span class="status ${statusClass(
       row.turn.status,
-    )}">${escapeHtml(row.turn.status)}</span><span class="muted small">${row.turn.steps.length} step(s)</span></div>`;
+    )}">${escapeHtml(row.turn.status)}</span><span class="muted small">${escapeHtml(
+      row.turn.steps.length,
+    )} step(s)</span></div>`;
   }
-  if (row.type === "step") {
+  if (row?.type === "step") {
     const model = row.step?.model ? modelLabel(row.step.model) : "";
-    return `<div class="row-step-header"><span class="step-label">Step ${
-      row.step?.index ?? "?"
-    }</span>${escapeHtml(model)}<span class="turn-spacer"></span><span class="status ${statusClass(
+    return `<div class="row-step-header"><span class="step-label">Step ${escapeHtml(
+      row.step?.index ?? "?",
+    )}</span>${escapeHtml(model)}<span class="turn-spacer"></span><span class="status ${statusClass(
       row.step?.status ?? "",
     )}">${escapeHtml(row.step?.status ?? "?")}</span></div>`;
   }
+  if (!row?.event) return "";
   return eventRowHtml(row.event);
 }
 

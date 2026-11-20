@@ -27,9 +27,9 @@ import { preview, redactString, redactValue } from "../src/core/util.ts";
 // @ts-expect-error - plain browser module without type declarations
 import { renderMarkdown } from "../src/ui/markdown.js";
 // @ts-expect-error - plain browser module without type declarations
-import { clientExportFilename, exportRequestPath, liveErrorDetail, resolveExportTarget, sessionExportName } from "../src/ui/app.js";
+import { clientExportFilename, exportRequestPath, ledgerRowHtml, liveErrorDetail, resolveExportTarget, sessionExportName } from "../src/ui/app.js";
 // @ts-expect-error - plain browser module without type declarations
-import { safeDownloadName } from "../src/ui/format.js";
+import { safeDownloadName, statusClass } from "../src/ui/format.js";
 import {
   BASE,
   assistant,
@@ -1145,6 +1145,43 @@ async function uiFormatSource(): Promise<string> {
   return readFile(new URL("../src/ui/format.js", import.meta.url), "utf8");
 }
 
+async function uiVirtualSource(): Promise<string> {
+  return readFile(new URL("../src/ui/virtual.js", import.meta.url), "utf8");
+}
+
+/**
+ * Attribute names of the rendered markup, read only in attribute position.
+ * Quoted values are skipped, so a handler-looking string that correctly ended
+ * up inside a `class`/`aria-label` value is not mistaken for an attribute: a
+ * bare `onmouseover=alert(3)` is data there, dangerous only if it becomes an
+ * attribute name of its own.
+ */
+function htmlAttributeNames(html: string): string[] {
+  const names: string[] = [];
+  for (const [tag] of html.matchAll(/<[a-zA-Z][^>]*>/g)) {
+    const body = tag.slice(1);
+    let quote: string | null = null;
+    let start = -1;
+    for (let index = 0; index < body.length; index += 1) {
+      const char = body[index]!;
+      if (quote) {
+        if (char === quote) quote = null;
+      } else if (char === '"' || char === "'") {
+        quote = char;
+        start = -1;
+      } else if (char === "=") {
+        if (start !== -1) names.push(body.slice(start, index).trim());
+        start = -1;
+      } else if (/\s/.test(char)) {
+        start = -1;
+      } else if (start === -1) {
+        start = index;
+      }
+    }
+  }
+  return names;
+}
+
 /**
  * The `catch (error)` block of `handle()`, brace-matched from its opening `{`.
  * Anchored on the handler declaration so the server's other catch blocks (the
@@ -1673,4 +1710,170 @@ test("the format module's only node insertion is the clipboard fallback", async 
   const copyText = uiFunctionBody(source, "export async function copyText(");
   assert.match(copyText, /document\.body\.appendChild\(area\)/);
   assert.match(copyText, /area\.value = text;/);
+});
+
+test("ledgerRowHtml escapes hostile row fields before the virtual-list sink", async () => {
+  // The escaping below only guards the page if the virtual list's insertion
+  // sink is still fed by the same function: pin the wiring, and pin that the
+  // sink is the only one in the module.
+  const appSource = await uiAppSource();
+  assert.match(appSource, /renderRow: \(row\) => ledgerRowHtml\(row\),/);
+  const virtualSource = await uiVirtualSource();
+  assert.match(
+    virtualSource,
+    /element\.innerHTML = this\.renderRow\(row, index\);/,
+  );
+  assert.equal([...virtualSource.matchAll(/\.innerHTML\s*=/g)].length, 1);
+
+  // A tag payload, a quote-breaking attribute payload and a bare handler
+  // payload (no `<`, `>` or quote). All three travel through the same ledger
+  // rows the virtual list inserts with `innerHTML`.
+  const markupPayload = "<img src=x onerror=alert(1)>";
+  const attrPayload = '" onmouseover="alert(2)';
+  const bareHandler = "onmouseover=alert(3)";
+
+  const turnRow = ledgerRowHtml({
+    type: "turn",
+    turn: {
+      id: "turn_hostile",
+      index: `${markupPayload} ${bareHandler}`,
+      trigger: {
+        label: `${attrPayload} ${bareHandler}`,
+        kind: `neutral${attrPayload} ${bareHandler}`,
+      },
+      status: markupPayload,
+      steps: { length: markupPayload },
+    },
+  });
+
+  const stepRow = ledgerRowHtml({
+    type: "step",
+    stepID: "step_hostile",
+    step: {
+      id: "step_hostile",
+      index: `${markupPayload} ${bareHandler}`,
+      status: `${attrPayload} ${bareHandler} incomplete`,
+      model: { providerID: markupPayload, id: attrPayload },
+    },
+  });
+
+  const eventRow = ledgerRowHtml({
+    type: "event",
+    eventID: attrPayload,
+    event: {
+      id: attrPayload,
+      kind: `tool${attrPayload} ${bareHandler}`,
+      timestamp: 1_700_000_000_000,
+      title: `${markupPayload} ${bareHandler}`,
+      textPreview: `${attrPayload} ${bareHandler}`,
+      meta: { description: `${markupPayload} ${bareHandler}` },
+    },
+  });
+
+  // Benign rows of the exact same shape: they render the same tag sequence,
+  // so any raw `<` or `>` that reached the hostile output would show up as an
+  // added, split or missing tag in the comparison below.
+  const normalTurnRow = ledgerRowHtml({
+    type: "turn",
+    turn: {
+      id: "turn_1",
+      index: 3,
+      trigger: { label: "User prompt", kind: "user" },
+      status: "completed",
+      steps: { length: 2 },
+    },
+  });
+  const normalStepRow = ledgerRowHtml({
+    type: "step",
+    stepID: "step_1",
+    step: {
+      id: "step_1",
+      index: 0,
+      status: "succeeded",
+      model: { providerID: "anthropic", id: "claude" },
+    },
+  });
+  const normalEventRow = ledgerRowHtml({
+    type: "event",
+    eventID: "event_1",
+    event: {
+      id: "event_1",
+      kind: "assistant",
+      timestamp: 1_700_000_000_000,
+      title: "Assistant reply",
+      textPreview: "Benign preview",
+      meta: { description: "Benign description" },
+    },
+  });
+
+  const tagSkeleton = (html: string) => html.match(/<\/?[a-zA-Z][\w-]*/g) ?? [];
+
+  for (const [label, html, normalHtml] of [
+    ["turn", turnRow, normalTurnRow],
+    ["step", stepRow, normalStepRow],
+    ["event", eventRow, normalEventRow],
+  ] as const) {
+    // No live element: the angle brackets arrive as entities, and the payload
+    // never reaches the markup verbatim.
+    assert.doesNotMatch(html, /<img/i, `${label}: live <img tag`);
+    assert.ok(!html.includes(markupPayload), `${label}: raw tag payload`);
+    assert.match(html, /&lt;img/, `${label}: escaped tag entity`);
+
+    // No attribute breakout: the quotes are entities, so the hostile payload
+    // cannot close a class/attribute value and open its own handler.
+    assert.ok(!html.includes(attrPayload), `${label}: raw attribute payload`);
+    assert.match(html, /&quot;/, `${label}: escaped quote entity`);
+
+    // The bare handler has no metacharacters, so it can only become live by
+    // landing in attribute position. Read the attribute names only outside
+    // quoted values: unlike the old `replace(/&lt;[\s\S]*?&gt;/, "")` strip
+    // (which can swallow a live tag between two unrelated entities), this
+    // cannot mistake quoted data for structure.
+    const attributes = htmlAttributeNames(html);
+    assert.ok(
+      !attributes.some((name) => /^on/i.test(name)),
+      `${label}: bare handler reached attribute position`,
+    );
+    assert.deepEqual(
+      [...new Set(attributes)],
+      [...new Set(htmlAttributeNames(normalHtml))],
+      `${label}: attribute names`,
+    );
+    // The payload was really injected: it survives as inert text or inside a
+    // quoted value, where a handler-looking string is data, not markup.
+    assert.ok(
+      html.split(/<[^>]*>/).some((text: string) => text.includes(bareHandler)),
+      `${label}: bare handler was not injected`,
+    );
+
+    // Structural check: the tag sequence is identical to the benign row of the
+    // same shape. A raw `<`/`>` anywhere in a field would change it.
+    assert.deepEqual(
+      tagSkeleton(html),
+      tagSkeleton(normalHtml),
+      `${label}: tag skeleton`,
+    );
+  }
+
+  // The status class stays whitelisted: the hostile status becomes the one
+  // safe fallback class, never part of the class token.
+  assert.equal(statusClass(markupPayload), "status-incomplete");
+  assert.match(turnRow, /<span class="status status-incomplete">/);
+  assert.match(stepRow, /<span class="status status-incomplete">/);
+  assert.doesNotMatch(turnRow, /class="status [^"]*onmouseover/);
+  assert.doesNotMatch(stepRow, /class="status [^"]*onmouseover/);
+
+  // Normal data renders exactly as before: digits are unchanged by escaping,
+  // including a step index of 0 (the nullish fallback must not swallow it).
+  assert.match(normalTurnRow, /Turn 3/);
+  assert.match(normalTurnRow, /2 step\(s\)/);
+  assert.match(normalTurnRow, /class="status status-completed"/);
+  assert.match(normalStepRow, /Step 0/);
+  assert.match(normalStepRow, /class="status status-completed"/);
+
+  // A header-only and a malformed row are renderable data, not throws: the
+  // exported row builder is now reachable from the virtual list.
+  assert.match(ledgerRowHtml({ type: "turn", turn: null }), /Unattached/);
+  assert.equal(ledgerRowHtml({ type: "event" }), "");
+  assert.equal(ledgerRowHtml(undefined), "");
 });
