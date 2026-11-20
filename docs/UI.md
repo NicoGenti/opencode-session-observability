@@ -275,7 +275,7 @@ Redaction preserves token counts and metrics. It targets keys such as `api_key`,
 
 Exports use the current reveal state. Redacted exports include a warning.
 
-The download target is resolved against the loaded session list — refreshed automatically at export time, up to the server's maximum of 1000 entries — so a session older than that most recent page may require re-searching it first.
+The download target is resolved against the loaded session list — refreshed automatically at export time, up to the server's maximum of 1000 entries — so older sessions may not be exportable from the browser UI.
 
 ## Deep links
 
