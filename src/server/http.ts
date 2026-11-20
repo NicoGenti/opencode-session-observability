@@ -95,6 +95,13 @@ export const REQUEST_TIMEOUT_MS = 30_000;
 export const DRAIN_DEADLINE_MS = 10_000;
 
 /**
+ * Concurrent body drains. A drain ties up an in-flight slot until the body
+ * settles, so unauthenticated trickling uploads are bounded to a small number
+ * before they can starve interactive traffic of its slots.
+ */
+export const MAX_CONCURRENT_DRAINS = 4;
+
+/**
  * `/api/sessions/{id}/diagnostics`. Exported so tests build requests from the
  * same shape the router matches instead of re-typing the pattern.
  */
@@ -657,6 +664,9 @@ export async function createObservabilityServer(
   }
   const service = new ObservabilityService(source);
   let boundPort = port;
+  // Bodies currently being drained. Bounded by MAX_CONCURRENT_DRAINS so a few
+  // slow uploads cannot occupy the in-flight slots interactive requests need.
+  let draining = 0;
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
@@ -724,20 +734,44 @@ export async function createObservabilityServer(
       // payload, so a body sent to a static path is never drained: it is
       // refused by the method gate below and its socket closed.
       if (bodyBearing && path.startsWith("/api/")) {
-        const verdict = await drainBody(req, MAX_BODY_BYTES, DRAIN_DEADLINE_MS);
-        if (verdict === "timeout") return; // the deadline destroyed the socket
-        if (verdict === "too_large") {
+        // A drain holds an in-flight slot until its body settles. Refusing the
+        // over-cap request before the counter moves keeps the refusal cheap and
+        // indistinguishable from the in-flight 503.
+        if (draining >= MAX_CONCURRENT_DRAINS) {
           sendJson(
             req,
             res,
-            413,
-            {
-              error: "payload_too_large",
-              message: "Request body is too large.",
-            },
-            { Connection: "close" },
+            503,
+            { error: "busy", message: "Too many concurrent requests." },
+            { "Retry-After": "1" },
           );
           return;
+        }
+        draining += 1;
+        try {
+          const verdict = await drainBody(
+            req,
+            MAX_BODY_BYTES,
+            DRAIN_DEADLINE_MS,
+          );
+          if (verdict === "timeout") return; // the deadline destroyed the socket
+          if (verdict === "too_large") {
+            sendJson(
+              req,
+              res,
+              413,
+              {
+                error: "payload_too_large",
+                message: "Request body is too large.",
+              },
+              { Connection: "close" },
+            );
+            return;
+          }
+        } finally {
+          // Every outcome (ok / too_large / timeout / aborted socket) releases
+          // the drain slot, including the early returns above.
+          draining -= 1;
         }
       }
       // (f) A body-bearing request reaches the method gate only after its body

@@ -6762,6 +6762,7 @@ async function createObservabilityServer(options = {}) {
 	}
 	const service = new ObservabilityService(source);
 	let boundPort = port;
+	let draining = 0;
 	const handle = async (req, res) => {
 		try {
 			const requestUrl = new URL(req.url ?? "/", "http://localhost");
@@ -6800,14 +6801,26 @@ async function createObservabilityServer(options = {}) {
 				return;
 			}
 			if (bodyBearing && path.startsWith("/api/")) {
-				const verdict = await drainBody(req, MAX_BODY_BYTES, DRAIN_DEADLINE_MS);
-				if (verdict === "timeout") return;
-				if (verdict === "too_large") {
-					sendJson(req, res, 413, {
-						error: "payload_too_large",
-						message: "Request body is too large."
-					}, { Connection: "close" });
+				if (draining >= 4) {
+					sendJson(req, res, 503, {
+						error: "busy",
+						message: "Too many concurrent requests."
+					}, { "Retry-After": "1" });
 					return;
+				}
+				draining += 1;
+				try {
+					const verdict = await drainBody(req, MAX_BODY_BYTES, DRAIN_DEADLINE_MS);
+					if (verdict === "timeout") return;
+					if (verdict === "too_large") {
+						sendJson(req, res, 413, {
+							error: "payload_too_large",
+							message: "Request body is too large."
+						}, { Connection: "close" });
+						return;
+					}
+				} finally {
+					draining -= 1;
 				}
 			}
 			if (req.method !== "GET" && req.method !== "HEAD") {

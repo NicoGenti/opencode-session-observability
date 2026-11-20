@@ -10,6 +10,7 @@ import { join } from "node:path";
 import {
   ClientRateLimiter,
   MAX_BODY_BYTES,
+  MAX_CONCURRENT_DRAINS,
   MAX_IN_FLIGHT_REQUESTS,
   MAX_SERVED_FILE_BYTES,
   RATE_LIMIT_BODY,
@@ -711,16 +712,18 @@ test("the request pipeline ships a last-resort error sink and a headersSent guar
   // ...and the handle promise has no rejection path left open.
   assert.doesNotMatch(source, /void handle\(req, res\)/);
   assert.match(source, /inFlight -= 1/);
+  // The drain slot is released on every drain outcome, not only success.
+  assert.match(source, /draining -= 1/);
 });
 
-test("the in-flight cap answers 503 instead of starting more work", async () => {
+test("concurrent body drains are capped so uploads cannot occupy every slot", async () => {
+  assert.equal(MAX_CONCURRENT_DRAINS, 4);
   const { path } = writeFixtureDb(simpleFixture());
   const server = await createObservabilityServer({ dbPath: path, port: 0 });
   const sockets: net.Socket[] = [];
   try {
-    // Uploads that declare a body but never finish it hold one in-flight slot
-    // each without doing any work, which is what lets the test reach the cap.
-    for (let index = 0; index < MAX_IN_FLIGHT_REQUESTS; index += 1) {
+    // Every trickling upload starts a drain (and holds it open) until the cap.
+    for (let index = 0; index < MAX_CONCURRENT_DRAINS; index += 1) {
       const socket = net.connect({ host: "127.0.0.1", port: server.port });
       sockets.push(socket);
       await once(socket, "connect");
@@ -730,12 +733,49 @@ test("the in-flight cap answers 503 instead of starting more work", async () => 
     }
     await delay(200);
 
-    const busy = await request(server.port, "/api/health");
+    // A body-bearing request over the drain cap is refused from the gate: if it
+    // were drained it would reach the method gate and answer 405 instead.
+    const busy = await postWithBody(
+      server.port,
+      "/api/health",
+      Buffer.from("x".repeat(16)),
+    );
     assert.equal(busy.status, 503);
     assert.equal((JSON.parse(busy.body) as { error: string }).error, "busy");
     assert.equal(busy.headers["retry-after"], "1");
   } finally {
     for (const socket of sockets) socket.destroy();
+    await server.close();
+  }
+});
+
+test("the in-flight cap answers 503 instead of starting more work", async () => {
+  const { path } = writeFixtureDb(simpleFixture());
+  const server = await createObservabilityServer({ dbPath: path, port: 0 });
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  // Uploads can no longer hold every slot (drains are capped), so the handler
+  // itself is paused: each stalled call keeps one in-flight slot occupied.
+  server.service.listSessions = async () => {
+    await gate;
+    return [];
+  };
+  const pending: Promise<unknown>[] = [];
+  try {
+    for (let index = 0; index < MAX_IN_FLIGHT_REQUESTS; index += 1) {
+      pending.push(request(server.port, "/api/sessions"));
+    }
+    await delay(200);
+
+    const busy = await request(server.port, "/api/sessions");
+    assert.equal(busy.status, 503);
+    assert.equal((JSON.parse(busy.body) as { error: string }).error, "busy");
+    assert.equal(busy.headers["retry-after"], "1");
+  } finally {
+    release();
+    await Promise.all(pending);
     await server.close();
   }
 });
