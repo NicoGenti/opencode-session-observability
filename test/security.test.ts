@@ -713,7 +713,7 @@ test("the request pipeline ships a last-resort error sink and a headersSent guar
   assert.doesNotMatch(source, /void handle\(req, res\)/);
   assert.match(source, /inFlight -= 1/);
   // The drain slot is released on every drain outcome, not only success.
-  assert.match(source, /draining -= 1/);
+  assert.match(source, /finally\s*\{[^}]*draining -= 1/);
 });
 
 test("concurrent body drains are capped so uploads cannot occupy every slot", async () => {
@@ -731,18 +731,39 @@ test("concurrent body drains are capped so uploads cannot occupy every slot", as
         `POST /api/health HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\nContent-Length: 16\r\n\r\nx`,
       );
     }
-    await delay(200);
 
     // A body-bearing request over the drain cap is refused from the gate: if it
-    // were drained it would reach the method gate and answer 405 instead.
-    const busy = await postWithBody(
+    // were drained it would reach the method gate and answer 405 instead. Each
+    // admitted retry releases its slot, so this converges on the saturated state.
+    let busy = await postWithBody(
       server.port,
       "/api/health",
       Buffer.from("x".repeat(16)),
     );
+    const deadline = Date.now() + 2_000;
+    while (busy.status !== 503 && Date.now() < deadline) {
+      await delay(50);
+      busy = await postWithBody(
+        server.port,
+        "/api/health",
+        Buffer.from("x".repeat(16)),
+      );
+    }
     assert.equal(busy.status, 503);
     assert.equal((JSON.parse(busy.body) as { error: string }).error, "busy");
     assert.equal(busy.headers["retry-after"], "1");
+    assert.equal(busy.headers["connection"], "close");
+
+    // Destroying the trickling uploads releases their slots: a body-bearing
+    // request is admitted again and reaches the method gate.
+    for (const socket of sockets) socket.destroy();
+    await delay(150);
+    const admitted = await postWithBody(
+      server.port,
+      "/api/health",
+      Buffer.alloc(16).fill("x".charCodeAt(0)),
+    );
+    assert.equal(admitted.status, 405);
   } finally {
     for (const socket of sockets) socket.destroy();
     await server.close();
