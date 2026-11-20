@@ -74,7 +74,11 @@ export const MAX_IN_FLIGHT_REQUESTS = 32;
 export const RATE_LIMIT_BURST = 300;
 export const RATE_LIMIT_REFILL_PER_MINUTE = 300;
 
-/** Tracked addresses before idle buckets are swept. */
+/**
+ * Hard ceiling on tracked addresses; the oldest are evicted when it is
+ * reached. `#buckets.size` never exceeds it, and fully refilled buckets are
+ * reclaimed first because they behave exactly like a fresh entry.
+ */
 const RATE_LIMIT_MAX_CLIENTS = 1024;
 
 /**
@@ -293,9 +297,17 @@ export interface RateLimiterOptions {
   burst?: number;
   /** Tokens added per minute, spread evenly over the minute. */
   refillPerMinute?: number;
-  /** Injectable clock, used by the tests. */
+  /**
+   * Injectable clock, used by the tests. Must return a finite, non-decreasing
+   * millisecond value (production uses Date.now).
+   */
   now?: () => number;
-  /** Tracked addresses before idle buckets are swept. */
+  /**
+   * Hard ceiling on tracked addresses; the oldest are evicted when it is
+   * reached, so `#buckets.size` never exceeds it. Refilled buckets are
+   * reclaimed first. Must be a positive integer; defaults to
+   * `RATE_LIMIT_MAX_CLIENTS`.
+   */
   maxClients?: number;
 }
 
@@ -309,7 +321,10 @@ export interface RateLimitVerdict {
  * In-process token bucket, keyed by remote address and consulted before
  * routing. It is deliberately generous (see `RATE_LIMIT_BURST` and
  * `RATE_LIMIT_REFILL_PER_MINUTE`): the real UI never notices it, while a local
- * loop cannot drive the filesystem-backed handlers without bound.
+ * loop cannot drive the filesystem-backed handlers without bound. A bucket
+ * evicted to stay under `#maxClients` starts over with a full burst, and
+ * eviction follows first-seen order rather than least-recently-used, so the
+ * per-client budget only holds while a client stays inside the tracked window.
  */
 export class ClientRateLimiter {
   readonly #burst: number;
@@ -324,12 +339,20 @@ export class ClientRateLimiter {
     this.#refillPerMs = refillPerMinute / 60_000;
     this.#maxClients = options.maxClients ?? RATE_LIMIT_MAX_CLIENTS;
     this.#now = options.now ?? Date.now;
-    if (!Number.isFinite(this.#burst) || this.#burst <= 0) {
-      throw new Error("rate limit burst must be a positive number");
+    if (!Number.isFinite(this.#burst) || this.#burst < 1) {
+      throw new Error("rate limit burst must be at least one token");
     }
     if (!Number.isFinite(this.#refillPerMs) || this.#refillPerMs <= 0) {
       throw new Error("rate limit refill must be a positive number");
     }
+    if (!Number.isInteger(this.#maxClients) || this.#maxClients < 1) {
+      throw new Error("rate limit max clients must be a positive integer");
+    }
+  }
+
+  /** Tracked addresses, never more than `maxClients`. */
+  get size(): number {
+    return this.#buckets.size;
   }
 
   take(key: string): RateLimitVerdict {
@@ -344,6 +367,9 @@ export class ClientRateLimiter {
           );
     if (available < 1) {
       this.#buckets.set(key, { tokens: available, updatedAt: now });
+      // Defence in depth: a refused request still gets the bound enforced, so
+      // no code path can write a bucket past `#maxClients`.
+      this.#sweep(now);
       // Whole seconds, at least one: `Retry-After` has second precision.
       const waitMs = (1 - available) / this.#refillPerMs;
       return {
@@ -357,15 +383,26 @@ export class ClientRateLimiter {
   }
 
   /**
-   * Drops buckets that have refilled completely; they behave exactly like a
-   * fresh entry, so removing them costs nothing. A bounded map is what keeps
-   * the limiter itself out of the resource story.
+   * Keeps the map hard-bounded at `maxClients`, which is what keeps the
+   * limiter itself out of the resource story. Buckets that have refilled
+   * completely behave exactly like a fresh entry, so removing them costs
+   * nothing and they go first. When that is not enough (for example a flood of
+   * distinct addresses with no time to refill), the oldest entries are evicted
+   * in Map insertion order until the size fits, so `#buckets.size` can never
+   * exceed `#maxClients`.
    */
   #sweep(now: number): void {
     if (this.#buckets.size < this.#maxClients) return;
     for (const [key, bucket] of this.#buckets) {
       const tokens = bucket.tokens + (now - bucket.updatedAt) * this.#refillPerMs;
       if (tokens >= this.#burst) this.#buckets.delete(key);
+    }
+    let excess = this.#buckets.size - this.#maxClients;
+    if (excess <= 0) return;
+    for (const key of this.#buckets.keys()) {
+      if (excess <= 0) break;
+      this.#buckets.delete(key);
+      excess -= 1;
     }
   }
 }
