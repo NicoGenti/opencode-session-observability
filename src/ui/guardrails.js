@@ -169,18 +169,26 @@ export function guardrailsHtml(guardrails, turns = []) {
     rows.length > 0
       ? `<ul class="guardrails-list">${rows.join("")}</ul>`
       : "";
+  // The block is a native disclosure: the summary carries the header and the
+  // standing count, so the frame stays visible while the rows are collapsed by
+  // default. The body id is fixed because only one guardrail block ever renders;
+  // `aria-controls`/`aria-expanded` are re-applied by the app after every write.
   return `<section class="guardrails-section" aria-label="Guardrail budgets">
-      <div class="guardrails-head">
-        <h2 class="guardrails-title">Guardrails</h2>
-        <span class="guardrails-count">${escapeHtml(
-          `${formatNumber(count)} advisory`,
-        )}</span>
-        <span class="muted small">basis derived</span>
-      </div>
-      <p class="small muted guardrails-advisory">${escapeHtml(
-        GUARDRAIL_ADVISORY_COPY,
-      )}</p>
-      ${listHtml}
-      ${skippedHtml}
+      <details class="guardrails-block" id="guardrails-details">
+        <summary class="guardrails-summary" id="guardrails-summary" aria-controls="guardrails-body" aria-expanded="false">
+          <h2 class="guardrails-title">Guardrails</h2>
+          <span class="guardrails-count">${escapeHtml(
+            `${formatNumber(count)} advisory`,
+          )}</span>
+          <span class="muted small">basis derived</span>
+        </summary>
+        <div class="guardrails-body" id="guardrails-body">
+          <p class="small muted guardrails-advisory">${escapeHtml(
+            GUARDRAIL_ADVISORY_COPY,
+          )}</p>
+          ${listHtml}
+          ${skippedHtml}
+        </div>
+      </details>
     </section>`;
 }

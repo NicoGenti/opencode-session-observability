@@ -116,6 +116,14 @@ class ApiError extends Error {
   }
 }
 
+/**
+ * The guardrail disclosure is a native `<details>`: the persisted preference is
+ * a pair of mirrored keys, and either one saying "expanded" wins so a stale
+ * single-key write can never hide warnings the user asked to see.
+ */
+const guardrailsExpandedInitial =
+  get("guardrailsExpanded") === true || get("guardrailsCollapsed") === false;
+
 const state = {
   token: null,
   sessions: [],
@@ -126,6 +134,11 @@ const state = {
   // Route-level guardrail sibling of the analysis response (never an Analysis
   // rider). Advisory only; recomputed by the server from the browser's budgets.
   guardrails: null,
+  // Guardrail disclosure state. The two names are aliases kept in sync so the
+  // persisted keys and the renderer never disagree; `expanded` is the source of
+  // truth and `collapsed` its inverse.
+  guardrailsExpanded: guardrailsExpandedInitial,
+  guardrailsCollapsed: !guardrailsExpandedInitial,
   facets: null,
   view: "trajectory",
   filters: defaultFilters(),
@@ -134,6 +147,13 @@ const state = {
   reveal: false,
   revealAllowed: false,
   viewMode: getViewMode(),
+  // Advanced Trajectory filters live in a dialog opened from the filter bar.
+  // The three names are aliases kept in sync; the trigger is remembered so
+  // focus returns to it when the dialog closes.
+  advancedFiltersOpen: false,
+  advancedFiltersModalOpen: false,
+  filterAdvancedOpen: false,
+  advancedFiltersTrigger: null,
   contextBasis: get("contextBasis") === "cumulative" ? "cumulative" : "latest",
   showEventRows: get("showEventRows") === true,
   expandedTurns: new Set(),
@@ -220,17 +240,28 @@ function filtersActive() {
   return activeFilterCount() > 0;
 }
 
-function activeFilterCount() {
+/**
+ * The advanced-controls count behind the "Advanced filters" badge. These
+ * controls always live in the dialog but their values still narrow the query,
+ * so the badge must report them even while the dialog is closed.
+ */
+function advancedFilterCount() {
   const f = state.filters;
-  const advanced = state.viewMode === "advanced";
   let count = 0;
-  if (f.q.trim()) count++;
-  const listKeys = advanced
-    ? ["kinds", "agents", "models", "providers", "tools", "statuses"]
-    : ["kinds"];
-  for (const key of listKeys) {
+  for (const key of ["agents", "models", "providers", "tools", "statuses"]) {
     if (f[key].length > 0) count++;
   }
+  for (const key of ["from", "to", "minPromptTokens", "maxPromptTokens"]) {
+    if (f[key]) count++;
+  }
+  return count;
+}
+
+function activeFilterCount() {
+  const f = state.filters;
+  let count = 0;
+  if (f.q.trim()) count++;
+  if (f.kinds.length > 0) count++;
   for (const key of [
     "errorsOnly",
     "retriesOnly",
@@ -240,11 +271,9 @@ function activeFilterCount() {
   ]) {
     if (f[key]) count++;
   }
-  if (advanced && f.from) count++;
-  if (advanced && f.to) count++;
-  if (advanced && f.minPromptTokens) count++;
-  if (advanced && f.maxPromptTokens) count++;
-  return count;
+  // Advanced values are never discarded: the server applies them in every
+  // mode, so the Clear badge counts them too.
+  return count + advancedFilterCount();
 }
 
 async function api(path, params = {}, options = {}) {
@@ -349,25 +378,20 @@ function toast(message) {
 
 function filterParams() {
   const f = state.filters;
-  const advanced = state.viewMode === "advanced";
-  const from = advanced && f.from ? Date.parse(f.from) : undefined;
-  const to = advanced && f.to ? Date.parse(f.to) : undefined;
+  const from = f.from ? Date.parse(f.from) : undefined;
+  const to = f.to ? Date.parse(f.to) : undefined;
   return {
     q: f.q.trim() || undefined,
     kind: f.kinds,
-    ...(advanced
-      ? {
-          agent: f.agents,
-          model: f.models,
-          provider: f.providers,
-          tool: f.tools,
-          status: f.statuses,
-          from: Number.isFinite(from) ? from : undefined,
-          to: Number.isFinite(to) ? to : undefined,
-          minPromptTokens: f.minPromptTokens || undefined,
-          maxPromptTokens: f.maxPromptTokens || undefined,
-        }
-      : {}),
+    agent: f.agents,
+    model: f.models,
+    provider: f.providers,
+    tool: f.tools,
+    status: f.statuses,
+    from: Number.isFinite(from) ? from : undefined,
+    to: Number.isFinite(to) ? to : undefined,
+    minPromptTokens: f.minPromptTokens || undefined,
+    maxPromptTokens: f.maxPromptTokens || undefined,
     errors: f.errorsOnly || undefined,
     retries: f.retriesOnly || undefined,
     compactions: f.compactionsOnly || undefined,
@@ -680,7 +704,7 @@ function filterBarHtml() {
     statuses: [],
   };
   const toolsActive = f.kinds.length === 1 && f.kinds[0] === "tool";
-  const advanced = state.viewMode === "advanced" ? "" : " advanced-only";
+  const advancedCount = advancedFilterCount();
   const chip = (kind, label, active) =>
     `<button type="button" class="chip${active ? " active" : ""}" data-chip="${kind}" aria-pressed="${active}">${escapeHtml(
       label,
@@ -700,70 +724,6 @@ function filterBarHtml() {
         "All kinds",
       )}</select>
     </div>
-    <div class="field${advanced}">
-      <label for="filter-agent">Agent</label>
-      <select id="filter-agent" data-filter="agents">${selectOptions(
-        facets.agents,
-        f.agents,
-        "All agents",
-      )}</select>
-    </div>
-    <div class="field${advanced}">
-      <label for="filter-model">Model</label>
-      <select id="filter-model" data-filter="models">${selectOptions(
-        facets.models,
-        f.models,
-        "All models",
-      )}</select>
-    </div>
-    <div class="field${advanced}">
-      <label for="filter-provider">Provider</label>
-      <select id="filter-provider" data-filter="providers">${selectOptions(
-        facets.providers,
-        f.providers,
-        "All providers",
-      )}</select>
-    </div>
-    <div class="field${advanced}">
-      <label for="filter-tool">Tool</label>
-      <select id="filter-tool" data-filter="tools">${selectOptions(
-        facets.tools,
-        f.tools,
-        "All tools",
-      )}</select>
-    </div>
-    <div class="field${advanced}">
-      <label for="filter-status">Status</label>
-      <select id="filter-status" data-filter="statuses">${selectOptions(
-        facets.statuses,
-        f.statuses,
-        "All statuses",
-      )}</select>
-    </div>
-    <div class="field${advanced}">
-      <label for="filter-from">From</label>
-      <input id="filter-from" type="datetime-local" data-filter="from" value="${escapeAttr(
-        f.from,
-      )}">
-    </div>
-    <div class="field${advanced}">
-      <label for="filter-to">To</label>
-      <input id="filter-to" type="datetime-local" data-filter="to" value="${escapeAttr(
-        f.to,
-      )}">
-    </div>
-    <div class="field${advanced}">
-      <label for="filter-min-tokens">Min prompt tokens</label>
-      <input id="filter-min-tokens" type="number" min="0" step="1" data-filter="minPromptTokens" value="${escapeAttr(
-        f.minPromptTokens,
-      )}">
-    </div>
-    <div class="field${advanced}">
-      <label for="filter-max-tokens">Max prompt tokens</label>
-      <input id="filter-max-tokens" type="number" min="0" step="1" data-filter="maxPromptTokens" value="${escapeAttr(
-        f.maxPromptTokens,
-      )}">
-    </div>
     <div class="filter-actions">
       ${chip("errorsOnly", "Errors", f.errorsOnly)}
       ${chip("tools", "Tools", toolsActive)}
@@ -771,11 +731,142 @@ function filterBarHtml() {
       ${chip("retriesOnly", "Retries", f.retriesOnly)}
       ${chip("subagentsOnly", "Subagents", f.subagentsOnly)}
       ${chip("contextOnly", "Context", f.contextOnly)}
+      <button type="button" class="btn ghost" id="advanced-filters-btn" aria-haspopup="dialog" aria-controls="advanced-filters" aria-expanded="${
+        state.advancedFiltersOpen ? "true" : "false"
+      }">Advanced filters <span class="badge filter-advanced-count" title="${escapeAttr(
+        `${advancedCount} advanced filter(s) active`,
+      )}">${formatNumber(advancedCount)}</span></button>
       <button type="button" class="btn ghost" id="clear-filters"${
         activeFilterCount() === 0 ? " disabled" : ""
       }>Clear${activeFilterCount() ? ` (${activeFilterCount()})` : ""}</button>
     </div>
+  </div>
+  <div class="modal" id="advanced-filters" role="dialog" aria-modal="true" aria-labelledby="advanced-filters-title" hidden>
+    <div class="modal-card advanced-filters-card">
+      <button type="button" class="modal-close icon-btn" aria-label="Close advanced filters" data-close-advanced-filters>×</button>
+      <h2 id="advanced-filters-title">Advanced filters</h2>
+      <p class="small muted">Narrow the ledger further. A value applies as soon as it changes.</p>
+      <div class="advanced-filters-grid">
+        <div class="field">
+          <label for="filter-agent">Agent</label>
+          <select id="filter-agent" data-filter="agents">${selectOptions(
+            facets.agents,
+            f.agents,
+            "All agents",
+          )}</select>
+        </div>
+        <div class="field">
+          <label for="filter-model">Model</label>
+          <select id="filter-model" data-filter="models">${selectOptions(
+            facets.models,
+            f.models,
+            "All models",
+          )}</select>
+        </div>
+        <div class="field">
+          <label for="filter-provider">Provider</label>
+          <select id="filter-provider" data-filter="providers">${selectOptions(
+            facets.providers,
+            f.providers,
+            "All providers",
+          )}</select>
+        </div>
+        <div class="field">
+          <label for="filter-tool">Tool</label>
+          <select id="filter-tool" data-filter="tools">${selectOptions(
+            facets.tools,
+            f.tools,
+            "All tools",
+          )}</select>
+        </div>
+        <div class="field">
+          <label for="filter-status">Status</label>
+          <select id="filter-status" data-filter="statuses">${selectOptions(
+            facets.statuses,
+            f.statuses,
+            "All statuses",
+          )}</select>
+        </div>
+        <div class="field">
+          <label for="filter-from">From</label>
+          <input id="filter-from" type="datetime-local" data-filter="from" value="${escapeAttr(
+            f.from,
+          )}">
+        </div>
+        <div class="field">
+          <label for="filter-to">To</label>
+          <input id="filter-to" type="datetime-local" data-filter="to" value="${escapeAttr(
+            f.to,
+          )}">
+        </div>
+        <div class="field">
+          <label for="filter-min-tokens">Min prompt tokens</label>
+          <input id="filter-min-tokens" type="number" min="0" step="1" data-filter="minPromptTokens" value="${escapeAttr(
+            f.minPromptTokens,
+          )}">
+        </div>
+        <div class="field">
+          <label for="filter-max-tokens">Max prompt tokens</label>
+          <input id="filter-max-tokens" type="number" min="0" step="1" data-filter="maxPromptTokens" value="${escapeAttr(
+            f.maxPromptTokens,
+          )}">
+        </div>
+      </div>
+      <div class="filter-actions">
+        <button type="button" class="btn" data-close-advanced-filters>Done</button>
+      </div>
+    </div>
   </div>`;
+}
+
+/**
+ * The advanced-filter dialog. It is re-created with the Trajectory view, so the
+ * helpers look it up by id instead of caching a node that a re-render replaces.
+ * The three state names are aliases; every write goes through one setter.
+ */
+function advancedFiltersModal() {
+  return document.getElementById("advanced-filters");
+}
+
+function setAdvancedFiltersOpen(open) {
+  state.advancedFiltersOpen = open;
+  state.advancedFiltersModalOpen = open;
+  state.filterAdvancedOpen = open;
+  // Single owner: every alias write also re-syncs the trigger's aria state.
+  syncAdvancedFiltersTrigger();
+}
+
+function syncAdvancedFiltersTrigger() {
+  const trigger = $("#advanced-filters-btn");
+  if (trigger) {
+    trigger.setAttribute("aria-expanded", String(state.advancedFiltersOpen));
+  }
+}
+
+function openAdvancedFilters(trigger = null) {
+  const modal = advancedFiltersModal();
+  if (!modal) return;
+  state.advancedFiltersTrigger =
+    trigger instanceof HTMLElement
+      ? trigger
+      : document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+  setAdvancedFiltersOpen(true);
+  modal.hidden = false;
+  modal.querySelector(".modal-close")?.focus();
+}
+
+function closeAdvancedFilters(options = {}) {
+  const modal = advancedFiltersModal();
+  const wasOpen = state.advancedFiltersOpen || (modal ? !modal.hidden : false);
+  if (modal) modal.hidden = true;
+  setAdvancedFiltersOpen(false);
+  const trigger = state.advancedFiltersTrigger;
+  state.advancedFiltersTrigger = null;
+  if (!wasOpen || options.restoreFocus === false) return;
+  if (trigger?.isConnected) trigger.focus();
+  else $("#advanced-filters-btn")?.focus();
 }
 
 function bindFilters() {
@@ -795,6 +886,15 @@ function bindFilters() {
       } else {
         state.filters[key] = element.value;
       }
+      if (element.closest("#advanced-filters")) {
+        // A change applies immediately and closes the dialog; the trigger is
+        // rebuilt by the reload, so focus is restored by id afterwards.
+        closeAdvancedFilters({ restoreFocus: false });
+        void loadEvents({ reset: true }).then(() => {
+          $("#advanced-filters-btn")?.focus();
+        });
+        return;
+      }
       void loadEvents({ reset: true });
     });
   }
@@ -812,10 +912,26 @@ function bindFilters() {
       void loadEvents({ reset: true });
     });
   }
+  const advancedTrigger = $("#advanced-filters-btn");
+  if (advancedTrigger) {
+    advancedTrigger.addEventListener("click", () => openAdvancedFilters(advancedTrigger));
+  }
+  const advancedModal = advancedFiltersModal();
+  if (advancedModal) {
+    advancedModal.addEventListener("click", (event) => {
+      if (
+        event.target === advancedModal ||
+        event.target.closest("[data-close-advanced-filters]")
+      ) {
+        closeAdvancedFilters();
+      }
+    });
+  }
   const clear = $("#clear-filters");
   if (clear) {
     clear.addEventListener("click", () => {
       state.filters = defaultFilters();
+      closeAdvancedFilters({ restoreFocus: false });
       void loadEvents({ reset: true });
     });
   }
@@ -1204,14 +1320,47 @@ function renderLive() {
  */
 let guardrailsMarkup = null;
 
+/**
+ * Set on a summary click (capture) and cleared by the next
+ * `applyGuardrailsState()` pass. While pending, that pass must not write
+ * `details.open` back to the stored value and undo the user's toggle before the
+ * queued `toggle` event has synced state.
+ */
+let guardrailsTogglePending = false;
+
+/**
+ * Applies the persisted disclosure state to the freshly written markup. The
+ * block is re-created whenever the advisory rows change, so both the write path
+ * and the cached early-return path converge here; `open` and the summary's
+ * `aria-expanded` therefore never drift from `state`.
+ */
+function applyGuardrailsState() {
+  const block = dom.guardrails?.querySelector("details.guardrails-block");
+  if (!block) return;
+  const expanded =
+    state.guardrailsExpanded === true || state.guardrailsCollapsed === false;
+  if (!guardrailsTogglePending) block.open = expanded;
+  const open = block.open;
+  state.guardrailsExpanded = open;
+  state.guardrailsCollapsed = !open;
+  guardrailsTogglePending = false;
+  block
+    .querySelector("summary")
+    ?.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
 function renderGuardrails() {
   if (!dom.guardrails) return;
   const turns = state.analysis?.turns ?? [];
   const markup = guardrailsHtml(state.guardrails, turns);
-  if (markup === guardrailsMarkup) return;
+  if (markup === guardrailsMarkup) {
+    applyGuardrailsState();
+    return;
+  }
   guardrailsMarkup = markup;
   dom.guardrails.innerHTML = markup;
   dom.guardrails.hidden = markup.length === 0;
+  applyGuardrailsState();
 }
 
 function tile(label, value, sub = "") {
@@ -1585,6 +1734,10 @@ function renderTrajectory(options = {}) {
   dom.view.className = "view view-trajectory";
   const total = state.page?.totalMatched ?? state.events.length;
   const all = state.page?.totalInSession ?? total;
+  // The dialog lives inside this subtree: remember whether it was open before
+  // the rewrite so an unrelated re-render (live refresh, tab return) does not
+  // silently close it. `filterBarHtml()` still renders the markup hidden.
+  const wasAdvancedFiltersOpen = state.advancedFiltersOpen;
   dom.view.innerHTML = `${filterBarHtml()}
     <div class="legend">
       <span>${formatNumber(state.events.length)} loaded · ${formatNumber(
@@ -1615,6 +1768,12 @@ function renderTrajectory(options = {}) {
       </div>
     </div>`;
   bindFilters();
+  if (wasAdvancedFiltersOpen) {
+    const advancedModal = advancedFiltersModal();
+    if (advancedModal) advancedModal.hidden = false;
+    // The setter also re-syncs the rebuilt trigger's aria-expanded.
+    setAdvancedFiltersOpen(true);
+  }
   bindRecoveryMap();
   const scroller = $("#ledger-scroll");
   const rows = buildLedgerRows();
@@ -3023,8 +3182,8 @@ function setMode(mode) {
   renderViewModeState();
   renderHeader();
   if (state.sessionID) {
-    // Advanced filters may be hidden but still present in state; reloading
-    // applies only the filters the new mode actually shows.
+    // Filters are no longer gated by the mode, but the result set is unchanged
+    // by the switch, so the ledger is reloaded only to keep the counters fresh.
     void loadEvents({ reset: true });
   } else {
     renderView();
@@ -3234,6 +3393,9 @@ function bindSettingsForm() {
     state.showEventRows = false;
     state.groupByProject = true;
     state.sessionTree = true;
+    state.guardrailsExpanded = false;
+    state.guardrailsCollapsed = true;
+    applyGuardrailsState();
     state.expandedProjects.clear();
     state.expandedParents.clear();
     renderViewModeState();
@@ -4178,6 +4340,36 @@ function bindStaticEvents() {
     const eventID = button.dataset.eventId;
     if (eventID) void jumpToEvent(eventID);
   });
+  // Mark the user's disclosure click before any re-render can run, so a state
+  // pass queued in the same task never snaps `open` back to the stored value.
+  dom.guardrails?.addEventListener(
+    "click",
+    (event) => {
+      if (event.target.closest(".guardrails-summary")) {
+        guardrailsTogglePending = true;
+      }
+    },
+    true,
+  );
+  // The `toggle` event does not bubble, so it is observed in the capture phase
+  // on the stable container. Both persisted keys are written together.
+  dom.guardrails?.addEventListener(
+    "toggle",
+    (event) => {
+      const block = event.target;
+      if (!(block instanceof HTMLElement) || block.tagName !== "DETAILS") return;
+      if (!block.classList.contains("guardrails-block")) return;
+      const expanded = block.open;
+      state.guardrailsExpanded = expanded;
+      state.guardrailsCollapsed = !expanded;
+      setSetting("guardrailsExpanded", expanded);
+      setSetting("guardrailsCollapsed", !expanded);
+      block
+        .querySelector("summary")
+        ?.setAttribute("aria-expanded", expanded ? "true" : "false");
+    },
+    true,
+  );
   dom.revealToggle?.addEventListener("click", () => void toggleReveal());
   $("#settings-btn")?.addEventListener("click", openSettings);
   for (const button of document.querySelectorAll("[data-view-mode-option]")) {
@@ -4314,6 +4506,16 @@ function onKeyDown(event) {
         event.preventDefault();
       }
       return;
+    }
+    return;
+  }
+  const advancedModal = advancedFiltersModal();
+  if (advancedModal && !advancedModal.hidden) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeAdvancedFilters();
+    } else if (event.key === "Tab") {
+      trapFocus(event, advancedModal);
     }
     return;
   }
