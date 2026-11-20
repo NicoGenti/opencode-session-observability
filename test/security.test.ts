@@ -545,6 +545,65 @@ test("the token bucket refills at the documented rate and never overspends", () 
   assert.equal(limiter.take("127.0.0.1").allowed, true);
 });
 
+test("the client map stays bounded under a flood of source addresses", () => {
+  const maxClients = 4;
+  const limiter = new ClientRateLimiter({
+    burst: 1,
+    refillPerMinute: 1,
+    maxClients,
+    // Frozen clock: nothing ever refills, so only hard eviction can bound it.
+    now: () => 0,
+  });
+
+  for (let index = 0; index < maxClients * 8; index += 1) {
+    assert.equal(limiter.take(`192.0.2.${index}`).allowed, true);
+    assert.ok(limiter.size <= maxClients, `size ${limiter.size} after ${index}`);
+  }
+  assert.ok(limiter.size <= maxClients);
+
+  // The most recent addresses kept their spent bucket: eviction was oldest-first
+  // rather than clearing the whole map.
+  assert.equal(limiter.take(`192.0.2.${maxClients * 8 - 1}`).allowed, false);
+  assert.ok(limiter.size <= maxClients);
+
+  // The first flooded address was evicted, so it starts over with a full burst.
+  assert.equal(limiter.take("192.0.2.0").allowed, true);
+  assert.equal(limiter.size, maxClients);
+});
+
+test("idle buckets are reclaimed before the oldest live ones", () => {
+  let now = 0;
+  const limiter = new ClientRateLimiter({
+    burst: 1,
+    refillPerMinute: 60, // one token per second
+    maxClients: 3,
+    now: () => now,
+  });
+
+  assert.equal(limiter.take("192.0.2.1").allowed, true);
+  assert.equal(limiter.take("192.0.2.2").allowed, true);
+
+  // 192.0.2.1 spends its refilled token and is live again at 1500 ms.
+  now = 1500;
+  assert.equal(limiter.take("192.0.2.1").allowed, true);
+
+  // Reaching the ceiling sweeps 192.0.2.2, which has fully refilled, instead
+  // of the older-but-live 192.0.2.1.
+  now = 2000;
+  assert.equal(limiter.take("192.0.2.3").allowed, true);
+  assert.equal(limiter.size, 2);
+
+  // 192.0.2.1 kept its spent bucket: only half a token has refilled since.
+  assert.equal(limiter.take("192.0.2.1").allowed, false);
+});
+
+test("the rate limiter refuses a burst below one token", () => {
+  assert.throws(
+    () => new ClientRateLimiter({ burst: 0.5 }),
+    /rate limit burst must be at least one token/,
+  );
+});
+
 test("a flooding client gets 429 with Retry-After and is served after refill", async () => {
   const { path } = writeFixtureDb(simpleFixture());
   const server = await createObservabilityServer({
