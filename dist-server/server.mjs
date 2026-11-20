@@ -6319,7 +6319,11 @@ var VERSION$1 = "0.1.0";
 * drain only starts after the Host and token gates accepted the request.
 */
 var MAX_BODY_BYTES = 65536;
-/** Tracked addresses before idle buckets are swept. */
+/**
+* Hard ceiling on tracked addresses; the oldest are evicted when it is
+* reached. `#buckets.size` never exceeds it, and fully refilled buckets are
+* reclaimed first because they behave exactly like a fresh entry.
+*/
 var RATE_LIMIT_MAX_CLIENTS = 1024;
 /**
 * The 429 body is a fixed byte string: the limiter runs before routing, so no
@@ -6455,7 +6459,10 @@ function drainBody(req, limit, deadlineMs) {
 * In-process token bucket, keyed by remote address and consulted before
 * routing. It is deliberately generous (see `RATE_LIMIT_BURST` and
 * `RATE_LIMIT_REFILL_PER_MINUTE`): the real UI never notices it, while a local
-* loop cannot drive the filesystem-backed handlers without bound.
+* loop cannot drive the filesystem-backed handlers without bound. A bucket
+* evicted to stay under `#maxClients` starts over with a full burst, and
+* eviction follows first-seen order rather than least-recently-used, so the
+* per-client budget only holds while a client stays inside the tracked window.
 */
 var ClientRateLimiter = class {
 	#burst;
@@ -6469,8 +6476,13 @@ var ClientRateLimiter = class {
 		this.#refillPerMs = refillPerMinute / 6e4;
 		this.#maxClients = options.maxClients ?? RATE_LIMIT_MAX_CLIENTS;
 		this.#now = options.now ?? Date.now;
-		if (!Number.isFinite(this.#burst) || this.#burst <= 0) throw new Error("rate limit burst must be a positive number");
+		if (!Number.isFinite(this.#burst) || this.#burst < 1) throw new Error("rate limit burst must be at least one token");
 		if (!Number.isFinite(this.#refillPerMs) || this.#refillPerMs <= 0) throw new Error("rate limit refill must be a positive number");
+		if (!Number.isInteger(this.#maxClients) || this.#maxClients < 1) throw new Error("rate limit max clients must be a positive integer");
+	}
+	/** Tracked addresses, never more than `maxClients`. */
+	get size() {
+		return this.#buckets.size;
 	}
 	take(key) {
 		const now = this.#now();
@@ -6481,6 +6493,7 @@ var ClientRateLimiter = class {
 				tokens: available,
 				updatedAt: now
 			});
+			this.#sweep(now);
 			const waitMs = (1 - available) / this.#refillPerMs;
 			return {
 				allowed: false,
@@ -6498,13 +6511,24 @@ var ClientRateLimiter = class {
 		};
 	}
 	/**
-	* Drops buckets that have refilled completely; they behave exactly like a
-	* fresh entry, so removing them costs nothing. A bounded map is what keeps
-	* the limiter itself out of the resource story.
+	* Keeps the map hard-bounded at `maxClients`, which is what keeps the
+	* limiter itself out of the resource story. Buckets that have refilled
+	* completely behave exactly like a fresh entry, so removing them costs
+	* nothing and they go first. When that is not enough (for example a flood of
+	* distinct addresses with no time to refill), the oldest entries are evicted
+	* in Map insertion order until the size fits, so `#buckets.size` can never
+	* exceed `#maxClients`.
 	*/
 	#sweep(now) {
 		if (this.#buckets.size < this.#maxClients) return;
 		for (const [key, bucket] of this.#buckets) if (bucket.tokens + (now - bucket.updatedAt) * this.#refillPerMs >= this.#burst) this.#buckets.delete(key);
+		let excess = this.#buckets.size - this.#maxClients;
+		if (excess <= 0) return;
+		for (const key of this.#buckets.keys()) {
+			if (excess <= 0) break;
+			this.#buckets.delete(key);
+			excess -= 1;
+		}
 	}
 };
 /**
