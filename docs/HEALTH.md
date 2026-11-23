@@ -44,7 +44,7 @@ No rule can by itself create insufficiency: the gate is session-global, taken fr
 
 Seven rules, exported as `HEALTH_RULES` (frozen) in `src/core/health.ts`. Each returns a `HealthRuleResult { id, label, triggered, level, evaluable, note, eventIDs[], turnIDs[] }`. `triggered` is `level !== null`. `level` is `"watch" | "strong" | null`.
 
-Link caps apply to every rule: `MAX_EVENT_LINKS = 10` events and `MAX_TURN_LINKS = 6` turns, de-duplicated, empty ids dropped, in recorded order. These caps are mirrored in the UI (`src/ui/health.js`) so they also hold on a hostile payload.
+Link caps apply to every rule: `MAX_EVENT_LINKS = 10` events and `MAX_TURN_LINKS = 6` turns, de-duplicated, empty ids dropped, in recorded order. These caps are mirrored in the UI (`src/web/lib/health.ts`) so they also hold on a hostile payload.
 
 ### `error-rate`
 
@@ -119,8 +119,8 @@ Note: the first turn has no context delta by construction, so a session must hav
 
 ## Drill targets and caps
 
-- Event links carry `data-event-id` and are routed by the existing `bindStatistics()` loop through `jumpToEvent()` (`src/ui/app.js`), opening the Trajectory view centered on the event. No new wiring.
-- Turn links carry `turnIDs`; the UI (`src/ui/health.js`, `ruleLinksHtml`) resolves each turn to `turn.trigger.eventID ?? turn.eventIDs[0]` and renders **only** when an anchor exists. An anchor-less id is never rendered.
+- Event links carry `data-event-id` and are routed by the shared event-drill handler (`openEvent` in `src/web/App.tsx`), opening the Trajectory view centered on the event. No new wiring.
+- Turn links carry `turnIDs`; the UI (`src/web/lib/health.ts`, `ruleLinksHtml`) resolves each turn to `turn.trigger.eventID ?? turn.eventIDs[0]` and renders **only** when an anchor exists. An anchor-less id is never rendered.
 - Caps: `MAX_EVENT_LINKS = 10`, `MAX_TURN_LINKS = 6`, enforced in core and re-enforced in the UI.
 - `tool-failure-recurrence` links open the failing event and, via `applyIncidentHighlight`, highlight every event in the incident's `failureEventIDs`.
 
@@ -149,7 +149,7 @@ UI copy always says **Session health**, so the two are never visually confused. 
 
 Guardrails are a **separate, advisory layer**: a budget the user chooses to track, evaluated from the same `Analysis` by the pure `evaluateGuardrails(analysis, thresholds)` in `src/core/guardrails.ts`. They are never health rules and never change `analysis.health`.
 
-- **Ownership** — thresholds live in the browser's per-user settings store (`src/ui/settings.js`, key `observability-guardrails`); the server keeps no configuration and no mutable state. The browser appends six bounded GET parameters to the analysis request and the server validates them: `gr.tokensTotal`, `gr.costTotal`, `gr.contextRun`, `gr.retries`, `gr.toolFailures`, `gr.elapsedMinutes`. A present value must be finite and `>= 0`; `gr.elapsedMinutes` is capped at `100000` and the others at `1e12`. A malformed, negative, overflowing or unknown `gr.*` key answers `400 invalid_guardrails` (closed vocabulary). Absent keys fall back to `DEFAULT_GUARDRAILS`.
+- **Ownership** — thresholds live in the browser's per-user settings store (`src/web/lib/settings.ts`, key `observability-guardrails`); the server keeps no configuration and no mutable state. The browser appends six bounded GET parameters to the analysis request and the server validates them: `gr.tokensTotal`, `gr.costTotal`, `gr.contextRun`, `gr.retries`, `gr.toolFailures`, `gr.elapsedMinutes`. A present value must be finite and `>= 0`; `gr.elapsedMinutes` is capped at `100000` and the others at `1e12`. A malformed, negative, overflowing or unknown `gr.*` key answers `400 invalid_guardrails` (closed vocabulary). Absent keys fall back to `DEFAULT_GUARDRAILS`.
 - **Response shape** — `guardrails` is a **route-level sibling** of `analysis` (`{ analysis, guardrails, revealAllowed }`), never an `Analysis` field, so exports and the plugin RPC keep their shape. A request without any `gr.*` parameter answers exactly as before and carries no `guardrails` key.
 - **Budgets and defaults** — `tokensTotal` 2,000,000 total recorded tokens; `costTotal` $5.00 recorded cost; `contextRun` 6 consecutive context-increase turns; `retries` 10 retry events; `toolFailures` 5 diagnostics incidents; `elapsedMinutes` 60 minutes from the first to the last recorded event. A budget triggers at `observed >= threshold`.
 - **Observations and basis** — every warning carries `basis: "derived"`, a deterministic phrase with the measured numbers, the threshold it crossed and capped `eventIDs`/`turnIDs` (`MAX_EVENT_LINKS` / `MAX_TURN_LINKS`, the same caps as health).

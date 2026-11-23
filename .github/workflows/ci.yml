@@ -38,3 +38,17 @@ jobs:
           git diff --exit-code -- dist-server/server.mjs
         env:
           NODE_OPTIONS: "${{ matrix.node-version == '22' && '--experimental-sqlite' || '' }}"
+      - name: Verify UI artifact fresh
+        run: |
+          npm run build:ui
+          git diff --exit-code -- dist-ui/
+          untracked="$(git ls-files --others --exclude-standard -- dist-ui/)"
+          if [ -n "$untracked" ]; then
+            echo "dist-ui/ has untracked files that must be committed:"
+            echo "$untracked"
+            exit 1
+          fi
+        env:
+          NODE_OPTIONS: "${{ matrix.node-version == '22' && '--experimental-sqlite' || '' }}"
+      - name: Verify packaged artifact
+        run: npm run pack:check

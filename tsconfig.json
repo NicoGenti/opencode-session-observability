@@ -16,5 +16,5 @@
     "types": ["node"]
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts", "types/**/*.d.ts"],
-  "exclude": ["node_modules", "vendor-inspect", "scripts"]
+  "exclude": ["node_modules", "vendor-inspect", "scripts", "src/web"]
 }

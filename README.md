@@ -163,7 +163,7 @@ Why this shape? OpenCode 2.2.x plugins can add tools, hooks, RPC methods, comman
 
 ### Install
 
-The package has **no runtime dependencies** and ships both bundles prebuilt (`dist-tui/tui.mjs`, `dist-server/server.mjs`), so the install needs no build step:
+The package has **no runtime dependencies** and ships all three bundles prebuilt (`dist-tui/tui.mjs`, `dist-server/server.mjs`, `dist-ui/`), so the install needs no build step:
 
 ```bash
 npm install opencode-session-observability
@@ -432,15 +432,14 @@ src/
     http.ts             local HTTP API + static UI
     auth.ts             access-token generation and constant-time comparison
     token-file.ts       per-port token file read by the TUI
-  ui/
-    index.html
-    styles.css
-    app.js              views, state, filters, drawer, shortcuts
-    auth.js             fragment token, sessionStorage and headers
-    virtual.js          variable-height virtual list
-    markdown.js         safe Markdown subset
-    format.js            formatting + badges
-    paging.js           UI-side page merge (mirrors core)
+  web/
+    index.html          Vite entry (served as /)
+    main.tsx            React mount point
+    App.tsx             shell, routing, state, dialogs, shortcuts
+    components/         ledger, statistics, charts, drawer, dialogs, sections
+    hooks/              request lifecycles (events, live poll, benchmark, export)
+    lib/                pure modules (format, ledger, statistics, settings, theme, …)
+    styles/index.css    DESIGN tokens + Tailwind v4 theme bridge
   plugin/
     index.ts            OpenCode 2 server part (RPC)
     define.ts           identity shims for the SDK's define helpers
@@ -451,7 +450,7 @@ src/
     tui.tsx             typed OpenTUI JSX sidecar (provide-only)
 test/
   fixtures/build.ts     synthetic OpenCode 2 fixtures
-  *.test.ts             368 tests
+  *.test.ts             69 suites
 docs/
   DATA-SOURCES.md
   ARCHITECTURE.md
@@ -462,14 +461,28 @@ docs/
 
 ---
 
+## Building
+
+The package ships three prebuilt, committed bundles, so installing needs no build step:
+
+```bash
+npm run build:tui      # dist-tui/tui.mjs      — OpenTUI native panel
+npm run build:server   # dist-server/server.mjs — node-runnable local server
+npm run build:ui       # dist-ui/              — React 19 + Vite browser UI
+```
+
+Rebuild the matching artifact after any change under `src/plugin/tui.*`, `src/server/` or `src/web/`; CI rebuilds all three and fails when a committed artifact differs. For UI work, run `npm run build:ui -- --watch` next to `node scripts/dev-ui.mjs`, which serves `dist-ui/` through the real local server.
+
+---
+
 ## Testing
 
 ```bash
-npm run check       # typecheck + 368 tests
+npm run check       # typecheck + 951 tests
 npm run audit:prod  # production dependency audit
 ```
 
-The suite is at **368 tests** across **37 files** and grows with each new suite.
+The suite is at **951 tests** across **69 files** and grows with each new suite.
 
 The fixtures cover: a simple session, multiple tool calls (including parallel and error), subagents, retry + error, compaction, a long paging session, an incomplete/interrupted run, out-of-order timestamps, secrets, and an empty session. The HTTP tests start the real server on an ephemeral port against a synthetic SQLite database.
 

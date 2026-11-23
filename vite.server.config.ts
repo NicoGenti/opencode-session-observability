@@ -14,9 +14,10 @@ import { defineConfig, type Plugin } from "vite";
  * bundle targets the package's engine floor (Node 22). Two build-time rewrites
  * keep the artifact self-contained:
  *
- * - `http.ts` anchors the static UI at `src/ui/`, one level up from `src/server/`.
- *   The bundle lives in `dist-server/`, so its anchor is `../src/ui/`; `src/` is
- *   part of the package `files` whitelist, so the directory ships unchanged.
+ * - `http.ts` anchors the static UI at `dist-ui/`, two levels up from
+ *   `src/server/`. The bundle lives in `dist-server/`, one level up, so its
+ *   anchor becomes `../dist-ui/`; `dist-ui/` is part of the package `files`
+ *   whitelist. The rewrite throws if the source anchor is ever missing.
  * - `sqlite-worker-source.ts` starts a worker from `./sqlite-worker.ts` next to
  *   itself. The artifact has no sibling modules, so the worker (and the SQLite
  *   adapter it imports) is pre-bundled here into an inline data: URL.
@@ -30,8 +31,8 @@ const WORKER_ENTRY = fileURLToPath(
 const NODE_BUILTIN = (id: string): boolean =>
   id.startsWith("node:") || builtinModules.includes(id);
 
-const UI_ROOT_HREF = 'new URL("../ui/", import.meta.url)';
-const BUNDLED_UI_ROOT_HREF = 'new URL("../src/ui/", import.meta.url)';
+const UI_ROOT_HREF = 'new URL("../../dist-ui/", import.meta.url)';
+const BUNDLED_UI_ROOT_HREF = 'new URL("../dist-ui/", import.meta.url)';
 
 const WORKER_CONSTRUCTOR =
   'new Worker(new URL("./sqlite-worker.ts", import.meta.url))';

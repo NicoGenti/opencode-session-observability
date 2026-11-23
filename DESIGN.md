@@ -12,7 +12,7 @@ This is the design contract for the UI. It is a local, read-only ledger of OpenC
 
 ## Token system
 
-- Tokens are CSS custom properties in `src/ui/styles.css`, reconciled by `src/ui/settings.js` (`THEME_VARS`) and derived per theme by `applyEntry`/`applyPalette` from three seed colours (page, text, accent) across the 38 OpenCode themes.
+- Tokens are CSS custom properties in `src/web/styles/index.css`, derived per theme by `applyTheme`/`applyPalette` in `src/web/lib/theme.ts` from three seed colours (page, text, accent) across the 38 OpenCode themes.
 - Core set: `--page`, `--surface`, `--surface-2`, `--surface-3`, `--text`, `--text-2`, `--muted`, `--border`, `--border-strong`, `--grid`, `--accent`, `--accent-weak`, `--good`, `--warning`, `--serious`, `--critical`, `--shadow`, `--mono`, `--sans`, `--radius`, `--radius-sm`.
 - Scales: 6 px controls, 10 px surfaces, 8/12/20 px spacing.
 - Provenance of numbers: every metric carries M (measured), D (derived), E (estimated), or — (unavailable), shown as a superscript on stat tiles and aligned in the provenance rail.
@@ -35,7 +35,7 @@ This is the design contract for the UI. It is a local, read-only ledger of OpenC
 
 ## Elevation and layout
 
-- Flat interface: borders and surface steps carry structure; exactly one shadow token `--shadow`, used only for floating surfaces (drawer, menu, modal, toast); cards, tiles and table rows never cast shadows; no glass, blur or layered translucency.
+- Flat interface: borders and surface steps carry structure; exactly one shadow token `--shadow`, used only for floating surfaces (drawer, menu, modal, toast); cards, tiles and table rows never cast shadows; no glass, blur or layered translucency. Amended 2026-11-23: floating panels (dialog and its scrim, drawer, menu, toast) MAY use the `--glass-*` frosted treatment (translucent `--glass-tint` at 90% of the surface plus a tokenized `--glass-blur` backdrop filter, with an opaque `--surface` fallback where `backdrop-filter` is unsupported or the reader asks for reduced transparency (a scrim keeps its dim and drops only the blur)); cards, tiles, table rows and all in-page surfaces remain opaque and flat; contrast rule unchanged.
 - Shapes: 6 px controls/inputs/buttons/tiles/menu/badge containers; 10 px ledger/table wrapper/modal/compaction card; 999 px chips/badges/toast (the only pills); turn and step headers use rules, not radii; the ledger rail is square; no radius above 12 px and no `rounded-2xl`.
 - Structure: one vertical transcript ledger rail carries turn headers, step headers and event rows; its left gutter holds the timestamp and turn/step index; the rail thickens at turn boundaries and thins at step boundaries.
 - Shell 300 px sidebar, fluid main, 20 px gutters (260 px at ≤1080, off-canvas with a 30 px topbar icon button at ≤900). Topbar holds global session actions only; the selected segment is marked by `accent-weak` plus an inset 2 px signal rule, not colour alone.

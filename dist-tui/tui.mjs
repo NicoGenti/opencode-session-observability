@@ -1402,6 +1402,56 @@ var init_guardrails = __esmMin((() => {
 		elapsedMinutes: 1e5
 	});
 	GUARDRAIL_MAX.elapsedMinutes;
+	Object.freeze([
+		Object.freeze({
+			key: "tokensTotal",
+			label: "Total tokens",
+			min: 0,
+			max: GUARDRAIL_MAX.tokensTotal,
+			step: 1e3,
+			integer: true
+		}),
+		Object.freeze({
+			key: "costTotal",
+			label: "Total cost (USD)",
+			min: 0,
+			max: GUARDRAIL_MAX.costTotal,
+			step: .5,
+			integer: false
+		}),
+		Object.freeze({
+			key: "contextRun",
+			label: "Context growth run (turns)",
+			min: 0,
+			max: GUARDRAIL_MAX.contextRun,
+			step: 1,
+			integer: true
+		}),
+		Object.freeze({
+			key: "retries",
+			label: "Retry events",
+			min: 0,
+			max: GUARDRAIL_MAX.retries,
+			step: 1,
+			integer: true
+		}),
+		Object.freeze({
+			key: "toolFailures",
+			label: "Tool-failure incidents",
+			min: 0,
+			max: GUARDRAIL_MAX.toolFailures,
+			step: 1,
+			integer: true
+		}),
+		Object.freeze({
+			key: "elapsedMinutes",
+			label: "Elapsed time (minutes)",
+			min: 0,
+			max: GUARDRAIL_MAX.elapsedMinutes,
+			step: 5,
+			integer: false
+		})
+	]);
 	LABELS = Object.freeze({
 		"tokens-total": "Token budget",
 		"cost-total": "Cost budget",

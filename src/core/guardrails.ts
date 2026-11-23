@@ -83,6 +83,86 @@ export const GUARDRAIL_MAX: Readonly<GuardrailThresholds> = Object.freeze({
 export const MAX_ELAPSED_MINUTES = GUARDRAIL_MAX.elapsedMinutes;
 
 /**
+ * One budget's form metadata: the stored key, its sentence-case label, the
+ * inclusive bounds, the input step and whether only whole numbers are accepted.
+ *
+ * This table is additive metadata only — it does not participate in
+ * evaluation, so `evaluateGuardrails` behaviour is unchanged. The web UI
+ * derives its settings form from it (one source of truth) instead of keeping a
+ * second hand-maintained copy of the vocabulary or its bounds.
+ */
+export interface GuardrailField {
+  /** Key in `GuardrailThresholds` and in the browser's stored settings. */
+  readonly key: keyof GuardrailThresholds;
+  /** Sentence-case form label. */
+  readonly label: string;
+  /** Smallest accepted value (inclusive). */
+  readonly min: number;
+  /** Largest accepted value (inclusive); always `GUARDRAIL_MAX[key]`. */
+  readonly max: number;
+  /** Input step hint; display metadata only, not a validation rule. */
+  readonly step: number;
+  /** Count budgets are whole numbers; cost and elapsed minutes stay fractional. */
+  readonly integer: boolean;
+}
+
+/**
+ * The closed, ordered budget vocabulary the settings form renders. Order
+ * matches the evaluation order in `evaluateGuardrails` and the order of the
+ * `gr.*` GET parameters, so the panel and the server can never disagree.
+ */
+export const GUARDRAIL_FIELDS: readonly GuardrailField[] = Object.freeze([
+  Object.freeze({
+    key: "tokensTotal",
+    label: "Total tokens",
+    min: 0,
+    max: GUARDRAIL_MAX.tokensTotal,
+    step: 1_000,
+    integer: true,
+  }),
+  Object.freeze({
+    key: "costTotal",
+    label: "Total cost (USD)",
+    min: 0,
+    max: GUARDRAIL_MAX.costTotal,
+    step: 0.5,
+    integer: false,
+  }),
+  Object.freeze({
+    key: "contextRun",
+    label: "Context growth run (turns)",
+    min: 0,
+    max: GUARDRAIL_MAX.contextRun,
+    step: 1,
+    integer: true,
+  }),
+  Object.freeze({
+    key: "retries",
+    label: "Retry events",
+    min: 0,
+    max: GUARDRAIL_MAX.retries,
+    step: 1,
+    integer: true,
+  }),
+  Object.freeze({
+    key: "toolFailures",
+    label: "Tool-failure incidents",
+    min: 0,
+    max: GUARDRAIL_MAX.toolFailures,
+    step: 1,
+    integer: true,
+  }),
+  Object.freeze({
+    key: "elapsedMinutes",
+    label: "Elapsed time (minutes)",
+    min: 0,
+    max: GUARDRAIL_MAX.elapsedMinutes,
+    step: 5,
+    integer: false,
+  }),
+]);
+
+/**
  * One crossed budget. `observed` is a deterministic phrase with the measured
  * numbers, `threshold` is the budget that was crossed, and the evidence ids
  * already exist in the analysis (same caps as health).

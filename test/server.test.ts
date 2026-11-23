@@ -568,12 +568,24 @@ test("HTTP handles errors, HEAD and static assets", async () => {
     assert.equal(head.status, 200);
     assert.equal(await head.text(), "");
 
-    const app = await fetch(`${base}/ui/app.js`);
+    // The default UI root is the committed React build: `/` returns its shell
+    // and `/ui/*` serves the content-hashed assets that shell references.
+    const index = await fetch(`${base}/`);
+    assert.equal(index.status, 200);
+    const indexHtml = await index.text();
+    assert.match(indexHtml, /<title>OpenCode Session Observability<\/title>/u);
+    assert.match(indexHtml, /<div id="root"><\/div>/u);
+    const entry = /src="(\/ui\/assets\/[^"]+\.js)"/u.exec(indexHtml)?.[1];
+    assert.ok(entry, "index.html references a hashed /ui/assets entry chunk");
+
+    const app = await fetch(`${base}${entry}`);
     assert.equal(app.status, 200);
     assert.ok(app.headers.get("content-type")?.includes("javascript"));
-    const index = await fetch(`${base}/`);
-    assert.match(await index.text(), /Session Observability/);
 
+    // No SPA fallback: an unknown asset and an unknown path both stay 404, and
+    // the retired legacy module is gone.
+    const legacy = await fetch(`${base}/ui/app.js`);
+    assert.equal(legacy.status, 404);
     const notFound = await fetch(`${base}/nope`);
     assert.equal(notFound.status, 404);
   });

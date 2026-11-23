@@ -17,7 +17,7 @@ const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const BIN_ENTRY = "bin/opencode-observability.mjs";
 const BIN_SHEBANG = "#!/usr/bin/env node";
 
-// Hard fail above 2 MB packed, warn above 750 KB (observed baseline ~0.3 MB).
+// Hard fail above 2 MB packed, warn above 750 KB (observed baseline ~627 KB).
 const PACKED_SIZE_LIMIT = 2 * 1024 * 1024;
 const PACKED_SIZE_WARN = 750 * 1024;
 
@@ -31,10 +31,9 @@ const REQUIRED_FILES = [
   "src/plugin/rpc.ts",
   "src/core/index.ts",
   "src/server/index.ts",
-  "src/ui/index.html",
-  "src/ui/styles.css",
   "dist-tui/tui.mjs",
   "dist-server/server.mjs",
+  "dist-ui/index.html",
   "docs/ARCHITECTURE.md",
   "docs/CHECKLIST.md",
   "docs/DATA-SOURCES.md",
@@ -55,14 +54,17 @@ const ABSENT_DIRECTORIES = [
   "node_modules/",
   "docs/audit/",
   "docs/screenshots/",
+  "src/web/",
 ];
 
 const ABSENT_FILES = [
   ".npmrc",
   "tsconfig.json",
   "tsconfig.tui.json",
+  "tsconfig.ui.json",
   "vite.tui.config.ts",
   "vite.server.config.ts",
+  "vite.ui.config.ts",
   "DESIGN.md",
   "CONTRIBUTING.md",
   "package-lock.json",
@@ -79,6 +81,31 @@ const ABSENT_PATTERNS = [
   ["*.log", (path) => path.endsWith(".log")],
   [".git*", (path) => !path.includes("/") && path.startsWith(".git")],
 ];
+
+// Hashed assets the committed UI build must carry: one JS entry chunk and one
+// CSS chunk. Exact filenames are content-hashed, so the rule counts matches.
+const REQUIRED_PATTERNS = [
+  ["dist-ui/assets/*.js", /^dist-ui\/assets\/[^/]+\.js$/u],
+  ["dist-ui/assets/*.css", /^dist-ui\/assets\/[^/]+\.css$/u],
+];
+
+const UI_INDEX = "dist-ui/index.html";
+
+// Every `/ui/assets/...` the committed index references must be a packed file:
+// a stale index pointing at a dropped chunk would install a broken UI.
+function uiIndexAssets() {
+  let text;
+  try {
+    text = readFileSync(join(repoRoot, UI_INDEX), "utf8");
+  } catch {
+    return null;
+  }
+  const assets = new Set();
+  for (const match of text.matchAll(/\/ui\/(assets\/[^"'?#\s>]+)/gu)) {
+    assets.add(`dist-ui/${match[1]}`);
+  }
+  return [...assets];
+}
 
 const ABSENT_RULES = [
   ...ABSENT_DIRECTORIES.map((directory) => ({
@@ -214,6 +241,31 @@ function main() {
     const ok = present.has(required);
     if (!ok) problems.push(`missing required file: ${required}`);
     lines.push(`  ${ok ? "ok  " : "FAIL"} ${required}`);
+  }
+
+  lines.push("");
+  lines.push(`required patterns (${REQUIRED_PATTERNS.length})`);
+  for (const [label, pattern] of REQUIRED_PATTERNS) {
+    const matches = pack.paths.filter((path) => pattern.test(path));
+    if (matches.length === 0) problems.push(`missing required asset: ${label}`);
+    lines.push(`  ${matches.length > 0 ? "ok  " : "FAIL"} ${label} (${matches.length} match(es))`);
+  }
+
+  lines.push("");
+  const indexAssets = uiIndexAssets();
+  if (indexAssets === null) {
+    problems.push(`cannot read ${UI_INDEX}`);
+    lines.push(`  FAIL ${UI_INDEX} is missing`);
+  } else if (indexAssets.length === 0) {
+    problems.push(`${UI_INDEX} references no /ui/assets/* file`);
+    lines.push("  FAIL no /ui/assets/* reference found");
+  } else {
+    lines.push(`index.html assets (${indexAssets.length})`);
+    for (const asset of indexAssets) {
+      const ok = present.has(asset);
+      if (!ok) problems.push(`index references a missing packed asset: ${asset}`);
+      lines.push(`  ${ok ? "ok  " : "FAIL"} ${asset}`);
+    }
   }
 
   lines.push("");

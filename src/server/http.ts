@@ -33,13 +33,13 @@ import {
 } from "../core/guardrails.ts";
 import type { GuardrailThresholds } from "../core/guardrails.ts";
 
-const UI_ROOT = fileURLToPath(new URL("../ui/", import.meta.url));
+const UI_ROOT = fileURLToPath(new URL("../../dist-ui/", import.meta.url));
 const VERSION = "0.1.0";
 
 /**
- * Hard ceiling for one static asset. The largest shipped file is
- * `src/ui/app.js` at ~161 KiB, so 8 MiB keeps roughly 50x headroom for future
- * UI work while a runaway or hostile file can never become an unbounded
+ * Hard ceiling for one static asset. The largest shipped file is the hashed
+ * `dist-ui/assets/*.js` chunk at ~1 MiB, so 8 MiB keeps roughly 8x headroom for
+ * future UI work while a runaway or hostile file can never become an unbounded
  * allocation. The size comes from the file handle's own `stat` before any
  * buffer is allocated, and an oversized file answers exactly like a missing
  * one.

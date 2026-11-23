@@ -1,0 +1,544 @@
+/*
+ * Token bridge for the React UI.
+ *
+ * Every `DESIGN.md` token keeps its legacy name and value here, copied from the
+ * retired `src/ui/styles.css` at the React cutover. Two blocks do the
+ * work:
+ *
+ * - `@theme inline` registers the utility-relevant subset with Tailwind v4,
+ *   so a component writes `bg-surface`, `text-muted`, `border-border-strong`,
+ *   `rounded-sm`, `shadow-float` and gets the live custom property — never a
+ *   stock Tailwind colour. A few keys need a suffix because the legacy name is
+ *   either a Tailwind DEFAULT slot or would alias itself:
+ *     colour tokens        `--page`      -> `--color-page`    (and so on)
+ *     `--sans` / `--mono`  -> `--font-sans` / `--font-mono`
+ *     `--radius-sm` (6px)  -> `--radius-sm`                  (same name/value)
+ *     `--radius` (10px)    -> `--radius-lg`
+ *     `--shadow`           -> `--shadow-float`
+ *   The verbatim custom properties themselves live in the `:root` /
+ *   `[data-theme]` blocks below, so runtime theme application (inline styles on
+ *   `<html>`) still wins exactly as it did in the legacy store.
+ * - The `:root` blocks mirror the legacy light defaults and the dark values
+ *   under both `prefers-color-scheme` and the `[data-theme="dark"]` attribute.
+ */
+
+@import "tailwindcss";
+
+/*
+ * Pin the automatic source detection to the UI source tree. Without this the
+ * artifact would also depend on whichever sibling files Tailwind happens to
+ * walk from the Vite root; the emitted utility set must come only from
+ * `src/web/**`.
+ */
+@source "../";
+
+/*
+ * Remove Tailwind's stock palette and elevation scale: a colour or shadow that
+ * is not a DESIGN token must be a visible mistake, never a stock blue or a
+ * `shadow-lg`. Only token-derived colours reach the chrome.
+ */
+@theme {
+  --color-*: initial;
+  --shadow-*: initial;
+  --font-*: initial;
+}
+
+@theme inline {
+  --color-page: var(--page);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-text: var(--text);
+  --color-text-2: var(--text-2);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-grid: var(--grid);
+  --color-accent: var(--accent);
+  --color-accent-weak: var(--accent-weak);
+  --color-good: var(--good);
+  --color-warning: var(--warning);
+  --color-serious: var(--serious);
+  --color-critical: var(--critical);
+
+  --font-sans: var(--sans);
+  --font-mono: var(--mono);
+
+  /* 6 px controls and 10 px surfaces; literals because an inline theme key
+     cannot alias the custom property of the same name. */
+  --radius-sm: 6px;
+  --radius-lg: 10px;
+
+  --shadow-float: var(--shadow);
+
+  /*
+   * The frost tint is a colour, so it keeps a theme key like every other
+   * token: a missing `--glass-tint` can never resolve to a stock palette value.
+   * `--glass-blur` deliberately has none — it is a length consumed only by the
+   * two shared frost rules below, and a `--blur-*` key would emit
+   * `filter: blur()`, which is the wrong property.
+   */
+  --color-glass-tint: var(--glass-tint);
+}
+
+/* ------------------------------------------------------------- light tokens */
+
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --surface-2: #f3f3f0;
+  --surface-3: #ecebe6;
+  --text: #0b0b0b;
+  --text-2: #52514e;
+  --muted: #6b6a66;
+  --border: rgba(11, 11, 11, 0.10);
+  --border-strong: rgba(11, 11, 11, 0.18);
+  --grid: #e1e0d9;
+  --accent: #1f6ac2;
+  --accent-weak: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  --good: #0a7f0a;
+  --warning: #fab219;
+  --serious: #ec835a;
+  --critical: #c23535;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow: 0 10px 30px rgba(11, 11, 11, 0.10);
+  /* Frosted floating panels (`DESIGN.md`, amended 2026-11-23). The tint is the
+     theme surface itself at 90%, so the blurred backdrop can never pull the
+     composite far from the surface the contrast contract was measured on; the
+     blur radius stays inside the documented 10-14 px band. */
+  --glass-tint: color-mix(in srgb, var(--surface) 90%, transparent);
+  --glass-blur: 12px;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* -------------------------------------------------------------- dark tokens */
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --surface-2: #232322;
+    --surface-3: #2c2c2a;
+    --text: #f0efec;
+    --text-2: #c3c2b7;
+    --muted: #898781;
+    --border: rgba(255, 255, 255, 0.10);
+    --border-strong: rgba(255, 255, 255, 0.18);
+    --grid: #2c2c2a;
+    --accent: #3987e5;
+    --accent-weak: color-mix(in srgb, var(--accent) 16%, var(--surface));
+    --good: #0ca30c;
+    --critical: #ef6a6a;
+    --shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+    /* Frosted floating panels, same 90% surface tint as the light block. */
+    --glass-tint: color-mix(in srgb, var(--surface) 90%, transparent);
+    --glass-blur: 12px;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --surface-2: #232322;
+  --surface-3: #2c2c2a;
+  --text: #f0efec;
+  --text-2: #c3c2b7;
+  --muted: #898781;
+  --border: rgba(255, 255, 255, 0.10);
+  --border-strong: rgba(255, 255, 255, 0.18);
+  --grid: #2c2c2a;
+  --accent: #3987e5;
+  --accent-weak: color-mix(in srgb, var(--accent) 16%, var(--surface));
+  --good: #0ca30c;
+  --critical: #ef6a6a;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  /* Frosted floating panels, same 90% surface tint as the light block. */
+  --glass-tint: color-mix(in srgb, var(--surface) 90%, transparent);
+  --glass-blur: 12px;
+}
+
+/* ------------------------------------------------------------------- base */
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text);
+  font: 14px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* --------------------------------------------------------- floating panels */
+/*
+ * The one frosted treatment (`DESIGN.md`, amended 2026-11-23). Every floating
+ * surface — dialog, drawer, menu panel, toast — carries this class in place of
+ * an opaque `bg-surface`, so the frost is written once instead of per component.
+ *
+ * The tint is the theme surface at 90%, which is what keeps the panel legible
+ * over whatever it covers: composited over the brightest thing the overlay can
+ * leave behind (`bg-page/70` over the page's own text), the worst text role
+ * still clears 4.5:1 in both themes. In-page surfaces — cards, tiles, table
+ * rows — never take this class; they stay opaque and flat.
+ *
+ * The elevation contract is untouched: this class adds no shadow, so
+ * `shadow-float` remains the single `--shadow` consumer on a floating surface.
+ */
+.floating-frost {
+  background-color: var(--glass-tint);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur));
+}
+
+/*
+ * No backdrop filter (an older engine, or a browser with it disabled): drop the
+ * frost and paint the opaque surface. Border, radius and the one shadow token
+ * are unchanged, so the panel keeps its shape and its edge.
+ */
+@supports not ((backdrop-filter: blur(4px)) or (-webkit-backdrop-filter: blur(4px))) {
+  .floating-frost {
+    background-color: var(--surface);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+/* The same opaque treatment when the reader asked for less transparency. */
+@media (prefers-reduced-transparency: reduce) {
+  .floating-frost {
+    background-color: var(--surface);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+/*
+ * The dialog scrim (`DESIGN.md`, amended 2026-11-23). While a floating layer is
+ * open the page it covers is blurred too, so the depth reads on the backdrop and
+ * not only on the panel. The overlay keeps its own tint utility (`bg-page/70`,
+ * or `bg-text/40` on the token prompt), so this class carries no background
+ * colour of its own, and it reuses `--glass-blur` rather than adding a second
+ * radius token.
+ *
+ * The two guards reset the filter only: a scrim has nothing to make opaque, so
+ * a reader who asked for less transparency keeps the dim and loses the blur —
+ * the same pairing the panel frost uses. `prefers-reduced-motion` is a
+ * different media feature and is deliberately not involved here.
+ */
+.frosted-scrim {
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur));
+}
+
+/* No backdrop filter: the tint alone is the scrim, exactly as before. */
+@supports not ((backdrop-filter: blur(4px)) or (-webkit-backdrop-filter: blur(4px))) {
+  .frosted-scrim {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .frosted-scrim {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+/* ---------------------------------------------------------------- charts */
+/*
+ * Charts sub-tab. Every paint rule below resolves to a DESIGN token: the SVG
+ * cannot take `var()` in a presentation attribute, so the components apply
+ * these classes instead. `.chart-series-warning` is a fill only — warning
+ * never paints text.
+ *
+ * Geometry stays the legacy fixed canvas: the chart surface is 720x220 inside
+ * `.chart-scroll`, which scrolls horizontally on a narrow viewport. There is
+ * no fluid/responsive container.
+ */
+
+.charts-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.chart-section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 12px 14px 10px;
+}
+
+.chart-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin-bottom: 8px;
+}
+
+.chart-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.chart-caption {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.chart-scroll {
+  overflow-x: auto;
+}
+
+.chart-canvas {
+  display: block;
+}
+
+.chart-canvas svg {
+  display: block;
+}
+
+/* Gridlines and axis rules paint through the grid token. */
+.chart-canvas .recharts-cartesian-grid line {
+  stroke: var(--grid);
+  stroke-width: 1;
+}
+
+.chart-axis-label {
+  fill: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Series tones: the only colour hooks a chart datum may use. */
+.chart-series-accent {
+  fill: var(--accent);
+  stroke: var(--accent);
+}
+
+.chart-series-good {
+  fill: var(--good);
+  stroke: var(--good);
+}
+
+.chart-series-warning {
+  fill: var(--warning);
+  stroke: var(--warning);
+}
+
+.chart-series-serious {
+  fill: var(--serious);
+  stroke: var(--serious);
+}
+
+.chart-series-critical {
+  fill: var(--critical);
+  stroke: var(--critical);
+}
+
+.chart-series-muted {
+  fill: var(--muted);
+  stroke: var(--muted);
+}
+
+/*
+ * The Recharts line curve carries its own default `stroke` presentation
+ * attribute; a descendant rule wins over an attribute, so the accent class on
+ * the series group is enough.
+ */
+.chart-series-accent .recharts-line-curve {
+  fill: none;
+  stroke: var(--accent);
+}
+
+.chart-unavailable-slot {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-dasharray: 3 3;
+}
+
+.chart-unavailable-label {
+  fill: var(--muted);
+  font-size: 10px;
+}
+
+.chart-partial {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-dasharray: 3 3;
+}
+
+.chart-marker line {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+}
+
+.chart-marker text {
+  fill: var(--muted);
+  font-size: 11px;
+}
+
+.chart-highest {
+  fill: var(--text-2);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.chart-datum-link {
+  cursor: pointer;
+}
+
+.chart-datum-link:hover {
+  opacity: 0.82;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.chart-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.chart-swatch-accent {
+  background: var(--accent);
+}
+
+.chart-swatch-good {
+  background: var(--good);
+}
+
+.chart-swatch-warning {
+  background: var(--warning);
+}
+
+.chart-swatch-serious {
+  background: var(--serious);
+}
+
+.chart-swatch-critical {
+  background: var(--critical);
+}
+
+.chart-swatch-muted {
+  background: var(--muted);
+}
+
+.chart-swatch-unavailable {
+  border: 1px dashed var(--border-strong);
+}
+
+.chart-swatch-partial {
+  border: 1px dashed var(--border-strong);
+}
+
+.chart-swatch-marker {
+  border-left: 2px dashed var(--accent);
+  background: transparent;
+}
+
+.chart-note {
+  margin: 8px 0 0;
+  color: var(--text-2);
+  font-size: 11.5px;
+}
+
+.chart-empty {
+  margin: 0;
+  padding: 10px 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chart-data {
+  margin-top: 10px;
+  color: var(--text-2);
+  font-size: 11.5px;
+}
+
+.chart-data summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.chart-data ul {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chart-data-row {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  padding: 3px 4px;
+  border-radius: 4px;
+  color: inherit;
+}
+
+.chart-data-row:hover {
+  background: var(--surface-2);
+}
+
+.chart-data-label {
+  flex: none;
+  min-width: 90px;
+  color: var(--text-2);
+}
+
+.chart-data-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 700px) {
+  .chart-data-label {
+    min-width: 64px;
+  }
+}
