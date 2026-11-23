@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenCode Session Observability</title>
+    <meta name="description" content="Local-first, read-only observability for OpenCode 2 sessions — native OpenTUI panels and WebUI" />
+    <meta property="og:title" content="OpenCode Session Observability" />
+    <meta property="og:description" content="Local-first, read-only observability for OpenCode 2 sessions — native OpenTUI panels and WebUI" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://nicogenti.github.io/opencode-session-observability/" />
+    <meta name="twitter:card" content="summary" />
+    <link rel="stylesheet" href="css/landing.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="site-nav" aria-label="Primary">
+        <a class="wordmark" href="#hero">Session Observability</a>
+        <ul class="nav-links">
+          <li><a href="#what">What</a></li>
+          <li><a href="#features">Features</a></li>
+          <li><a href="#install">Install</a></li>
+          <li><a href="#security">Security</a></li>
+          <li><a href="#links">Links</a></li>
+        </ul>
+        <a class="button" href="https://github.com/NicoGenti/opencode-session-observability">View on GitHub</a>
+      </nav>
+    </header>
+
+    <main>
+      <section id="hero" class="hero">
+        <div class="hero-copy">
+          <h1>See exactly what your OpenCode 2 agent did</h1>
+          <p class="lede">OpenCode Session Observability opens the session database on your machine and shows the recorded turns, steps, tool calls, tokens, cache reuse and cost as one ordered ledger. Nothing is uploaded.</p>
+        </div>
+        <div class="hero-visual">
+          <div class="scene-slot" aria-hidden="true"></div>
+          <figure class="ledger-panel" tabindex="0" role="img" aria-label="Session ledger preview — recent events with provenance">
+            <div class="ledger-bar">
+              <span class="ledger-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+              <span class="ledger-title">Session ledger</span>
+              <span class="ledger-meta">read-only</span>
+            </div>
+            <ol class="ledger">
+              <li class="ledger-row">
+                <div class="rail">
+                  <span class="rail-time">23:12:04</span>
+                  <span class="rail-index">140.1</span>
+                  <span class="rail-mark">M</span>
+                </div>
+                <span class="cell cell-event">prompt</span>
+                <span class="cell cell-model">sonnet-4.5</span>
+                <span class="cell cell-num">9,240</span>
+                <span class="cell cell-num cell-cache">82%</span>
+                <span class="cell cell-num">$0.3184</span>
+                <span class="cell cell-num cell-dur">11.6s</span>
+              </li>
+              <li class="ledger-row">
+                <div class="rail">
+                  <span class="rail-time">23:12:41</span>
+                  <span class="rail-index">141.1</span>
+                  <span class="rail-mark">D</span>
+                </div>
+                <span class="cell cell-event">tool call</span>
+                <span class="cell cell-model">sonnet-4.5</span>
+                <span class="cell cell-num">12,480</span>
+                <span class="cell cell-num cell-cache">86%</span>
+                <span class="cell cell-num">$0.4128</span>
+                <span class="cell cell-num cell-dur">14.2s</span>
+              </li>
+              <li class="ledger-row is-current">
+                <div class="rail">
+                  <span class="rail-time">23:13:18</span>
+                  <span class="rail-index">142.1</span>
+                  <span class="rail-mark">M</span>
+                </div>
+                <span class="cell cell-event">step</span>
+                <span class="cell cell-model">sonnet-4.5</span>
+                <span class="cell cell-num">15,320</span>
+                <span class="cell cell-num cell-cache">88%</span>
+                <span class="cell cell-num">$0.5071</span>
+                <span class="cell cell-num cell-dur">18.9s</span>
+              </li>
+              <li class="ledger-row">
+                <div class="rail">
+                  <span class="rail-time">23:13:52</span>
+                  <span class="rail-index">142.2</span>
+                  <span class="rail-mark">E</span>
+                </div>
+                <span class="cell cell-event">subagent</span>
+                <span class="cell cell-model">haiku-4.5</span>
+                <span class="cell cell-num">2,104</span>
+                <span class="cell cell-num cell-cache">64%</span>
+                <span class="cell cell-num">$0.0218</span>
+                <span class="cell cell-num cell-dur">3.1s</span>
+              </li>
+            </ol>
+          </figure>
+        </div>
+      </section>
+
+      <section id="what" class="section">
+        <h2>What it does</h2>
+        <p>Every OpenCode 2 session leaves an event ledger: prompts, assistant steps, tool calls, retries, errors, compactions, tokens and cost. This tool reads that ledger from the local SQLite database and turns it into a filterable transcript, with a per-turn table for the numbers.</p>
+        <p>It is built for developers inspecting their own runs, on their own machine. The same analysis is available as a local web app and as native panels inside the OpenCode 2 TUI, and neither surface needs a network connection.</p>
+      </section>
+
+      <section id="features" class="section">
+        <h2>Features</h2>
+        <ul class="feature-list">
+          <li>
+            <h3>Trajectory</h3>
+            <p>A filterable ledger of every recorded event in recorded order: prompts, steps, reasoning, tool calls and results, subagents, retries, errors, compactions and context notices. Filters cover full text, kind, agent, model, provider, tool, status and token ranges, and the detail drawer holds the full payload.</p>
+          </li>
+          <li>
+            <h3>Statistics</h3>
+            <p>A dense per-turn and per-step table with context size, tokens, cache reuse, cost, model, tool and residual time, output speed and status, plus compactions as separate transactions. Basic and Advanced modes control how much of the table is shown.</p>
+          </li>
+          <li>
+            <h3>Native TUI panels</h3>
+            <p>Inside OpenCode 2 the plugin adds fullscreen <code>/statistics</code> and <code>/trajectory</code> panels that render the same analysis in the terminal. Add <code>--web</code> to either command to open the browser view instead.</p>
+          </li>
+          <li>
+            <h3>WebUI</h3>
+            <p>A local browser app served from <code>127.0.0.1</code>: project-grouped session tree, filters, full-text search, keyboard shortcuts, the OpenCode palettes as themes, and charts in Advanced mode.</p>
+          </li>
+          <li>
+            <h3>Export</h3>
+            <p>Self-contained HTML, Markdown and JSON reports, redacted by default. HTML and Markdown carry the summary, turns, steps, compactions, trajectory and known limitations.</p>
+          </li>
+          <li>
+            <h3>Review digest</h3>
+            <p>A deterministic LLM review digest, capped at 16,000 characters, that you paste into the model of your choice. The app builds the text locally and never contacts a provider.</p>
+          </li>
+        </ul>
+      </section>
+
+      <section id="install" class="section">
+        <h2>Install</h2>
+        <p>Requirements: Node.js 22.18+ or 24.x, and an OpenCode 2.x host. The package ships its three bundles prebuilt, so the install needs no build step.</p>
+        <pre tabindex="0" role="region" aria-label="Install commands, scrollable horizontally"><code>npm install opencode-session-observability
+npx opencode-observability --version</code></pre>
+        <p>Register the plugin in your OpenCode config:</p>
+        <pre tabindex="0" role="region" aria-label="Plugin config, scrollable horizontally"><code>{
+  "plugins": ["opencode-session-observability"]
+}</code></pre>
+        <p>Start the local UI once with <code>npm start</code>, then open a panel from the TUI with <code>/statistics</code> or <code>/trajectory</code>.</p>
+        <p>For a global CLI, install with <code>npm install -g opencode-session-observability</code>. A release tarball is also attached to <a href="https://github.com/NicoGenti/opencode-session-observability/releases/tag/v0.1.0">release v0.1.0</a>.</p>
+      </section>
+
+      <section id="security" class="section">
+        <h2>Security posture</h2>
+        <p>The app is local-first and read-only. The SQLite database opens with <code>SQLITE_OPEN_READONLY</code> and <code>PRAGMA query_only = ON</code>, and the adapter exposes no mutation methods, so sessions, messages and configuration are never written.</p>
+        <p>The server binds to <code>127.0.0.1</code> by default and requires a per-run access token. A non-loopback bind needs <code>--allow-remote</code> and authentication, and requests are rejected unless the Host and Origin belong to the listener.</p>
+        <p>There is no telemetry, no third-party request and no LLM provider call. Credential-shaped keys are replaced with <code>[REDACTED]</code> by default, and reveal stays opt-in and explicit.</p>
+        <p>Exports and the review digest are redacted by default. The only network surface is the loopback HTTP API that serves the UI and the plugin RPC.</p>
+      </section>
+
+      <section id="links" class="section">
+        <h2>Links</h2>
+        <ul class="link-list">
+          <li><a href="https://github.com/NicoGenti/opencode-session-observability">Repository on GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/opencode-session-observability">Package on npm</a></li>
+          <li><a href="https://github.com/NicoGenti/opencode-session-observability/releases/tag/v0.1.0">Release v0.1.0</a></li>
+        </ul>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <p>MIT licensed. <a href="https://github.com/NicoGenti/opencode-session-observability">Source on GitHub</a></p>
+    </footer>
+  </body>
+</html>
