@@ -197,7 +197,7 @@ Compaction tokens are included in **session** totals and shown as a separate bre
 
 ## Advanced chart series (web, Advanced mode only)
 
-Charts are projected from the already-loaded `Analysis`: no extra fetch and no re-paging. Missing metrics stay `null` and are never zero-filled (`src/ui/charts-data.js`); the series below state which are measured, derived, estimated or unavailable.
+Charts are projected from the already-loaded `Analysis`: no extra fetch and no re-paging. Missing metrics stay `null` and are never zero-filled (`src/web/lib/chart-data.ts`); the series below state which are measured, derived, estimated or unavailable.
 
 ### Context growth chart — `D`
 

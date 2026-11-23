@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+    // The shared `src/core/*.ts` modules the UI imports for constants are
+    // typed against Node globals (`process.platform` in attribution.ts, pulled
+    // in transitively by `types.ts`). The UI itself never reads a Node global;
+    // Vite erases the type-only edges, so nothing Node-specific is bundled.
+    "types": ["node"]
+  },
+  "include": ["src/web/**/*.ts", "src/web/**/*.tsx"],
+  "exclude": []
+}

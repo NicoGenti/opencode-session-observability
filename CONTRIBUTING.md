@@ -19,22 +19,26 @@ Use `npm ci` rather than `npm install`: `package-lock.json` is committed and the
 ## Commands
 
 ```bash
-npm run check        # typecheck + typecheck:tui + full test suite — the standard gate
+npm run check        # typecheck + typecheck:tui + typecheck:ui + full test suite — the standard gate
 npm run typecheck    # tsc --noEmit only
 npm run typecheck:tui # tsc --noEmit -p tsconfig.tui.json (Solid JSX sidecar)
+npm run typecheck:ui # tsc --noEmit -p tsconfig.ui.json (React browser UI)
 npm test             # node:test; see `npm run check` for the current count
 npm run build:tui    # rebuild dist-tui/tui.mjs; CI verifies the artifact is fresh
+npm run build:server # rebuild dist-server/server.mjs; CI verifies the artifact is fresh
+npm run build:ui     # rebuild dist-ui/; CI verifies the artifact is fresh
 npm run audit:prod   # production dependency audit
 npm run serve        # start the local UI (alias of npm start)
 ```
 
 `npm run check` must be green before you open a pull request. `npm run check` reports the current test count.
 
-After any change under `src/plugin/tui.*`, rebuild the committed bundle and prove it is fresh:
+After any change under `src/plugin/tui.*`, `src/server/` or `src/web/`, rebuild the matching committed artifact and prove it is fresh:
 
 ```bash
-npm run build:tui
-git diff --exit-code -- dist-tui/tui.mjs
+npm run build:tui    && git diff --exit-code -- dist-tui/tui.mjs
+npm run build:server && git diff --exit-code -- dist-server/server.mjs
+npm run build:ui     && git diff --exit-code -- dist-ui/
 ```
 
 ## Dependency updates
@@ -67,7 +71,7 @@ Dependabot vulnerability alerts and Dependabot security updates are repository s
 - `src/core/` — pure domain logic: normalization, projection, metrics, diagnostics, export, redaction, paging. No I/O.
 - `src/core/adapters/` — read-only storage: OpenCode 2 SQLite, the OpenCode server API, and in-memory fixtures. The SQLite adapter opens with `SQLITE_OPEN_READONLY` and sets `PRAGMA query_only = ON`.
 - `src/server/` — local HTTP API, authentication, token files, static UI hosting.
-- `src/ui/` — vanilla ES modules and CSS; no framework and no bundler.
+- `src/web/` — React 19 + Vite UI source (TypeScript/TSX, Tailwind v4); `npm run build:ui` compiles it into the committed `dist-ui/` artifact the local server serves.
 - `src/plugin/` — OpenCode 2 server plugin (read-only RPC) and TUI commands.
 - `test/` — `node:test` suites plus synthetic fixtures in `test/fixtures/build.ts`.
 

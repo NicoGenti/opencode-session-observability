@@ -309,7 +309,7 @@ function contrast(a: string, b: string): number {
 }
 
 test("light and dark text tokens meet WCAG AA on their surfaces", () => {
-  const css = readFileSync(new URL("../src/ui/styles.css", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../src/web/styles/index.css", import.meta.url), "utf8");
   const light = lightTokens(css);
   const dark = darkTokens(css);
   for (const role of ["muted", "text-2", "accent", "good", "critical"]) {
@@ -327,7 +327,7 @@ test("light and dark text tokens meet WCAG AA on their surfaces", () => {
 test("HTML export mirrors the UI token block", async () => {
   const service = new ObservabilityService(memorySource(simpleFixture()));
   const result = await service.export("ses_simple", { format: "html" });
-  const css = readFileSync(new URL("../src/ui/styles.css", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../src/web/styles/index.css", import.meta.url), "utf8");
   const light = lightTokens(css);
   const exported = lightTokens(result.content);
   for (const role of [

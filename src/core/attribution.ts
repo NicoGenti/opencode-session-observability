@@ -156,8 +156,16 @@ const BARE_PUNCTUATION: ReadonlySet<string> = new Set(["--", ".", "/"]);
 /** A leading `NAME=value` environment assignment is not the executable. */
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
-/** Path identity follows the recorded filesystem's case semantics. */
-const CASE_INSENSITIVE_PATHS = process.platform === "win32";
+/**
+ * Path identity follows the recorded filesystem's case semantics.
+ *
+ * The guard keeps this module loadable in the browser bundle, where the web
+ * attribution model imports the cap constants from here and `process` does not
+ * exist; the browser never calls the path-identity function, so `false` is only
+ * a safe default, never a different server answer.
+ */
+const CASE_INSENSITIVE_PATHS =
+  typeof process !== "undefined" && process.platform === "win32";
 
 function recordOf(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)

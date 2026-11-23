@@ -3028,8 +3028,15 @@ var BARE_PUNCTUATION = /* @__PURE__ */ new Set([
 ]);
 /** A leading `NAME=value` environment assignment is not the executable. */
 var ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
-/** Path identity follows the recorded filesystem's case semantics. */
-var CASE_INSENSITIVE_PATHS = process.platform === "win32";
+/**
+* Path identity follows the recorded filesystem's case semantics.
+*
+* The guard keeps this module loadable in the browser bundle, where the web
+* attribution model imports the cap constants from here and `process` does not
+* exist; the browser never calls the path-identity function, so `false` is only
+* a safe default, never a different server answer.
+*/
+var CASE_INSENSITIVE_PATHS = typeof process !== "undefined" && process.platform === "win32";
 function recordOf(value) {
 	return typeof value === "object" && value !== null && !Array.isArray(value) ? value : {};
 }
@@ -6143,6 +6150,56 @@ var GUARDRAIL_MAX = Object.freeze({
 	elapsedMinutes: 1e5
 });
 GUARDRAIL_MAX.elapsedMinutes;
+Object.freeze([
+	Object.freeze({
+		key: "tokensTotal",
+		label: "Total tokens",
+		min: 0,
+		max: GUARDRAIL_MAX.tokensTotal,
+		step: 1e3,
+		integer: true
+	}),
+	Object.freeze({
+		key: "costTotal",
+		label: "Total cost (USD)",
+		min: 0,
+		max: GUARDRAIL_MAX.costTotal,
+		step: .5,
+		integer: false
+	}),
+	Object.freeze({
+		key: "contextRun",
+		label: "Context growth run (turns)",
+		min: 0,
+		max: GUARDRAIL_MAX.contextRun,
+		step: 1,
+		integer: true
+	}),
+	Object.freeze({
+		key: "retries",
+		label: "Retry events",
+		min: 0,
+		max: GUARDRAIL_MAX.retries,
+		step: 1,
+		integer: true
+	}),
+	Object.freeze({
+		key: "toolFailures",
+		label: "Tool-failure incidents",
+		min: 0,
+		max: GUARDRAIL_MAX.toolFailures,
+		step: 1,
+		integer: true
+	}),
+	Object.freeze({
+		key: "elapsedMinutes",
+		label: "Elapsed time (minutes)",
+		min: 0,
+		max: GUARDRAIL_MAX.elapsedMinutes,
+		step: 5,
+		integer: false
+	})
+]);
 var LABELS = Object.freeze({
 	"tokens-total": "Token budget",
 	"cost-total": "Cost budget",
@@ -6309,7 +6366,7 @@ function evaluateGuardrails(analysis, thresholds = DEFAULT_GUARDRAILS) {
 	};
 }
 // src/server/http.ts
-var UI_ROOT = fileURLToPath(new URL("../src/ui/", import.meta.url));
+var UI_ROOT = fileURLToPath(new URL("../dist-ui/", import.meta.url));
 var VERSION$1 = "0.1.0";
 /**
 * Hard ceiling for a request body. The API is read-only and every action
