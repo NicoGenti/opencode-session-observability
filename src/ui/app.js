@@ -2140,7 +2140,7 @@ function basicTotalsRowHtml() {
     <td class="num">${formatNumber(totals.tokens.input)}</td>
     <td class="num">${formatNumber(totals.tokens.output)}</td>
     <td class="num">${metricHtml(totals.cost, formatCost)}</td>
-    <td>${formatNumber(totals.turns)} turns · ${formatNumber(totals.steps)} steps</td>
+    <td>${formatNumber(totals.turns)} turns, ${formatNumber(totals.steps)} steps</td>
   </tr>`;
 }
 

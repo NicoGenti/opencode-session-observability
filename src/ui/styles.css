@@ -341,7 +341,7 @@ code, pre, .mono { font-family: var(--mono); }
   height: 100%; display: flex; align-items: center; gap: 10px; padding: 0 12px;
   background: var(--surface-2); color: var(--text-2); font-size: 12px;
 }
-.row-turn-header .turn-index { font-weight: 700; color: var(--text); }
+.row-turn-header .turn-index { font-weight: 650; color: var(--text); }
 .row-turn-header .turn-trigger { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-turn-header .turn-spacer { flex: 1; }
 .row-step-header {
@@ -878,12 +878,12 @@ kbd {
 .compare-table tbody tr.compare-row.selected td:first-child {
   box-shadow: inset 3px 0 0 var(--accent);
 }
-.compare-row-flag { display: none; font-size: 10px; font-weight: 600; color: var(--accent); }
+.compare-row-flag { display: none; font-size: 11px; font-weight: 600; color: var(--accent); }
 .compare-row[aria-current="true"] .compare-row-flag,
 .compare-row.selected .compare-row-flag { display: block; }
 .compare-attempt-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .compare-input-flag {
-  display: inline-block; margin-top: 4px; padding: 0 6px; font-size: 10.5px;
+  display: inline-block; margin-top: 4px; padding: 0 6px; font-size: 11px;
   color: var(--text-2); border: 1px dashed var(--border-strong); border-radius: var(--radius-sm);
 }
 .compare-input {
@@ -1016,11 +1016,11 @@ body[data-view-mode="basic"] .advanced-only { display: none !important; }
 .chart-scroll { overflow-x: auto; }
 .chart-svg { display: block; width: 100%; min-width: 560px; height: auto; }
 .chart-grid { stroke-width: 1; }
-.chart-axis-label { font-size: 10px; font-variant-numeric: tabular-nums; }
+.chart-axis-label { font-size: 11px; font-variant-numeric: tabular-nums; }
 .chart-marker line { stroke-dasharray: 4 4; }
-.chart-marker-label { font-size: 10px; }
-.chart-highest { font-size: 10px; font-weight: 600; }
-.chart-unavailable-label { font-size: 9px; }
+.chart-marker-label { font-size: 11px; }
+.chart-highest { font-size: 11px; font-weight: 600; }
+.chart-unavailable-label { font-size: 10px; }
 .chart-datum-link { cursor: pointer; }
 .chart-datum-link:hover { opacity: 0.82; }
 .chart-legend {
