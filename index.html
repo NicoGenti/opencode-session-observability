@@ -34,7 +34,6 @@
           <p class="lede">OpenCode Session Observability opens the session database on your machine and shows the recorded turns, steps, tool calls, tokens, cache reuse and cost as one ordered ledger. Nothing is uploaded.</p>
         </div>
         <div class="hero-visual">
-          <div class="scene-slot" aria-hidden="true"></div>
           <figure class="ledger-panel" tabindex="0" role="img" aria-label="Session ledger preview — recent events with provenance">
             <div class="ledger-bar">
               <span class="ledger-dots" aria-hidden="true"><span></span><span></span><span></span></span>
@@ -99,6 +98,18 @@
         </div>
       </section>
 
+      <section id="kpi" class="kpi-strip" aria-label="Metrics sampled from one real OpenCode 2 session">
+        <ul class="kpi-list">
+          <li class="kpi"><span class="kpi-num">18</span> <span class="kpi-label">turns</span></li>
+          <li class="kpi"><span class="kpi-num">90</span> <span class="kpi-label">steps</span></li>
+          <li class="kpi"><span class="kpi-num">640,981</span> <span class="kpi-label">input tokens</span></li>
+          <li class="kpi"><span class="kpi-num">93.0%</span> <span class="kpi-label">cache hit</span></li>
+          <li class="kpi"><span class="kpi-num">$0</span> <span class="kpi-label">cost</span></li>
+          <li class="kpi"><span class="kpi-num">0</span> <span class="kpi-label">errors</span></li>
+        </ul>
+        <p class="kpi-caption">sampled from one real session</p>
+      </section>
+
       <section id="what" class="section">
         <h2>What it does</h2>
         <p>Every OpenCode 2 session leaves an event ledger: prompts, assistant steps, tool calls, retries, errors, compactions, tokens and cost. This tool reads that ledger from the local SQLite database and turns it into a filterable transcript, with a per-turn table for the numbers.</p>
@@ -107,7 +118,7 @@
 
       <section id="features" class="section">
         <h2>Features</h2>
-        <ul class="feature-list">
+        <ul class="feature-grid">
           <li>
             <h3>Trajectory</h3>
             <p>A filterable ledger of every recorded event in recorded order: prompts, steps, reasoning, tool calls and results, subagents, retries, errors, compactions and context notices. Filters cover full text, kind, agent, model, provider, tool, status and token ranges, and the detail drawer holds the full payload.</p>
@@ -133,6 +144,24 @@
             <p>A deterministic LLM review digest, capped at 16,000 characters, that you paste into the model of your choice. The app builds the text locally and never contacts a provider.</p>
           </li>
         </ul>
+      </section>
+
+      <section id="gallery" class="section">
+        <h2>See it in action</h2>
+        <div class="gallery">
+          <figure class="shot">
+            <a href="assets/webui-statistics.png" target="_blank" rel="noopener"><img src="assets/webui-statistics.png" alt="Statistics view of one OpenCode 2 session: session totals for turns, tokens, cost and errors above the per-turn table" width="1428" height="1184" loading="lazy" decoding="async"></a>
+            <figcaption>Statistics — session totals and the per-turn table</figcaption>
+          </figure>
+          <figure class="shot">
+            <a href="assets/webui-toolbar.png" target="_blank" rel="noopener"><img src="assets/webui-toolbar.png" alt="Top bar of the local web app: Basic and Advanced modes, refresh, live view, episode compare and reveal secrets" width="951" height="267" loading="lazy" decoding="async"></a>
+            <figcaption>The local web app top bar</figcaption>
+          </figure>
+          <figure class="shot">
+            <a href="assets/recommendations.png" target="_blank" rel="noopener"><img src="assets/recommendations.png" alt="Recommendations panel derived deterministically from the session: facts with linked hypotheses, no model call involved" width="1406" height="607" loading="lazy" decoding="async"></a>
+            <figcaption>Recommendations — deterministic, local</figcaption>
+          </figure>
+        </div>
       </section>
 
       <section id="install" class="section">

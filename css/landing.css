@@ -4,7 +4,11 @@
    Palette is verbatim from the DESIGN.md dark ramp; layout idioms follow the
    approved unslop direction, and the ledger window chrome (including the
    three quiet dots) is intentional for the landing surface.
-   Phase 2: structural rules for nav, sections, feature list, install code, footer. */
+   Phase 2: structural rules for nav, sections, feature grid, gallery, install
+   code, footer.
+   Phase 3: sober motion — card and ledger-row hover, the is-current pulse and
+   support-gated scroll reveals whose fallback is the static, fully visible
+   page (no JS, no new colours). */
 
 :root {
   color-scheme: dark;
@@ -282,30 +286,130 @@ main {
   margin-top: var(--s-3);
 }
 
-.feature-list {
+/* KPI strip — six static values sampled from one real session, no motion */
+
+.kpi-strip {
+  padding: var(--s-6) 0;
+  border-top: 1px solid var(--line);
+}
+
+.kpi-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-4) var(--s-5);
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.feature-list li {
+.kpi {
   display: grid;
   gap: var(--s-1);
-  padding: var(--s-4) 0;
-  border-top: 1px solid var(--line);
+  min-width: 0;
 }
 
-.feature-list li:first-child {
-  padding-top: 0;
-  border-top: 0;
+.kpi-num {
+  color: var(--text);
+  font-size: var(--fs-title);
+  font-weight: 600;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
 }
 
-.feature-list li:last-child {
-  padding-bottom: 0;
-}
-
-.feature-list p {
+.kpi-label {
   color: var(--text-2);
+  font-size: var(--fs-small);
+}
+
+.kpi-caption {
+  margin-top: var(--s-4);
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+}
+
+@media (min-width: 700px) {
+  .kpi-list {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--s-5) var(--s-6);
+  }
+}
+
+/* Feature grid — six cards on quiet surfaces; motion arrives in Phase 3 */
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.feature-grid li {
+  display: grid;
+  align-content: start;
+  gap: var(--s-2);
+  min-width: 0;
+  padding: var(--s-5);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  transition: translate var(--dur-short) var(--ease),
+    border-color var(--dur-short) var(--ease);
+}
+
+.feature-grid p {
+  color: var(--text-2);
+}
+
+@media (min-width: 700px) {
+  .feature-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Card hover — a 2px lift and a hairline that steps toward the accent, both
+   derived from existing tokens. The lift uses `translate` rather than
+   `transform` so the scroll-driven reveal (Phase 3, below) does not shadow it
+   once its entry range has filled. */
+
+.feature-grid li:hover {
+  translate: 0 -2px;
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--line));
+}
+
+/* Gallery — three screenshot panels sharing the ledger chrome, no motion */
+
+.gallery {
+  display: grid;
+  gap: var(--s-5);
+}
+
+.shot {
+  margin: 0;
+  min-width: 0;
+  padding: var(--s-3);
+  background: var(--ground);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+}
+
+.shot a {
+  display: block;
+  border-radius: var(--radius-control);
+}
+
+.shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: var(--radius-control);
+}
+
+.shot figcaption {
+  padding-top: var(--s-3);
+  color: var(--text-3);
+  font-size: var(--fs-small);
 }
 
 pre {
@@ -340,13 +444,14 @@ pre code {
 }
 
 .site-footer p {
-  max-width: 1080px;
+  /* 1080px shell minus the --s-5 gutter, so footer text lines up with main */
+  max-width: calc(1080px - 2 * var(--s-5));
   margin: 0 auto;
   color: var(--text-3);
   font-size: var(--fs-small);
 }
 
-/* Hero — asymmetric split, code-built ledger preview, reserved scene slot */
+/* Hero — asymmetric split, code-built ledger preview */
 
 .hero-copy {
   display: grid;
@@ -358,16 +463,6 @@ pre code {
   display: grid;
   gap: var(--s-4);
   min-width: 0;
-}
-
-.scene-slot {
-  position: relative;
-  aspect-ratio: 16 / 9;
-  overflow: hidden;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-card);
-  /* Phase 4 image: position absolute inside this box (inset 0, width/height 100%, border-radius inherit) */
 }
 
 .ledger-panel {
@@ -428,6 +523,7 @@ pre code {
   padding: var(--s-2) var(--s-3);
   border-top: 1px solid var(--line);
   border-left: 2px solid transparent;
+  transition: background-color var(--dur-short) var(--ease);
 }
 
 .ledger-row:first-child {
@@ -499,6 +595,20 @@ pre code {
   color: var(--text-2);
 }
 
+/* Row hover — one surface step on rows that are not the current one.
+   --text-3 on --surface-2 is 4.38:1, below AA, so muted text inside the
+   hovered row steps up to --text-2 (9.03:1 on --surface-2). */
+
+.ledger-row:not(.is-current):hover {
+  background: var(--surface-2);
+}
+
+.ledger-row:not(.is-current):hover .rail,
+.ledger-row:not(.is-current):hover .cell-model,
+.ledger-row:not(.is-current):hover .rail > span {
+  color: var(--text-2);
+}
+
 @media (min-width: 700px) {
   .ledger-row {
     grid-template-columns: 5rem minmax(0, 1fr) 5.75rem 4.5rem 3.25rem 3.75rem 3.5rem;
@@ -516,5 +626,87 @@ pre code {
     grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
     gap: var(--s-8);
     align-items: start;
+  }
+}
+
+/* Phase 3 — motion. Sober, CSS-only: two short transitions (kept on the base
+   rules above), one quiet is-current pulse, and scroll reveals whose fallback
+   is the static, fully visible page. No JS, no new colours. */
+
+@keyframes currentPulse {
+  0%,
+  100% {
+    box-shadow: inset 0 0 0 0 transparent;
+  }
+
+  50% {
+    box-shadow: inset 0 0 0 1px var(--accent-weak);
+  }
+}
+
+.ledger-row.is-current {
+  animation: currentPulse 2.4s var(--ease) infinite;
+}
+
+/* Scroll reveals — every rule lives inside this @supports block, so a browser
+   without scroll-driven timelines renders the default full-opacity,
+   untranslated page: the static fallback is the primary design. Hero, nav and
+   the KPI strip never get a reveal, so nothing above the fold starts hidden. */
+
+@supports (animation-timeline: view()) {
+  @keyframes reveal {
+    from {
+      opacity: 0.01;
+      transform: translateY(10px);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  #what,
+  #install,
+  #security,
+  #links {
+    animation: reveal both linear;
+    animation-timeline: view();
+    animation-range: entry 10% entry 70%;
+  }
+
+  .feature-grid li,
+  .shot {
+    animation: reveal both linear;
+    animation-timeline: view();
+    animation-range: entry 0% entry 60%;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    #what,
+    #install,
+    #security,
+    #links,
+    .feature-grid li,
+    .shot {
+      animation: none;
+    }
+  }
+}
+
+@media print {
+  #what, #features, #gallery, #install, #security, #links,
+  .feature-grid li, .shot {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Hover must always use translate (never transform): reveal animates transform with fill both. */
+
+@media (prefers-reduced-motion: reduce) {
+  .ledger-row.is-current {
+    animation: none;
   }
 }
