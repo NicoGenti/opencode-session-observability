@@ -15,7 +15,7 @@ import {
   UnsupportedSchemaError,
 } from "../core/adapters/sqlite.ts";
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
 const HELP = `opencode-session-observability ${VERSION}
 

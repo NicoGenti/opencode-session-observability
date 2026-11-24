@@ -7414,7 +7414,7 @@ async function clearTokenFile(port) {
 	} catch {}
 }
 // src/server/index.ts
-var VERSION = "0.1.0";
+var VERSION = "0.2.0";
 var HELP = `opencode-session-observability ${VERSION}
 
 Local, read-only Trajectory and Statistics views for OpenCode 2 sessions.
