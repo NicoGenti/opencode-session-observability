@@ -2,14 +2,14 @@
 
 Every OpenCode 2 session leaves behind a rich event ledger — prompts, tool calls, retries, errors, compactions, tokens and cost — that is painful to reconstruct by hand. This tool opens that ledger locally and read-only: no telemetry, no writes to your data.
 
-[![CI](https://github.com/NicoGenti/opencode-session-observability/actions/workflows/ci.yml/badge.svg)](https://github.com/NicoGenti/opencode-session-observability/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/NicoGenti/opencode-session-observability/blob/main/LICENSE) [![Node](https://img.shields.io/static/v1?label=node&message=22.18%2B%20%7C%2024.x&color=339933)](https://nodejs.org/en/about/previous-releases) [![TypeScript strict](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://github.com/NicoGenti/opencode-session-observability/blob/main/tsconfig.json) ![OpenCode 2.2.x](https://img.shields.io/static/v1?label=OpenCode&message=2.2.x&color=6E56CF) [![npm](https://img.shields.io/npm/v/opencode-session-observability)](https://www.npmjs.com/package/opencode-session-observability)
+[![CI](https://github.com/NicoGenti/opencode-session-observability/actions/workflows/ci.yml/badge.svg)](https://github.com/NicoGenti/opencode-session-observability/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/NicoGenti/opencode-session-observability/blob/main/LICENSE) [![Node](https://img.shields.io/static/v1?label=node&message=22.18%2B%20%7C%2024.x&color=339933)](https://nodejs.org/en/about/previous-releases) [![TypeScript strict](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://github.com/NicoGenti/opencode-session-observability/blob/main/tsconfig.json) ![OpenCode 2.x](https://img.shields.io/static/v1?label=OpenCode&message=2.x&color=6E56CF) [![npm](https://img.shields.io/npm/v/opencode-session-observability)](https://www.npmjs.com/package/opencode-session-observability)
 
 A local-first, read-only observability layer for **OpenCode 2** sessions. It adds two views:
 
 - **Trajectory** — a faithful, filterable ledger of every recorded session event: prompts, assistant steps, reasoning, tool calls/results, subagents, retries, errors, compactions, context notices, model/agent/location switches and session provenance markers.
 - **Statistics** — a dense per-turn/per-step table with context size, tokens, cache reuse, cost, model/tool/residual time, output speed and status, plus distinct compaction transactions.
 
-The implementation is original and targets OpenCode 2.2.x. It was built against the installed data format (`session_v2`, `session_message`) and the published OpenCode 2 plugin API (`@opencode/plugin` 2.2.6).
+The implementation is original and targets OpenCode 2.x. It was built against the installed data format (`session_v2`, `session_message`) and the published OpenCode 2 plugin API (`@opencode/plugin` 2.3.0).
 
 > The analysis is **read-only**. The SQLite source opens the database with `SQLITE_OPEN_READONLY` and sets `PRAGMA query_only = ON`. Nothing in the app writes sessions, messages or configuration.
 
@@ -26,23 +26,19 @@ The implementation is original and targets OpenCode 2.2.x. It was built against 
 | UI | Local browser app: Trajectory + Statistics, Basic/Advanced modes, OpenCode themes, project-grouped session tree, settings, filters, full-text search, detail drawer, copy, export, and Advanced-mode “Copy LLM review prompt” / “Copy raw session digest” actions |
 | Integration | OpenCode 2 server plugin with read-only RPC + TUI commands: native `/statistics` (alias `/stats`) and native `/trajectory`/`/observability` fullscreen panels, with `--web`/`-w`/`web` opening the browser, plus `/statistics:web` (alias `/stats:web`); the native Statistics panel’s `d` key writes the always-redacted LLM review prompt to a temp file and toasts its path |
 | Export | Self-contained HTML, Markdown and JSON, plus the deterministic LLM-review digest (`format=digest`, capped at 16,000 chars; `prompt=true` prepends about 1.2 KB of review instructions on top of that cap) |
-| Tests | 368 tests: parsing, projection, metrics, paging, scroll preservation, redaction, authentication, adapters, HTTP API, RPC, exports, the review digest, settings/theme persistence, TUI routing seams, native panels, TUI columns/status helpers, plugin entry shape, read-only guarantees |
+| Tests | `node:test` suites covering parsing, projection, metrics, paging, scroll preservation, redaction, authentication, adapters, HTTP API, RPC, exports, the review digest, diagnostics/health/guardrails/recommendations, benchmark, live mode, episode comparison, attribution, settings/theme persistence, TUI routing seams, native panels, TUI columns/status helpers, plugin entry shape, read-only guarantees |
 
-Screenshots of both views in dark and light mode (1440×900):
+Screenshots of the browser UI, captured in the dark theme:
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/trajectory-dark.png">
-  <img src="docs/screenshots/trajectory-light.png" alt="Trajectory view">
-</picture>
+<img src="docs/screenshots/webui-statistics-dark.png" alt="Statistics view in Basic mode: topbar, guardrail strip, session KPIs, the per-turn table and the Recovery map" width="100%">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/statistics-dark.png">
-  <img src="docs/screenshots/statistics-light.png" alt="Statistics view">
-</picture>
+<img src="docs/screenshots/webui-toolbar-dark.png" alt="Advanced-mode topbar with the Benchmark link and the Compare episodes action" width="50%">
+
+<img src="docs/screenshots/recommendations-dark.png" alt="Recommendations section: deterministic fact rows paired with if-then hypotheses" width="100%">
+
+The browser captures above are dark-only (light-theme variants are not included) and ship at their native resolution — no re-encode, no downscaling on disk — covering the Statistics view, the Advanced topbar and the Recommendations section; the TUI capture below is dark as well. The Charts sub-tab, the session-health breakdown and the Compare episodes modal are not captured.
 
 The same views also render natively in the OpenCode 2 TUI, with no browser involved:
-
-<img src="docs/screenshots/tui-statistics-dark.png" alt="Native OpenCode TUI Statistics panel: session banner with status, context, cache-hit rate and cost above a dense per-turn table of steps, input/output and cached tokens, hit rate, model, tool and residual time, cost and status">
 
 <img src="docs/screenshots/tui-trajectory-dark.png" alt="Native OpenCode TUI Trajectory panel: session header and turn-ledger hint above the per-turn table, with a marker on every turn that expands into its steps">
 
@@ -53,8 +49,8 @@ Inside OpenCode 2 the plugin adds native fullscreen panels: `/statistics` (alias
 ## Requirements
 
 - **Node.js 22.18+ or 24.x.** CI runs the full gate on both Node 22 and Node 24 (`ubuntu-latest`); development was verified on 24.18, which ships `node:sqlite` built in. `node:sqlite` is unflagged from Node 22.13.0, so the 22.18 floor needs no `--experimental-sqlite`; the Node 22 CI leg sets that flag regardless.
-- **OpenCode 2.2.x** session data. The tested database was produced by `@opencode/cli` **2.2.5**; the plugin types were checked against `@opencode/plugin` **2.2.6**.
-- An **OpenCode 2.x host** for the plugin and TUI commands. The packed package was validated in a real OpenCode 2.3.0 host; this repository pins `@opencode/*` 2.2.7.
+- **OpenCode 2.x** session data. The schema (`session_v2`, `session_message`) was verified against data written by OpenCode 2.3.0, and the plugin types are pinned to `@opencode/plugin` **2.3.0**.
+- An **OpenCode 2.x host** for the plugin and TUI commands. The packed package was validated in a real OpenCode 2.3.0 host; this repository pins `@opencode/client`, `@opencode/plugin` and `@opencode/theme` to 2.3.0 as dev dependencies.
 - A local browser and/or the OpenCode 2 TUI.
 
 The app does **not** support the OpenCode 1 schema (`session`/`message` tables). It detects that schema and reports it clearly instead of reading incompatible data.
@@ -115,7 +111,7 @@ Other flags:
 Run the checks:
 
 ```bash
-npm run check       # typecheck + 368 tests (node:test)
+npm run check       # typecheck + tests (node:test)
 npm run audit:prod  # production dependency audit (0 advisories)
 ```
 
@@ -155,7 +151,7 @@ The `./tui` entry resolves to the prebuilt `dist-tui/tui.mjs` bundle and is type
 
 The `.` entry is **host-only**: it resolves to the TypeScript source `src/plugin/index.ts`, which is loaded by the OpenCode 2 host. That host is Bun-based and type-strips TypeScript at import time, so the source entry works there. A plain-Node consumer cannot import `.` from `node_modules/`, because Node refuses to type-strip TypeScript inside `node_modules/` — the same restriction that makes `bin/opencode-observability.mjs` prefer the prebuilt `dist-server/server.mjs` (see the comment at the top of that file). Loading the packed package in a real host is the empirical gate for this entry; if that validation ever fails, compiling the `.` entry becomes a follow-up issue.
 
-Why this shape? OpenCode 2.2.x plugins can add tools, hooks, RPC methods, commands, agents, TUI routes/slots and experimental GUI panels. They do **not** expose arbitrary HTTP routes for a third-party web page. The supported integration path is therefore:
+Why this shape? OpenCode 2.x plugins can add tools, hooks, RPC methods, commands, agents, TUI routes/slots and experimental GUI panels. They do **not** expose arbitrary HTTP routes for a third-party web page. The supported integration path is therefore:
 
 1. the **server part** registers a read-only RPC namespace over the OpenCode client;
 2. the **TUI part** registers `/observability` and `/trajectory` (browser deep links) plus `/statistics` (native fullscreen panel; `--web` for the browser) and `/statistics:web` (the browser Statistics deep link);
@@ -177,7 +173,7 @@ npm install -g opencode-session-observability
 opencode-observability --version
 ```
 
-Requirements: Node.js **>= 22.18** (22.x and 24.x are tested) and an **OpenCode 2.x** host. The npm listing, the npm badge at the top of this file and the package page only exist after the first publish; until then use a local checkout (below) or the tarball attached to a GitHub Release — `npm install <release-asset-tarball-url>`.
+Requirements: Node.js **>= 22.18** (22.x and 24.x are tested) and an **OpenCode 2.x** host. The package is published on npm (see the badge above), and a GitHub Release has existed since v0.1.0 — install from npm, from the release tarball (`npm install <release-asset-tarball-url>`), or from a local checkout (below).
 
 Release process, artifact reuse, prerelease and rollback/deprecation policy: [docs/RELEASE.md](docs/RELEASE.md).
 
@@ -283,6 +279,15 @@ In the native Statistics panel, `d` writes the redacted LLM review prompt to a d
 - Click an event to open the detail drawer: full payload JSON, text/reasoning, tool input/output/error/metadata/diff, subagent links, copy JSON/text/metrics/turn chain.
 - Parent/child sessions are linked in the sidebar family section and in subagent tool results.
 
+#### Recovery map
+
+The Recovery map is the card strip above the ledger in Trajectory (below the table in Statistics), computed by the deterministic diagnostics engine (`src/core/diagnostics.ts`). It detects maximal runs of consecutive failures for a single tool within one turn and labels each run **Recovery observed**, **Possible recovery**, **No recovery evidence** or **Insufficient data**, in recorded order — it never re-sorts events or reconstructs a turn from prose.
+
+- Each card names the tool, the recovery label, the turn, the trigger, three labelled footprint cells and the engine's plain-language `why`. Footprint values are contextual to that incident and are never a recovery signal.
+- The strip is content-sized up to a cap, so a session with no incidents shows a note instead of an empty band.
+- **Open in Trajectory** drills to the exact first failing event through the `?event=` route, the same deep link the Statistics drill actions use.
+- The strip renders in both the Trajectory and Statistics views. Verdict basis follows the engine: **Insufficient data** is the only `measured` verdict, because the failure run itself is observed while the comparison input needed to judge recovery is absent, truncated or redacted — the basis reports what was actually recorded; **Recovery observed**, **Possible recovery** and **No recovery evidence** are all `derived`. The card itself shows the recovery label plus three stat cells that carry their own bases; it renders no verdict-basis badge.
+
 ### Statistics
 
 - One row per turn; click a turn to expand its steps. Click a step to expand its inline detail (Markdown response, reasoning, tool calls, subagent links).
@@ -295,7 +300,7 @@ In the native Statistics panel, `d` writes the redacted LLM review prompt to a d
 
 ### Advanced analysis
 
-Advanced mode (the topbar toggle, persisted per browser) unlocks surfaces that stay hidden in Basic mode:
+Advanced mode (the topbar toggle, persisted per browser) unlocks surfaces that stay hidden in Basic mode. The bullets below also flag the analysis surfaces that stay available in both modes:
 
 - **Charts sub-tab** — a **Table / Charts** segmented control inside Statistics draws four sections over the same already-loaded `Analysis` (no extra fetch, no re-paging). Captions repeat the analysis scope (**Session total** or **Window total** plus the sequence range).
   - **Context growth** — one point per turn, following the **Context basis** selector (Latest or Cumulative). Missing context leaves a gap rather than a zero dip (drawn as a dashed unavailable tick; gaps are counted). Each compaction is a dashed vertical marker labelled `Compaction N`, placed on its recorded turn or the last turn that started before it; a compaction that cannot be placed is counted instead of being drawn onto a turn.
@@ -305,19 +310,25 @@ Advanced mode (the topbar toggle, persisted per browser) unlocks surfaces that s
 
 - **Session health badge** — a **Session health: Healthy / Watch / Degraded** button in the Statistics toolbar (both Table and Charts sub-tabs), plus a rules breakdown listing all seven rules (error rate, retry count, tool-failure recurrence, context growth, cost per turn, low cache hit rate, unfinished outcome) with level, status, deterministic observed values and capped drill links. A session with insufficient data renders as **Watch** with an **insufficient data** sub-label and can never claim **Healthy**; the Basic renderer carries no health markup. No numeric score is computed, stored or displayed. Rules, thresholds, the sufficiency gate and state mapping are documented and reproducible in [docs/HEALTH.md](docs/HEALTH.md).
 
+- **Episode comparison** — the topbar **Compare episodes** action (available in Basic as well as Advanced) opens a side-by-side comparison of two diagnostic episodes: attempts are aligned by recorded position, every difference is `left - right`, and each row keeps the epistemic basis of its inputs. Neither side is ranked, and a differing attempt count yields trailing one-sided rows instead of a fuzzy match.
+
+- **Multi-agent delegation chains** — parent/child sessions are linked through the recorded `subagent` tool events (`childSessionIDs` plus the delegated-agent stamp). The deterministic delegation layer classifies each child failure and the parent's reaction, and the read-only `/api/sessions/{id}/family-recovery` endpoint serves the same parent-child recovery chains.
+
+- **Recommendations** — a Statistics section that lists deterministic `fact` rows (restating a finding that already exists in the analysis: a triggered health rule, an incident aggregate, an attribution aggregate) next to `hypothesis` if-then rows, each naming the finding it rests on. No model call and no network call: [docs/RECOMMENDATIONS.md](docs/RECOMMENDATIONS.md).
+
+- **Task and file attribution** — per-turn attribution of the recorded session to the task, the files and the first shell token of each turn. A recorded path is `measured`; a per-file cost share is `derived`; patch text and command lines never enter the result.
+
+- **Guardrails** — an app-wide advisory disclosure, never behind the Advanced gate: in Trajectory it sits directly under the live-warning strip, and in Statistics it opens the view. It compares the session against the budgets configured in Settings, and every row keeps its text label, `derived` basis, `advisory` word and threshold. Skipped budgets are reported, never guessed, and a guardrail never blocks, interrupts or prompts anything.
+
+- **Advanced filters** — the Trajectory filter bar's dialog for the longer facet lists (agent, model, provider, tool, status, time and prompt-token ranges). The bar and the dialog are not mode-gated.
+
+- **Live mode** — the topbar **Live** checkbox follows a recording session by re-projecting it every 5 seconds while the tab is visible, with a liveness chip, a warnings strip and a new-events count. The chip readings are **Live — recording**, **Incomplete — no terminal outcome** and **Historical — recording complete**, plus a **stale, retrying** marker when a poll fails on an existing frame and **Live unavailable** when the first poll failed; the internal `LiveState` values behind them are `running`, `idle`, `unknown` and `ended` (`idle` and `unknown` share the Incomplete reading). Liveness is derived, never streamed: polling re-projects the dataset and adds no second compute site.
+
 - **Advanced-mode copy actions** — **Copy LLM review prompt** (review instructions plus the session digest) and **Copy raw session digest** (see above).
 
 **Privacy (Advanced, and everywhere else).** The app **never calls an LLM provider and never transmits session data anywhere.** The review text is built from the normalized projection by your local server and handed to the browser clipboard through the same-origin local API (`http://127.0.0.1:<port>/api/…`): the copy itself is `navigator.clipboard.writeText`, there is no upload, no telemetry and no third-party request. In the OpenCode TUI, where no clipboard API exists, the native Statistics panel's **`d`** key writes the **always-redacted** LLM review prompt to one deterministic file under the system temp directory (`opencode-observability-review-<session>.md`) and toasts its path; no reveal or redaction plumbing exists there.
 
-**Advanced-only surfaces:** the Table/Charts segmented control and all four charts; the session-health badge and breakdown; the full 19-column turn/step table and all Statistics filters (per the view-modes table); both copy buttons; and the header **Benchmark** link (the `#/benchmark` route itself stays reachable by URL). Basic mode keeps the turn table, headline filters and diagnostics.
-
-<p>
-  <img src="docs/screenshots/statistics-advanced-dark.png" alt="Statistics view in Advanced mode, with the Session health badge in the toolbar" width="49%">
-  <img src="docs/screenshots/statistics-charts-dark.png" alt="Statistics Charts sub-tab: context growth, token usage, cost and step duration" width="49%">
-</p>
-<p>
-  <img src="docs/screenshots/health-breakdown-dark.png" alt="Session health breakdown expanded, listing each of the seven rules with level, status and drill links" width="98%">
-</p>
+**Advanced-only surfaces:** the Table/Charts segmented control and all four charts; the session-health badge and breakdown; the full 19-column turn/step table and all Statistics filters; the task/file attribution and Recommendations sections; both copy buttons; and the header **Benchmark** link (the `#/benchmark` route itself stays reachable by URL). Basic mode keeps the turn table, headline filters, the Recovery map and diagnostics.
 
 A missing or partial metric is never rendered as zero: missing context leaves a gap, turns with no recorded usage are dashed "Not recorded" slots, and steps lacking timing data omit that segment. Chart and health-series derivation: [docs/METRICS.md](docs/METRICS.md). Coverage and known limitations: [docs/CHECKLIST.md](docs/CHECKLIST.md).
 
@@ -398,7 +409,7 @@ Test coverage includes a SHA-256 before/after check proving analysis leaves the 
 
 The honest list (details in [docs/CHECKLIST.md](docs/CHECKLIST.md)):
 
-- **TTFT** is not persisted in OpenCode 2.2.x. It is always `—`.
+- **TTFT** is not persisted in OpenCode 2.x. It is always `—`.
 - **Permission/approval decisions** are not stored in historical session data. There are no false “awaiting approval” rows.
 - **Request headers** are available only to live `http.request` hooks; they are not in session storage.
 - **Tool-set changes** are not persisted.
@@ -422,8 +433,23 @@ src/
     export.ts           JSON / Markdown / HTML
     redact.ts/util.ts   credential redaction
     paging.ts           page merge, scroll anchor, virtual range
+    format.ts           number, compact-number and date formatting
+    diagnostics.ts      deterministic repeated-failure/recovery map engine
+    episodes.ts         addressable form of each diagnostic incident
+    episodeCompare.ts   ordinal two-episode comparison (left - right)
+    delegation.ts       parent/child delegation recovery chains
+    health.ts           session-health rules and state mapping
+    guardrails.ts       advisory budget evaluation
+    recommendations.ts  deterministic facts plus if-then hypotheses
+    attribution.ts      per-turn task/file/shell attribution
+    benchmark.ts        cross-session descriptive rollups
+    live.ts             derived liveness snapshot
+    digest.ts           size-capped deterministic review digest
+    index.ts            public module re-exports
     adapters/
       sqlite.ts         OpenCode 2 SQLite, read-only
+      sqlite-worker.ts  worker-side read-only query runner
+      sqlite-worker-source.ts  worker-backed adapter source
       api.ts            OpenCode server API source
       memory.ts         fixtures/tests
       paths.ts          database discovery
@@ -448,6 +474,15 @@ src/
     service.ts          RPC handlers
     tui.ts              TUI commands
     tui.tsx             typed OpenTUI JSX sidecar (provide-only)
+    tui-native.ts       native panel registry + navigation seam
+    tui-status.ts       prompt-footer status badge seam
+    tui-net.ts          local-UI URL/token transport helpers
+    tui-warmup.ts       local-UI warm-start helpers
+    tui/                native panel views, polling and digest file
+      analysisResponse.ts, polling.ts, digestFile.ts
+      statistics/       native Statistics view, columns, state, status
+      trajectory/       native Trajectory view and state
+      statusBadge.tsx
 test/
   fixtures/build.ts     synthetic OpenCode 2 fixtures
   *.test.ts             69 suites
@@ -455,6 +490,9 @@ docs/
   DATA-SOURCES.md
   ARCHITECTURE.md
   METRICS.md
+  HEALTH.md
+  RECOMMENDATIONS.md
+  RELEASE.md
   UI.md
   CHECKLIST.md
 ```
@@ -478,11 +516,11 @@ Rebuild the matching artifact after any change under `src/plugin/tui.*`, `src/se
 ## Testing
 
 ```bash
-npm run check       # typecheck + 951 tests
+npm run check       # typecheck + tests
 npm run audit:prod  # production dependency audit
 ```
 
-The suite is at **951 tests** across **69 files** and grows with each new suite.
+The suite is at **956 tests** across **69 files** and grows with each new suite.
 
 The fixtures cover: a simple session, multiple tool calls (including parallel and error), subagents, retry + error, compaction, a long paging session, an incomplete/interrupted run, out-of-order timestamps, secrets, and an empty session. The HTTP tests start the real server on an ephemeral port against a synthetic SQLite database.
 
