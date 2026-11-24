@@ -4520,7 +4520,7 @@ function table(headers, rows) {
 	];
 }
 // src/core/export.ts
-var GENERATOR = "opencode-session-observability/0.1.0";
+var GENERATOR = "opencode-session-observability/0.2.0";
 function exportSession(input) {
 	const stamp = timestampForFilename(input.analysis.generatedAt);
 	const base = `${slugify(input.session.title ?? input.session.slug ?? input.session.id)}-${stamp}`;
@@ -6367,7 +6367,7 @@ function evaluateGuardrails(analysis, thresholds = DEFAULT_GUARDRAILS) {
 }
 // src/server/http.ts
 var UI_ROOT = fileURLToPath(new URL("../dist-ui/", import.meta.url));
-var VERSION$1 = "0.1.0";
+var VERSION$1 = "0.2.0";
 /**
 * Hard ceiling for a request body. The API is read-only and every action
 * travels in the URL, so no route consumes a payload; the cap still bounds

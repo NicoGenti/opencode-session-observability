@@ -29,7 +29,7 @@ export function createRpcHandlers(
       const description = service.describe();
       return {
         ok: true,
-        version: "0.1.0",
+        version: "0.2.0",
         source: description.source,
         revealAllowed: allowReveal,
         readOnly: true,

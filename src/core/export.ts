@@ -36,7 +36,7 @@ export interface ExportInput {
   prompt?: boolean;
 }
 
-const GENERATOR = "opencode-session-observability/0.1.0";
+const GENERATOR = "opencode-session-observability/0.2.0";
 
 export function exportSession(input: ExportInput): ExportResult {
   const stamp = timestampForFilename(input.analysis.generatedAt);
