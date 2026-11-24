@@ -459,4 +459,4 @@ jobs:
           case "${VERSION}" in
             *-*) dist_tag=beta ;;
           esac
-          npm publish "release/${TARBALL_NAME}" --access public --provenance --tag "${dist_tag}"
+          npm publish "./release/${TARBALL_NAME}" --access public --provenance --tag "${dist_tag}"

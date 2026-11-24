@@ -409,3 +409,9 @@ Three things to carry into the next release:
    Later releases are then OIDC-only with provenance.
 3. **Treat an empty `npm view` right after publishing as lag, not failure.** Check the package
    page, or re-run `npm view` after a couple of minutes.
+
+- 2026-11-24 (v0.2.0): `npm publish "release/<file>.tgz"` made npm parse the bare relative
+  path as a hosted-git shorthand (`release/<file>.tgz` -> `ssh://git@github.com/release/...`),
+  dying at `git ls-remote` (publickey) before any OIDC exchange; npm's spec parser never
+  consults the disk. Prefix the tarball argument with `./`. The 0.2.0 publish completed
+  manually from the Release tarball; the `./` fix ships on `main` for the next release.
