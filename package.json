@@ -99,7 +99,7 @@
     "tailwindcss": "4.3.5",
     "typescript": "^7.0.2",
     "vite": "8.3.8",
-    "vite-plugin-solid": "2.11.16",
+    "vite-plugin-solid": "2.11.17",
     "zod": "4.6.7"
   },
   "peerDependencies": {
