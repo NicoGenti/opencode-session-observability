@@ -1,0 +1,5 @@
+# Built dist artifacts are committed byte-for-byte as the Linux CI build emits them
+# (vite emits LF); keep EOL out of the freshness gate.
+src/web/index.html text eol=lf
+dist-ui/index.html text eol=lf
+dist-server/server.mjs text eol=lf
