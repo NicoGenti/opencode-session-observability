@@ -25,4 +25,10 @@ export { exportSession } from "./export.ts";
 export { SqliteSource, openSqliteSource, detectSchema } from "./adapters/sqlite.ts";
 export { ApiSource, apiMessagesToRaw } from "./adapters/api.ts";
 export { MemorySource } from "./adapters/memory.ts";
-export { discoverDatabase, candidateDatabasePaths, inspectDatabase } from "./adapters/paths.ts";
+export {
+  discoverDatabase,
+  candidateDatabasePaths,
+  inspectDatabase,
+  listDatabaseCandidates,
+  candidateKey,
+} from "./adapters/paths.ts";

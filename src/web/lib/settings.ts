@@ -63,6 +63,8 @@ export interface StoredSettings {
   guardrails: Partial<GuardrailValues> | null;
   guardrailsExpanded: boolean;
   guardrailsCollapsed: boolean;
+  /** The opaque key of the database the UI should query; "" means startup. */
+  dbKey: string;
 }
 
 export type SettingsKey = keyof StoredSettings;
@@ -136,6 +138,7 @@ const DEFAULTS: StoredSettings = {
   guardrails: null,
   guardrailsExpanded: false,
   guardrailsCollapsed: true,
+  dbKey: "",
 };
 
 const KEY_PREFIX = "observability-";
@@ -186,6 +189,40 @@ export function get<K extends SettingsKey>(key: K): StoredSettings[K] {
 export function set<K extends SettingsKey>(key: K, value: StoredSettings[K]): void {
   if (!(key in DEFAULTS)) return;
   writeRaw(key, JSON.stringify(value));
+}
+
+export interface DbKeyResolution {
+  /** The key the UI should use; "" means "let the server pick the startup DB". */
+  key: string;
+  /** True when a stored choice was unavailable and had to be replaced. */
+  reset: boolean;
+}
+
+/**
+ * Validates a stored database key against the SERVABLE keys a fresh catalogue
+ * returned. The startup key is valid by definition: the server always serves
+ * it, even when it is absent from the catalogue, so it is never cleared. A
+ * present key is kept; an empty key adopts the startup key; a stored key that
+ * disappeared (or a catalogue row that exists but is not a v2 database) resets
+ * to the startup key (or clears to "", which lets the server keep its startup
+ * database) and reports the reset so the dialog can show its one-shot caption.
+ * A missing `startupDbKey` (an older server) leaves the key empty.
+ */
+export function resolveDbKey(
+  stored: unknown,
+  candidateKeys: readonly string[],
+  startupKey: unknown,
+): DbKeyResolution {
+  const startup = typeof startupKey === "string" ? startupKey.trim() : "";
+  const value = typeof stored === "string" ? stored.trim() : "";
+  const startupIsServable = startup !== "";
+  if (value !== "" && (value === startup || candidateKeys.includes(value))) {
+    return { key: value, reset: false };
+  }
+  if (value === "") {
+    return { key: startupIsServable ? startup : "", reset: false };
+  }
+  return { key: startupIsServable ? startup : "", reset: true };
 }
 
 /**

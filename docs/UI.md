@@ -9,7 +9,7 @@ The UI is a local browser application served by the same read-only process that 
 - **Tabs** — Trajectory and Statistics.
 - **Topbar** — Basic/Advanced view toggle, refresh, optional 10s live refresh, reveal secrets, export.
 - **Detail drawer** — full event or step information, copy actions and links.
-- **Settings** — the gear in the sidebar opens theme, view mode, grouping and statistics defaults.
+- **Settings** — the gear in the sidebar opens theme, view mode, database, grouping and statistics defaults.
 
 ## View modes
 

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import {
   ApiError,
   createApiClient,
@@ -10,6 +11,8 @@ import {
   type ApiClientConfig,
   type FetchLike,
 } from "../src/web/lib/api.ts";
+import { exportRequestPath } from "../src/web/lib/export.ts";
+import { get, set } from "../src/web/lib/settings.ts";
 
 /* --------------------------------------------------------------- serialization */
 
@@ -61,6 +64,132 @@ test("requestTarget appends instead of adding a second question mark", () => {
   );
   // An empty array adds nothing, so no trailing `?`.
   assert.equal(requestTarget("/api/sessions", { kinds: [] }), "/api/sessions");
+});
+
+test("requestTarget appends db query param from settings", () => {
+  const original = (globalThis as { localStorage?: unknown }).localStorage;
+  const values = new Map<string, string>();
+  Object.assign(globalThis, {
+    localStorage: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        values.set(key, value);
+      },
+      removeItem: (key: string) => {
+        values.delete(key);
+      },
+    },
+  });
+  try {
+    // No stored key: the target is unchanged.
+    assert.equal(requestTarget("/api/sessions"), "/api/sessions");
+
+    set("dbKey", "abc123");
+    assert.equal(requestTarget("/api/sessions"), "/api/sessions?db=abc123");
+    assert.equal(
+      requestTarget("/api/sessions", { limit: 1 }),
+      "/api/sessions?limit=1&db=abc123",
+    );
+
+    // An explicit caller db wins, so the stored key is never appended twice.
+    const explicit = requestTarget("/api/dbs/count", { db: "row-key" });
+    assert.equal(explicit, "/api/dbs/count?db=row-key");
+    assert.equal((explicit.match(/db=/g) ?? []).length, 1);
+
+    // The public health probe is startup-defined and never carries db.
+    assert.equal(requestTarget("/api/health"), "/api/health");
+    assert.equal(
+      requestTarget("/api/health", {}, { reveal: true }),
+      "/api/health?reveal=1",
+    );
+    // Non-API targets are untouched.
+    assert.equal(requestTarget("/ui/app.js"), "/ui/app.js");
+  } finally {
+    Object.assign(globalThis, { localStorage: original });
+  }
+});
+
+test("export request paths go through requestTarget (db param present)", async () => {
+  const original = (globalThis as { localStorage?: unknown }).localStorage;
+  const values = new Map<string, string>();
+  Object.assign(globalThis, {
+    localStorage: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        values.set(key, value);
+      },
+      removeItem: (key: string) => {
+        values.delete(key);
+      },
+    },
+  });
+  try {
+    set("dbKey", "abc123");
+    const json = requestTarget(exportRequestPath("ses_1", { format: "json" }));
+    assert.equal(json, "/api/sessions/ses_1/export?format=json&db=abc123");
+    assert.equal((json.match(/[?&]db=/g) ?? []).length, 1);
+
+    const digest = requestTarget(
+      exportRequestPath("ses_1", { format: "digest", prompt: true }),
+    );
+    assert.match(digest, /[?&]db=abc123/);
+    assert.equal((digest.match(/[?&]db=/g) ?? []).length, 1);
+
+    // Both export fetches in the hook run through the one seam.
+    const source = await readFile(
+      new URL("../src/web/hooks/useExport.ts", import.meta.url),
+      "utf8",
+    );
+    assert.ok(
+      (source.match(/requestTarget\(/g) ?? []).length >= 2,
+      "useExport must route both export fetches through requestTarget",
+    );
+  } finally {
+    Object.assign(globalThis, { localStorage: original });
+  }
+});
+
+test("a 400 invalid_db clears the stored db key once", async () => {
+  const original = (globalThis as { localStorage?: unknown }).localStorage;
+  const values = new Map<string, string>();
+  let dbWrites = 0;
+  Object.assign(globalThis, {
+    localStorage: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        if (key === "observability-dbKey") dbWrites += 1;
+        values.set(key, value);
+      },
+      removeItem: (key: string) => {
+        values.delete(key);
+      },
+    },
+  });
+  try {
+    set("dbKey", "stale-key");
+    const calls: string[] = [];
+    const api = createApiClient({
+      ...config(),
+      fetch: async (url) => {
+        calls.push(url);
+        return json(
+          { error: "invalid_db", message: "Unknown database key." },
+          400,
+        );
+      },
+    });
+    await assert.rejects(api<unknown>("/api/sessions"));
+    assert.equal(get("dbKey"), "");
+    assert.equal(calls[0], "/api/sessions?db=stale-key");
+
+    // Nothing is left to clear, so a second rejection does not write again.
+    await assert.rejects(api<unknown>("/api/sessions"));
+    assert.equal(get("dbKey"), "");
+    assert.equal(calls[1], "/api/sessions");
+    assert.equal(dbWrites, 2, "one set plus exactly one clear");
+  } finally {
+    Object.assign(globalThis, { localStorage: original });
+  }
 });
 
 /* ----------------------------------------------------------------------- errors */

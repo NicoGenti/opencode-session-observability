@@ -6,6 +6,7 @@ import {
   getViewMode,
   migrate,
   reset,
+  resolveDbKey,
   set,
   setViewMode,
   type SettingsKey,
@@ -131,7 +132,8 @@ test("reset clears exactly the stored default key set", () => {
   set("settingsVersion", 1);
   set("guardrailsExpanded", true);
   set("guardrailsCollapsed", false);
-  assert.equal(storage.keys().length, 15);
+  set("dbKey", "startup-key-1");
+  assert.equal(storage.keys().length, 16);
 
   reset();
   assert.equal(storage.keys().length, 0, storage.keys().join(", "));
@@ -180,6 +182,46 @@ test("the settings key union stays the documented vocabulary", () => {
     "guardrails",
     "guardrailsExpanded",
     "guardrailsCollapsed",
+    "dbKey",
   ];
-  assert.equal(new Set(keys).size, 15);
+  assert.equal(new Set(keys).size, 16);
+});
+
+test("dbKey setting defaults to startup key", () => {
+  // The library default is "no explicit choice"; the boot health probe adopts
+  // the startup key through `resolveDbKey`, and a chosen key round-trips.
+  assert.equal(get("dbKey"), "");
+  assert.deepEqual(resolveDbKey("", ["startup-key-1"], "startup-key-1"), {
+    key: "startup-key-1",
+    reset: false,
+  });
+
+  set("dbKey", "startup-key-1");
+  assert.equal(get("dbKey"), "startup-key-1");
+  assert.equal(storage.getItem("observability-dbKey"), '"startup-key-1"');
+});
+
+test("invalid stored dbKey resets to startup key", () => {
+  assert.deepEqual(resolveDbKey("gone-key", ["startup-key-1"], "startup-key-1"), {
+    key: "startup-key-1",
+    reset: true,
+  });
+  // A still-present key is kept without a reset.
+  assert.deepEqual(resolveDbKey("startup-key-1", ["startup-key-1"], "startup-key-1"), {
+    key: "startup-key-1",
+    reset: false,
+  });
+  // A vanished user key resets to the startup key even when the catalogue did
+  // not return it (the server always serves the startup database).
+  assert.deepEqual(resolveDbKey("gone-key", [], "startup-key-1"), {
+    key: "startup-key-1",
+    reset: true,
+  });
+  // The startup key is valid by definition even when the catalogue omits it.
+  assert.deepEqual(resolveDbKey("startup-key-1", [], "startup-key-1"), {
+    key: "startup-key-1",
+    reset: false,
+  });
+  // An older server with no startupDbKey never invents a key.
+  assert.deepEqual(resolveDbKey("", [], undefined), { key: "", reset: false });
 });
