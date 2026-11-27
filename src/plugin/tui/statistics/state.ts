@@ -311,9 +311,18 @@ export function createStatisticsState(client: RpcCapable): StatisticsState {
       typeof nextSessionID === "string" ? nextSessionID.trim() : "";
     const ticket = ++request;
 
-    // `untrack` keeps this read out of the calling effect's dependency set: a
-    // tracked read would subscribe the effect to the `setSessionID` write below
-    // and issue a second request per open/session change.
+    // The compute phase of the calling effect tracks only `props.sessionID`, so
+    // this call already runs untracked; `untrack` stays as belt and braces for
+    // the live-poll path, which is not owned by a tracked effect. A tracked read
+    // would otherwise subscribe the caller to the `setSessionID` write below and
+    // issue a second request per open/session change.
+    //
+    // Staged writes: signals expose the committed value, so the read below only
+    // sees a `setSessionID` after the microtask that applies it. Two
+    // `fetchAnalysis` calls in the same frame would therefore compare against a
+    // stale value, report `sameSession === false` and blank the table. Not
+    // reachable today: the live poll is a macrotask timer, so each tick starts
+    // after the previous frame committed.
     const previous = untrack(sessionID);
     const sameSession = target === previous;
     if (!sameSession) {

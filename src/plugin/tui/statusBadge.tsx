@@ -1,4 +1,4 @@
-import { createEffect, createSignal, onCleanup, Show } from "solid-js";
+import { createEffect, createSignal, Show } from "solid-js";
 
 import {
   badgeLineInvalidated,
@@ -23,27 +23,29 @@ function StatusBadge(props: {
   const [line, setLine] = createSignal<string | null>(null);
   let lastSessionID: string | undefined;
 
-  createEffect(() => {
-    // The slot input is reactive: reading the id here re-runs the effect when
-    // the host switches session or clears the selection.
-    const sessionID = props.input.sessionID;
-    let active = true;
-    onCleanup(() => {
-      active = false;
-    });
-    // Keep the previous line across same-session re-renders (e.g. the host
-    // toggling `showDetails`): only a session change clears it, so the footer
-    // never blinks empty while the cached value is re-read.
-    if (badgeLineInvalidated(lastSessionID, sessionID)) {
-      lastSessionID = sessionID;
-      setLine(null);
-    }
-    // `statusBadgeText` never rejects, returns `null` without a session id and
-    // degrades each field to `n/a` when the analysis read fails.
-    void statusBadgeText(props.context, sessionID).then((text) => {
-      if (active) setLine(text);
-    });
-  });
+  createEffect(
+    // The slot input is reactive: reading the id in the compute phase re-runs
+    // the effect when the host switches session or clears the selection.
+    () => props.input.sessionID,
+    (sessionID) => {
+      let active = true;
+      // Keep the previous line across same-session re-renders (e.g. the host
+      // toggling `showDetails`): only a session change clears it, so the footer
+      // never blinks empty while the cached value is re-read.
+      if (badgeLineInvalidated(lastSessionID, sessionID)) {
+        lastSessionID = sessionID;
+        setLine(null);
+      }
+      // `statusBadgeText` never rejects, returns `null` without a session id and
+      // degrades each field to `n/a` when the analysis read fails.
+      void statusBadgeText(props.context, sessionID).then((text) => {
+        if (active) setLine(text);
+      });
+      return () => {
+        active = false;
+      };
+    },
+  );
 
   return (
     <Show when={line()}>

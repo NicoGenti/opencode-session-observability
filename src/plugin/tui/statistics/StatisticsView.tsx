@@ -2,8 +2,7 @@ import {
   createEffect,
   createMemo,
   For,
-  onCleanup,
-  onMount,
+  onSettled,
   Show,
   type Accessor,
 } from "solid-js";
@@ -310,32 +309,36 @@ function StatisticsPanel(props: {
     });
   }
 
-  onMount(() => {
+  onSettled(() => {
     props.keyboard.handlers = keyboardHandlers;
+    return () => {
+      state.stopLivePolling();
+      if (props.keyboard.handlers === keyboardHandlers) {
+        props.keyboard.handlers = null;
+        props.keyboard.focused = null;
+      }
+    };
   });
 
-  onCleanup(() => {
-    state.stopLivePolling();
-    if (props.keyboard.handlers === keyboardHandlers) {
-      props.keyboard.handlers = null;
-      props.keyboard.focused = null;
-    }
-  });
-
-  createEffect(() => {
+  createEffect(
     // F-m3: the slot input reports whether the host gave this panel focus. A
     // reported `false` closes the keymap gate; `undefined` (host does not
     // publish the field) stays `null`, so the panel-name gate remains the floor.
-    props.keyboard.focused = bridgeFocus(props.focused);
-  });
+    () => bridgeFocus(props.focused),
+    (focused) => {
+      props.keyboard.focused = focused;
+    },
+  );
 
-  createEffect(() => {
-    // Reacts to the panel input only: `fetchAnalysis` reads no signal in its
-    // synchronous window, so its own state writes cannot re-trigger this.
-    const sessionID = props.sessionID;
-    void state.fetchAnalysis(sessionID);
-    state.startLivePolling(sessionID);
-  });
+  createEffect(
+    // Reacts to the panel input only: the compute phase reads nothing else, so
+    // `fetchAnalysis`'s own state writes cannot re-trigger this.
+    () => props.sessionID,
+    (sessionID) => {
+      void state.fetchAnalysis(sessionID);
+      state.startLivePolling(sessionID);
+    },
+  );
 
   return (
     <box
