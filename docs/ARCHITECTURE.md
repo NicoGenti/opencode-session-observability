@@ -257,6 +257,10 @@ The TUI commands are intentionally non-mutating: they resolve the current sessio
 
 `@opentui/core` is imported for types only in the plugin sources and is erased at build time; `solid-js` is value-imported by the TUI views. `vite.tui.config.ts` keeps both — plus `@opencode/plugin|theme` — as host-provided externals, so the bundle never carries them, and `tsconfig.json` keeps `skipLibCheck` on. The optional `web-tree-sitter@0.25.10` devDependency is deliberately **not** added (F6 deferral): add it only if `skipLibCheck` is dropped or `@opentui/core` types become consumed by value, and pin it at `0.25.10` if that happens.
 
+The TUI lane follows the host stack: `solid-js` moved from 1.9.19 to 2.0.3, the peer floors are now `solid-js >=2.0.3 <3` and `@opentui/* >=0.9.7`, and `vite-plugin-solid` was replaced by `@solidjs/vite-plugin` 3.0.1, which carries the previous compiler options (`generate: "universal"`, `moduleName: "@opentui/solid"`) so JSX still compiles to the OpenTUI runtime. This is a **breaking install contract**, not a drop-in upgrade: `@opencode/plugin@2.3.2` still peers `solid-js >=1.9.0` and `@opentui/solid@0.9.7` peers `^1.9.12`, so no peer set satisfies the host packages and this package at the same time; the committed `.npmrc` (`legacy-peer-deps=true`) is what lets the tree resolve locally. The incompatibility and the new host requirement must be called out in the release notes of the minor that ships it.
+
+The same `skipLibCheck` (tsconfig.json:10) now also masks a second incompatibility: `@opentui/solid/jsx-runtime.d.ts` imports `type { JSX } from "solid-js"`, and 2.0.3 no longer exports that namespace. With the check on, the JSX lane degrades to `any`; dropping `skipLibCheck` would fail `typecheck:tui` on that declaration until `@opentui/solid` ships a 2.x-aware JSX runtime.
+
 ## Read-only guarantees
 
 - SQLite opened with `readOnly: true`.

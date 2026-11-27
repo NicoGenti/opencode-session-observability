@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createComponent, createElement, createTextNode, effect, insert, insertNode, memo, setProp } from "@opentui/solid";
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onSettled, untrack } from "solid-js";
 import { PluginContextProvider, usePlugin } from "@opencode/plugin/tui";
 // \0rolldown/runtime.js
 var __defProp = Object.defineProperty;
@@ -2073,214 +2073,260 @@ function Banner(props) {
 	const status = () => statusMark(sessionStatus(props.analysis));
 	const sessionID = () => props.analysis.session?.id ?? "unknown session";
 	const turnCount = () => props.totals?.turns ?? props.analysis.turns?.length ?? 0;
-	return (() => {
-		var _el$ = createElement("box"), _el$2 = createElement("box"), _el$3 = createElement("text"), _el$5 = createElement("text"), _el$6 = createElement("text"), _el$9 = createElement("text"), _el$0 = createElement("box"), _el$1 = createElement("text"), _el$10 = createElement("text"), _el$11 = createElement("text"), _el$12 = createElement("text"), _el$13 = createElement("text");
-		insertNode(_el$, _el$2);
-		insertNode(_el$, _el$0);
-		setProp(_el$, "flexDirection", "column");
-		setProp(_el$, "flexShrink", 0);
-		setProp(_el$, "marginBottom", 1);
-		insertNode(_el$2, _el$3);
-		insertNode(_el$2, _el$5);
-		insertNode(_el$2, _el$6);
-		insertNode(_el$2, _el$9);
-		setProp(_el$2, "flexDirection", "row");
-		setProp(_el$2, "gap", 1);
-		insertNode(_el$3, createTextNode(`Session`));
-		insert(_el$5, sessionID);
-		insert(_el$6, () => `${status().symbol} ${status().label}`);
-		insert(_el$2, createComponent(Show, {
-			get when() {
-				return props.analysis.redacted;
-			},
-			get children() {
-				var _el$7 = createElement("text");
-				insertNode(_el$7, createTextNode(`redacted`));
-				effect((_$p) => setProp(_el$7, "fg", colorOf$1(props.palette, "warning"), _$p));
-				return _el$7;
-			}
-		}), _el$9);
-		insert(_el$9, () => `${turnCount()} turns`);
-		insertNode(_el$0, _el$1);
-		insertNode(_el$0, _el$10);
-		insertNode(_el$0, _el$11);
-		insertNode(_el$0, _el$12);
-		insertNode(_el$0, _el$13);
-		setProp(_el$0, "flexDirection", "row");
-		setProp(_el$0, "gap", 2);
-		insert(_el$1, () => `Context ${bannerMetric(props.totals?.totalContext, formatNumber)}`);
-		insert(_el$10, () => `Cache hit ${bannerMetric(props.totals?.cacheHitRate, formatPercent)}`);
-		insert(_el$11, () => `Cost ${bannerMetric(props.totals?.cost, formatCost)}`);
-		insert(_el$12, () => recommendationsStatusLine(props.totals?.recommendations ?? 0));
-		insert(_el$13, () => guardrailsStatusLine(props.totals?.guardrails ?? 0));
-		effect((_p$) => {
-			var _v$ = colorOf$1(props.palette, "text2"), _v$2 = colorOf$1(props.palette, "text"), _v$3 = colorOf$1(props.palette, status().paletteKey), _v$4 = colorOf$1(props.palette, "muted"), _v$5 = colorOf$1(props.palette, "text"), _v$6 = colorOf$1(props.palette, "text"), _v$7 = colorOf$1(props.palette, "text"), _v$8 = colorOf$1(props.palette, "text2"), _v$9 = colorOf$1(props.palette, "text2");
-			_v$ !== _p$.e && (_p$.e = setProp(_el$3, "fg", _v$, _p$.e));
-			_v$2 !== _p$.t && (_p$.t = setProp(_el$5, "fg", _v$2, _p$.t));
-			_v$3 !== _p$.a && (_p$.a = setProp(_el$6, "fg", _v$3, _p$.a));
-			_v$4 !== _p$.o && (_p$.o = setProp(_el$9, "fg", _v$4, _p$.o));
-			_v$5 !== _p$.i && (_p$.i = setProp(_el$1, "fg", _v$5, _p$.i));
-			_v$6 !== _p$.n && (_p$.n = setProp(_el$10, "fg", _v$6, _p$.n));
-			_v$7 !== _p$.s && (_p$.s = setProp(_el$11, "fg", _v$7, _p$.s));
-			_v$8 !== _p$.h && (_p$.h = setProp(_el$12, "fg", _v$8, _p$.h));
-			_v$9 !== _p$.r && (_p$.r = setProp(_el$13, "fg", _v$9, _p$.r));
-			return _p$;
-		}, {
-			e: void 0,
-			t: void 0,
-			a: void 0,
-			o: void 0,
-			i: void 0,
-			n: void 0,
-			s: void 0,
-			h: void 0,
-			r: void 0
+	var _el$ = createElement("box", {
+		flexDirection: "column",
+		flexShrink: 0,
+		marginBottom: 1
+	});
+	var _el$2 = createElement("box", {
+		flexDirection: "row",
+		gap: 1
+	});
+	var _el$3 = createElement("text");
+	var _el$4 = createElement("text");
+	var _el$5 = createElement("text");
+	var _el$7 = createElement("text");
+	var _el$8 = createElement("box", {
+		flexDirection: "row",
+		gap: 2
+	});
+	var _el$9 = createElement("text");
+	var _el$10 = createElement("text");
+	var _el$11 = createElement("text");
+	var _el$12 = createElement("text");
+	var _el$13 = createElement("text");
+	insertNode(_el$, _el$2);
+	insertNode(_el$, _el$8);
+	insertNode(_el$2, _el$3);
+	insertNode(_el$2, _el$4);
+	insertNode(_el$2, _el$5);
+	insertNode(_el$2, _el$7);
+	insertNode(_el$3, createTextNode("Session"));
+	insert(_el$4, sessionID);
+	insert(_el$5, () => {
+		return `${status().symbol} ${status().label}`;
+	});
+	insert(_el$2, (() => {
+		var _c$ = memo(() => {
+			return !!props.analysis.redacted;
 		});
-		return _el$;
-	})();
+		return () => {
+			return _c$() ? (() => {
+				var _el$6 = createElement("text");
+				insertNode(_el$6, createTextNode("redacted"));
+				effect(() => colorOf$1(props.palette, "warning"), (_v$, _$p) => {
+					setProp(_el$6, "fg", _v$, _$p);
+				});
+				return _el$6;
+			})() : void 0;
+		};
+	})(), _el$7);
+	insert(_el$7, () => {
+		return `${turnCount()} turns`;
+	});
+	insertNode(_el$8, _el$9);
+	insertNode(_el$8, _el$10);
+	insertNode(_el$8, _el$11);
+	insertNode(_el$8, _el$12);
+	insertNode(_el$8, _el$13);
+	insert(_el$9, () => {
+		return `Context ${bannerMetric(props.totals?.totalContext, formatNumber)}`;
+	});
+	insert(_el$10, () => {
+		return `Cache hit ${bannerMetric(props.totals?.cacheHitRate, formatPercent)}`;
+	});
+	insert(_el$11, () => {
+		return `Cost ${bannerMetric(props.totals?.cost, formatCost)}`;
+	});
+	insert(_el$12, () => {
+		return recommendationsStatusLine(props.totals?.recommendations ?? 0);
+	});
+	insert(_el$13, () => {
+		return guardrailsStatusLine(props.totals?.guardrails ?? 0);
+	});
+	effect(() => {
+		return {
+			e: colorOf$1(props.palette, "text2"),
+			t: colorOf$1(props.palette, "text"),
+			a: colorOf$1(props.palette, status().paletteKey),
+			o: colorOf$1(props.palette, "muted"),
+			i: colorOf$1(props.palette, "text"),
+			n: colorOf$1(props.palette, "text"),
+			s: colorOf$1(props.palette, "text"),
+			h: colorOf$1(props.palette, "text2"),
+			r: colorOf$1(props.palette, "text2")
+		};
+	}, ({ e, t, a, o, i, n, s, h, r }, _p$) => {
+		e !== _p$?.e && setProp(_el$3, "fg", e, _p$?.e);
+		t !== _p$?.t && setProp(_el$4, "fg", t, _p$?.t);
+		a !== _p$?.a && setProp(_el$5, "fg", a, _p$?.a);
+		o !== _p$?.o && setProp(_el$7, "fg", o, _p$?.o);
+		i !== _p$?.i && setProp(_el$9, "fg", i, _p$?.i);
+		n !== _p$?.n && setProp(_el$10, "fg", n, _p$?.n);
+		s !== _p$?.s && setProp(_el$11, "fg", s, _p$?.s);
+		h !== _p$?.h && setProp(_el$12, "fg", h, _p$?.h);
+		r !== _p$?.r && setProp(_el$13, "fg", r, _p$?.r);
+	});
+	return _el$;
 }
 function StateMessage$1(props) {
-	return (() => {
-		var _el$14 = createElement("box");
-		setProp(_el$14, "flexDirection", "column");
-		setProp(_el$14, "flexGrow", 1);
-		setProp(_el$14, "justifyContent", "center");
-		setProp(_el$14, "alignItems", "center");
-		insert(_el$14, createComponent(Show, {
-			get when() {
-				return props.state.loading();
-			},
-			get children() {
+	var _el$14 = createElement("box", {
+		flexDirection: "column",
+		flexGrow: 1,
+		justifyContent: "center",
+		alignItems: "center"
+	});
+	insert(_el$14, (() => {
+		var _c$2 = memo(() => {
+			return !!props.state.loading();
+		});
+		return () => {
+			return _c$2() ? (() => {
 				var _el$15 = createElement("text");
-				insertNode(_el$15, createTextNode(`Loading…`));
-				effect((_$p) => setProp(_el$15, "fg", colorOf$1(props.palette, "muted"), _$p));
+				insertNode(_el$15, createTextNode("Loading…"));
+				effect(() => colorOf$1(props.palette, "muted"), (_v$, _$p) => {
+					setProp(_el$15, "fg", _v$, _$p);
+				});
 				return _el$15;
-			}
-		}), null);
-		insert(_el$14, createComponent(Show, {
-			get when() {
-				return memo(() => !!!props.state.loading())() && props.state.error();
-			},
-			get children() {
-				return [(() => {
-					var _el$17 = createElement("text");
-					insert(_el$17, () => props.state.error());
-					effect((_$p) => setProp(_el$17, "fg", colorOf$1(props.palette, "critical"), _$p));
-					return _el$17;
-				})(), (() => {
-					var _el$18 = createElement("text");
-					insertNode(_el$18, createTextNode(`Reopen the panel to retry.`));
-					effect((_$p) => setProp(_el$18, "fg", colorOf$1(props.palette, "muted"), _$p));
-					return _el$18;
-				})()];
-			}
-		}), null);
-		insert(_el$14, createComponent(Show, {
-			get when() {
-				return memo(() => !!!props.state.loading())() && !props.state.error();
-			},
-			get children() {
-				var _el$20 = createElement("text");
-				insertNode(_el$20, createTextNode(`Preparing…`));
-				effect((_$p) => setProp(_el$20, "fg", colorOf$1(props.palette, "muted"), _$p));
-				return _el$20;
-			}
-		}), null);
-		return _el$14;
-	})();
+			})() : void 0;
+		};
+	})(), null);
+	insert(_el$14, (() => {
+		var _c$3 = memo(() => {
+			return !!(!props.state.loading() && props.state.error());
+		});
+		return () => {
+			return _c$3() ? [(() => {
+				var _el$16 = createElement("text");
+				insert(_el$16, () => {
+					return props.state.error();
+				});
+				effect(() => colorOf$1(props.palette, "critical"), (_v$, _$p) => {
+					setProp(_el$16, "fg", _v$, _$p);
+				});
+				return _el$16;
+			})(), (() => {
+				var _el$17 = createElement("text");
+				insertNode(_el$17, createTextNode("Reopen the panel to retry."));
+				effect(() => colorOf$1(props.palette, "muted"), (_v$, _$p) => {
+					setProp(_el$17, "fg", _v$, _$p);
+				});
+				return _el$17;
+			})()] : void 0;
+		};
+	})(), null);
+	insert(_el$14, (() => {
+		var _c$4 = memo(() => {
+			return !!(!props.state.loading() && !props.state.error());
+		});
+		return () => {
+			return _c$4() ? (() => {
+				var _el$18 = createElement("text");
+				insertNode(_el$18, createTextNode("Preparing…"));
+				effect(() => colorOf$1(props.palette, "muted"), (_v$, _$p) => {
+					setProp(_el$18, "fg", _v$, _$p);
+				});
+				return _el$18;
+			})() : void 0;
+		};
+	})(), null);
+	return _el$14;
 }
 function Table(props) {
-	return createComponent(Show, {
-		get when() {
+	return memo(() => {
+		return memo(() => {
 			return props.turns.length > 0;
-		},
-		get fallback() {
-			return (() => {
-				var _el$24 = createElement("text");
-				insertNode(_el$24, createTextNode(`No turns for this session.`));
-				effect((_$p) => setProp(_el$24, "fg", colorOf$1(props.palette, "muted"), _$p));
-				return _el$24;
-			})();
-		},
-		get children() {
-			return [(() => {
-				var _el$22 = createElement("text");
-				setProp(_el$22, "wrapMode", "none");
-				insert(_el$22, () => formatHeader(props.layout.columns));
-				effect((_$p) => setProp(_el$22, "fg", colorOf$1(props.palette, "text2"), _$p));
-				return _el$22;
-			})(), (() => {
-				var _el$23 = createElement("scrollbox");
-				setProp(_el$23, "flexGrow", 1);
-				setProp(_el$23, "scrollY", true);
-				insert(_el$23, createComponent(For, {
-					get each() {
-						return props.turns;
-					},
-					children: (turn) => {
-						const selected = () => props.isSelected(turn);
-						const expanded = () => props.expanded.has(turn.id);
-						const row = () => formatRow(turn, props.layout.columns, selected(), expanded());
-						return [(() => {
-							var _el$26 = createElement("box"), _el$27 = createElement("text"), _el$28 = createElement("text");
-							insertNode(_el$26, _el$27);
-							insertNode(_el$26, _el$28);
-							setProp(_el$26, "flexDirection", "row");
-							setProp(_el$27, "wrapMode", "none");
-							insert(_el$27, () => row().prefix);
-							setProp(_el$28, "wrapMode", "none");
-							insert(_el$28, () => row().status);
-							effect((_p$) => {
-								var _v$0 = colorOf$1(props.palette, selected() ? "accent" : "text"), _v$1 = colorOf$1(props.palette, statusMark(turn.status).paletteKey);
-								_v$0 !== _p$.e && (_p$.e = setProp(_el$27, "fg", _v$0, _p$.e));
-								_v$1 !== _p$.t && (_p$.t = setProp(_el$28, "fg", _v$1, _p$.t));
-								return _p$;
-							}, {
-								e: void 0,
-								t: void 0
-							});
-							return _el$26;
-						})(), createComponent(Show, {
-							get when() {
-								return memo(() => !!expanded())() && (turn.steps?.length ?? 0) > 0;
+		})() ? [(() => {
+			var _el$19 = createElement("text", { wrapMode: "none" });
+			insert(_el$19, () => {
+				return formatHeader(props.layout.columns);
+			});
+			effect(() => colorOf$1(props.palette, "text2"), (_v$, _$p) => {
+				setProp(_el$19, "fg", _v$, _$p);
+			});
+			return _el$19;
+		})(), (() => {
+			var _el$20 = createElement("scrollbox", {
+				flexGrow: 1,
+				scrollY: true
+			});
+			insert(_el$20, createComponent(For, {
+				get each() {
+					return props.turns;
+				},
+				children: (turn) => {
+					const selected = () => props.isSelected(turn);
+					const expanded = () => props.expanded.has(turn.id);
+					const row = () => formatRow(turn, props.layout.columns, selected(), expanded());
+					return [(() => {
+						var _el$22 = createElement("box", { flexDirection: "row" });
+						var _el$23 = createElement("text", { wrapMode: "none" });
+						var _el$24 = createElement("text", { wrapMode: "none" });
+						insertNode(_el$22, _el$23);
+						insertNode(_el$22, _el$24);
+						insert(_el$23, () => {
+							return row().prefix;
+						});
+						insert(_el$24, () => {
+							return row().status;
+						});
+						effect(() => {
+							return {
+								e: colorOf$1(props.palette, selected() ? "accent" : "text"),
+								t: colorOf$1(props.palette, statusMark(turn.status).paletteKey)
+							};
+						}, ({ e, t }, _p$) => {
+							e !== _p$?.e && setProp(_el$23, "fg", e, _p$?.e);
+							t !== _p$?.t && setProp(_el$24, "fg", t, _p$?.t);
+						});
+						return _el$22;
+					})(), memo(() => {
+						return memo(() => {
+							return !!(expanded() && (turn.steps?.length ?? 0) > 0);
+						})() ? createComponent(For, {
+							get each() {
+								return turn.steps ?? [];
 							},
-							get children() {
-								return createComponent(For, {
-									get each() {
-										return turn.steps ?? [];
-									},
-									children: (step) => {
-										const stepRow = () => formatStepRow(step, props.layout.width);
-										return (() => {
-											var _el$29 = createElement("box"), _el$30 = createElement("text"), _el$31 = createElement("text");
-											insertNode(_el$29, _el$30);
-											insertNode(_el$29, _el$31);
-											setProp(_el$29, "flexDirection", "row");
-											setProp(_el$30, "wrapMode", "none");
-											insert(_el$30, () => stepRow().prefix);
-											setProp(_el$31, "wrapMode", "none");
-											insert(_el$31, () => stepRow().status);
-											effect((_p$) => {
-												var _v$10 = colorOf$1(props.palette, "text2"), _v$11 = colorOf$1(props.palette, statusMark(step.status).paletteKey);
-												_v$10 !== _p$.e && (_p$.e = setProp(_el$30, "fg", _v$10, _p$.e));
-												_v$11 !== _p$.t && (_p$.t = setProp(_el$31, "fg", _v$11, _p$.t));
-												return _p$;
-											}, {
-												e: void 0,
-												t: void 0
-											});
-											return _el$29;
-										})();
-									}
+							children: (step) => {
+								const stepRow = () => formatStepRow(step, props.layout.width);
+								var _el$25 = createElement("box", { flexDirection: "row" });
+								var _el$26 = createElement("text", { wrapMode: "none" });
+								var _el$27 = createElement("text", { wrapMode: "none" });
+								insertNode(_el$25, _el$26);
+								insertNode(_el$25, _el$27);
+								insert(_el$26, () => {
+									return stepRow().prefix;
 								});
+								insert(_el$27, () => {
+									return stepRow().status;
+								});
+								effect(() => {
+									return {
+										e: colorOf$1(props.palette, "text2"),
+										t: colorOf$1(props.palette, statusMark(step.status).paletteKey)
+									};
+								}, ({ e, t }, _p$) => {
+									e !== _p$?.e && setProp(_el$26, "fg", e, _p$?.e);
+									t !== _p$?.t && setProp(_el$27, "fg", t, _p$?.t);
+								});
+								return _el$25;
 							}
-						})];
-					}
-				}));
-				effect((_$p) => setProp(_el$23, "backgroundColor", backgroundOf$1(props.palette), _$p));
-				return _el$23;
-			})()];
-		}
+						}) : void 0;
+					})];
+				}
+			}));
+			effect(() => backgroundOf$1(props.palette), (_v$, _$p) => {
+				setProp(_el$20, "backgroundColor", _v$, _$p);
+			});
+			return _el$20;
+		})()] : (() => {
+			var _el$21 = createElement("text");
+			insertNode(_el$21, createTextNode("No turns for this session."));
+			effect(() => colorOf$1(props.palette, "muted"), (_v$, _$p) => {
+				setProp(_el$21, "fg", _v$, _$p);
+			});
+			return _el$21;
+		})();
 	});
 }
 function StatisticsPanel(props) {
@@ -2327,85 +2373,83 @@ function StatisticsPanel(props) {
 			variant: "success"
 		});
 	}
-	onMount(() => {
+	onSettled(() => {
 		props.keyboard.handlers = keyboardHandlers;
+		return () => {
+			state.stopLivePolling();
+			if (props.keyboard.handlers === keyboardHandlers) {
+				props.keyboard.handlers = null;
+				props.keyboard.focused = null;
+			}
+		};
 	});
-	onCleanup(() => {
-		state.stopLivePolling();
-		if (props.keyboard.handlers === keyboardHandlers) {
-			props.keyboard.handlers = null;
-			props.keyboard.focused = null;
-		}
+	createEffect(() => bridgeFocus(props.focused), (focused) => {
+		props.keyboard.focused = focused;
 	});
-	createEffect(() => {
-		props.keyboard.focused = bridgeFocus(props.focused);
-	});
-	createEffect(() => {
-		const sessionID = props.sessionID;
+	createEffect(() => props.sessionID, (sessionID) => {
 		state.fetchAnalysis(sessionID);
 		state.startLivePolling(sessionID);
 	});
-	return (() => {
-		var _el$32 = createElement("box");
-		setProp(_el$32, "flexDirection", "column");
-		setProp(_el$32, "flexGrow", 1);
-		setProp(_el$32, "padding", 1);
-		insert(_el$32, createComponent(Show, {
-			get when() {
-				return state.analysis();
+	var _el$28 = createElement("box", {
+		flexDirection: "column",
+		flexGrow: 1,
+		padding: 1
+	});
+	insert(_el$28, createComponent(Show, {
+		get when() {
+			return state.analysis();
+		},
+		get fallback() {
+			return createComponent(StateMessage$1, {
+				state,
+				get palette() {
+					return palette();
+				}
+			});
+		},
+		children: (analysis) => [createComponent(Banner, {
+			get analysis() {
+				return analysis();
 			},
-			get fallback() {
-				return createComponent(StateMessage$1, {
-					state,
-					get palette() {
-						return palette();
-					}
+			get totals() {
+				return state.totals();
+			},
+			get palette() {
+				return palette();
+			}
+		}), memo(() => {
+			return memo(() => {
+				return !!state.loading();
+			})() ? (() => {
+				var _el$29 = createElement("text");
+				insertNode(_el$29, createTextNode("Loading…"));
+				effect(() => colorOf$1(palette(), "muted"), (_v$, _$p) => {
+					setProp(_el$29, "fg", _v$, _$p);
 				});
-			},
-			children: (analysis) => [createComponent(Banner, {
-				get analysis() {
-					return analysis();
+				return _el$29;
+			})() : createComponent(Table, {
+				get layout() {
+					return currentLayout();
 				},
-				get totals() {
-					return state.totals();
+				get turns() {
+					return state.turns();
+				},
+				get isSelected() {
+					return state.isSelected;
+				},
+				get expanded() {
+					return state.expandedTurns();
 				},
 				get palette() {
 					return palette();
 				}
-			}), createComponent(Show, {
-				get when() {
-					return state.loading();
-				},
-				get fallback() {
-					return createComponent(Table, {
-						get layout() {
-							return currentLayout();
-						},
-						get turns() {
-							return state.turns();
-						},
-						get isSelected() {
-							return state.isSelected;
-						},
-						get expanded() {
-							return state.expandedTurns();
-						},
-						get palette() {
-							return palette();
-						}
-					});
-				},
-				get children() {
-					var _el$33 = createElement("text");
-					insertNode(_el$33, createTextNode(`Loading…`));
-					effect((_$p) => setProp(_el$33, "fg", colorOf$1(palette(), "muted"), _$p));
-					return _el$33;
-				}
-			})]
-		}));
-		effect((_$p) => setProp(_el$32, "backgroundColor", backgroundOf$1(palette()), _$p));
-		return _el$32;
-	})();
+			});
+		})]
+	}));
+	effect(() => backgroundOf$1(palette()), (_v$, _$p) => {
+		setProp(_el$28, "backgroundColor", _v$, _$p);
+	});
+	return _el$28;
 }
 function StatisticsView(props) {
 	return createComponent(PluginContextProvider, {
@@ -2608,195 +2652,222 @@ function backgroundOf(palette) {
 }
 function Header(props) {
 	const sessionID = () => props.analysis.session?.id ?? "unknown session";
-	return (() => {
-		var _el$ = createElement("box"), _el$2 = createElement("box"), _el$3 = createElement("text"), _el$5 = createElement("text"), _el$8 = createElement("text"), _el$9 = createElement("text");
-		insertNode(_el$, _el$2);
-		insertNode(_el$, _el$9);
-		setProp(_el$, "flexDirection", "column");
-		setProp(_el$, "flexShrink", 0);
-		setProp(_el$, "marginBottom", 1);
-		insertNode(_el$2, _el$3);
-		insertNode(_el$2, _el$5);
-		insertNode(_el$2, _el$8);
-		setProp(_el$2, "flexDirection", "row");
-		setProp(_el$2, "gap", 1);
-		insertNode(_el$3, createTextNode(`Session`));
-		insert(_el$5, sessionID);
-		insert(_el$2, createComponent(Show, {
-			get when() {
-				return props.analysis.redacted;
-			},
-			get children() {
-				var _el$6 = createElement("text");
-				insertNode(_el$6, createTextNode(`redacted`));
-				effect((_$p) => setProp(_el$6, "fg", colorOf(props.palette, "warning"), _$p));
-				return _el$6;
-			}
-		}), _el$8);
-		insert(_el$8, () => `${props.turns} turns`);
-		insertNode(_el$9, createTextNode(`Turn ledger · expand a turn to see its steps`));
-		effect((_p$) => {
-			var _v$ = colorOf(props.palette, "text2"), _v$2 = colorOf(props.palette, "text"), _v$3 = colorOf(props.palette, "muted"), _v$4 = colorOf(props.palette, "muted");
-			_v$ !== _p$.e && (_p$.e = setProp(_el$3, "fg", _v$, _p$.e));
-			_v$2 !== _p$.t && (_p$.t = setProp(_el$5, "fg", _v$2, _p$.t));
-			_v$3 !== _p$.a && (_p$.a = setProp(_el$8, "fg", _v$3, _p$.a));
-			_v$4 !== _p$.o && (_p$.o = setProp(_el$9, "fg", _v$4, _p$.o));
-			return _p$;
-		}, {
-			e: void 0,
-			t: void 0,
-			a: void 0,
-			o: void 0
+	var _el$ = createElement("box", {
+		flexDirection: "column",
+		flexShrink: 0,
+		marginBottom: 1
+	});
+	var _el$2 = createElement("box", {
+		flexDirection: "row",
+		gap: 1
+	});
+	var _el$3 = createElement("text");
+	var _el$4 = createElement("text");
+	var _el$6 = createElement("text");
+	var _el$7 = createElement("text");
+	insertNode(_el$, _el$2);
+	insertNode(_el$, _el$7);
+	insertNode(_el$2, _el$3);
+	insertNode(_el$2, _el$4);
+	insertNode(_el$2, _el$6);
+	insertNode(_el$3, createTextNode("Session"));
+	insert(_el$4, sessionID);
+	insert(_el$2, (() => {
+		var _c$ = memo(() => {
+			return !!props.analysis.redacted;
 		});
-		return _el$;
-	})();
+		return () => {
+			return _c$() ? (() => {
+				var _el$5 = createElement("text");
+				insertNode(_el$5, createTextNode("redacted"));
+				effect(() => colorOf(props.palette, "warning"), (_v$, _$p) => {
+					setProp(_el$5, "fg", _v$, _$p);
+				});
+				return _el$5;
+			})() : void 0;
+		};
+	})(), _el$6);
+	insert(_el$6, () => {
+		return `${props.turns} turns`;
+	});
+	insertNode(_el$7, createTextNode("Turn ledger · expand a turn to see its steps"));
+	effect(() => {
+		return {
+			e: colorOf(props.palette, "text2"),
+			t: colorOf(props.palette, "text"),
+			a: colorOf(props.palette, "muted"),
+			o: colorOf(props.palette, "muted")
+		};
+	}, ({ e, t, a, o }, _p$) => {
+		e !== _p$?.e && setProp(_el$3, "fg", e, _p$?.e);
+		t !== _p$?.t && setProp(_el$4, "fg", t, _p$?.t);
+		a !== _p$?.a && setProp(_el$6, "fg", a, _p$?.a);
+		o !== _p$?.o && setProp(_el$7, "fg", o, _p$?.o);
+	});
+	return _el$;
 }
 function StateMessage(props) {
-	return (() => {
-		var _el$1 = createElement("box");
-		setProp(_el$1, "flexDirection", "column");
-		setProp(_el$1, "flexGrow", 1);
-		setProp(_el$1, "justifyContent", "center");
-		setProp(_el$1, "alignItems", "center");
-		insert(_el$1, createComponent(Show, {
-			get when() {
-				return props.state.loading();
-			},
-			get children() {
+	var _el$8 = createElement("box", {
+		flexDirection: "column",
+		flexGrow: 1,
+		justifyContent: "center",
+		alignItems: "center"
+	});
+	insert(_el$8, (() => {
+		var _c$2 = memo(() => {
+			return !!props.state.loading();
+		});
+		return () => {
+			return _c$2() ? (() => {
+				var _el$9 = createElement("text");
+				insertNode(_el$9, createTextNode("Loading…"));
+				effect(() => colorOf(props.palette, "muted"), (_v$, _$p) => {
+					setProp(_el$9, "fg", _v$, _$p);
+				});
+				return _el$9;
+			})() : void 0;
+		};
+	})(), null);
+	insert(_el$8, (() => {
+		var _c$3 = memo(() => {
+			return !!(!props.state.loading() && props.state.error());
+		});
+		return () => {
+			return _c$3() ? [(() => {
 				var _el$10 = createElement("text");
-				insertNode(_el$10, createTextNode(`Loading…`));
-				effect((_$p) => setProp(_el$10, "fg", colorOf(props.palette, "muted"), _$p));
+				insert(_el$10, () => {
+					return props.state.error();
+				});
+				effect(() => colorOf(props.palette, "critical"), (_v$, _$p) => {
+					setProp(_el$10, "fg", _v$, _$p);
+				});
 				return _el$10;
-			}
-		}), null);
-		insert(_el$1, createComponent(Show, {
-			get when() {
-				return memo(() => !!!props.state.loading())() && props.state.error();
-			},
-			get children() {
-				return [(() => {
-					var _el$12 = createElement("text");
-					insert(_el$12, () => props.state.error());
-					effect((_$p) => setProp(_el$12, "fg", colorOf(props.palette, "critical"), _$p));
-					return _el$12;
-				})(), (() => {
-					var _el$13 = createElement("text");
-					insertNode(_el$13, createTextNode(`Reopen the panel to retry.`));
-					effect((_$p) => setProp(_el$13, "fg", colorOf(props.palette, "muted"), _$p));
-					return _el$13;
-				})()];
-			}
-		}), null);
-		insert(_el$1, createComponent(Show, {
-			get when() {
-				return memo(() => !!!props.state.loading())() && !props.state.error();
-			},
-			get children() {
-				var _el$15 = createElement("text");
-				insertNode(_el$15, createTextNode(`Preparing…`));
-				effect((_$p) => setProp(_el$15, "fg", colorOf(props.palette, "muted"), _$p));
-				return _el$15;
-			}
-		}), null);
-		return _el$1;
-	})();
+			})(), (() => {
+				var _el$11 = createElement("text");
+				insertNode(_el$11, createTextNode("Reopen the panel to retry."));
+				effect(() => colorOf(props.palette, "muted"), (_v$, _$p) => {
+					setProp(_el$11, "fg", _v$, _$p);
+				});
+				return _el$11;
+			})()] : void 0;
+		};
+	})(), null);
+	insert(_el$8, (() => {
+		var _c$4 = memo(() => {
+			return !!(!props.state.loading() && !props.state.error());
+		});
+		return () => {
+			return _c$4() ? (() => {
+				var _el$12 = createElement("text");
+				insertNode(_el$12, createTextNode("Preparing…"));
+				effect(() => colorOf(props.palette, "muted"), (_v$, _$p) => {
+					setProp(_el$12, "fg", _v$, _$p);
+				});
+				return _el$12;
+			})() : void 0;
+		};
+	})(), null);
+	return _el$8;
 }
 /**
 * Turn ledger with the per-turn step accordion. Rows come from the same pure
 * formatters the statistics table uses, so both panels stay aligned.
 */
 function TurnLedger(props) {
-	return createComponent(Show, {
-		get when() {
+	return memo(() => {
+		return memo(() => {
 			return props.turns.length > 0;
-		},
-		get fallback() {
-			return (() => {
-				var _el$19 = createElement("text");
-				insertNode(_el$19, createTextNode(`No turns for this session.`));
-				effect((_$p) => setProp(_el$19, "fg", colorOf(props.palette, "muted"), _$p));
-				return _el$19;
-			})();
-		},
-		get children() {
-			return [(() => {
-				var _el$17 = createElement("text");
-				setProp(_el$17, "wrapMode", "none");
-				insert(_el$17, () => formatHeader(props.layout.columns));
-				effect((_$p) => setProp(_el$17, "fg", colorOf(props.palette, "text2"), _$p));
-				return _el$17;
-			})(), (() => {
-				var _el$18 = createElement("scrollbox");
-				setProp(_el$18, "flexGrow", 1);
-				setProp(_el$18, "scrollY", true);
-				insert(_el$18, createComponent(For, {
-					get each() {
-						return props.turns;
-					},
-					children: (turn) => {
-						const selected = () => props.isSelected(turn);
-						const expanded = () => props.expanded.has(turn.id);
-						const row = () => formatRow(turn, props.layout.columns, selected(), expanded());
-						return [(() => {
-							var _el$21 = createElement("box"), _el$22 = createElement("text"), _el$23 = createElement("text");
-							insertNode(_el$21, _el$22);
-							insertNode(_el$21, _el$23);
-							setProp(_el$21, "flexDirection", "row");
-							setProp(_el$22, "wrapMode", "none");
-							insert(_el$22, () => row().prefix);
-							setProp(_el$23, "wrapMode", "none");
-							insert(_el$23, () => row().status);
-							effect((_p$) => {
-								var _v$5 = colorOf(props.palette, selected() ? "accent" : "text"), _v$6 = colorOf(props.palette, statusMark(turn.status).paletteKey);
-								_v$5 !== _p$.e && (_p$.e = setProp(_el$22, "fg", _v$5, _p$.e));
-								_v$6 !== _p$.t && (_p$.t = setProp(_el$23, "fg", _v$6, _p$.t));
-								return _p$;
-							}, {
-								e: void 0,
-								t: void 0
-							});
-							return _el$21;
-						})(), createComponent(Show, {
-							get when() {
-								return memo(() => !!expanded())() && (turn.steps?.length ?? 0) > 0;
+		})() ? [(() => {
+			var _el$13 = createElement("text", { wrapMode: "none" });
+			insert(_el$13, () => {
+				return formatHeader(props.layout.columns);
+			});
+			effect(() => colorOf(props.palette, "text2"), (_v$, _$p) => {
+				setProp(_el$13, "fg", _v$, _$p);
+			});
+			return _el$13;
+		})(), (() => {
+			var _el$14 = createElement("scrollbox", {
+				flexGrow: 1,
+				scrollY: true
+			});
+			insert(_el$14, createComponent(For, {
+				get each() {
+					return props.turns;
+				},
+				children: (turn) => {
+					const selected = () => props.isSelected(turn);
+					const expanded = () => props.expanded.has(turn.id);
+					const row = () => formatRow(turn, props.layout.columns, selected(), expanded());
+					return [(() => {
+						var _el$16 = createElement("box", { flexDirection: "row" });
+						var _el$17 = createElement("text", { wrapMode: "none" });
+						var _el$18 = createElement("text", { wrapMode: "none" });
+						insertNode(_el$16, _el$17);
+						insertNode(_el$16, _el$18);
+						insert(_el$17, () => {
+							return row().prefix;
+						});
+						insert(_el$18, () => {
+							return row().status;
+						});
+						effect(() => {
+							return {
+								e: colorOf(props.palette, selected() ? "accent" : "text"),
+								t: colorOf(props.palette, statusMark(turn.status).paletteKey)
+							};
+						}, ({ e, t }, _p$) => {
+							e !== _p$?.e && setProp(_el$17, "fg", e, _p$?.e);
+							t !== _p$?.t && setProp(_el$18, "fg", t, _p$?.t);
+						});
+						return _el$16;
+					})(), memo(() => {
+						return memo(() => {
+							return !!(expanded() && (turn.steps?.length ?? 0) > 0);
+						})() ? createComponent(For, {
+							get each() {
+								return turn.steps ?? [];
 							},
-							get children() {
-								return createComponent(For, {
-									get each() {
-										return turn.steps ?? [];
-									},
-									children: (step) => {
-										const stepRow = () => formatStepRow(step, props.layout.width);
-										return (() => {
-											var _el$24 = createElement("box"), _el$25 = createElement("text"), _el$26 = createElement("text");
-											insertNode(_el$24, _el$25);
-											insertNode(_el$24, _el$26);
-											setProp(_el$24, "flexDirection", "row");
-											setProp(_el$25, "wrapMode", "none");
-											insert(_el$25, () => stepRow().prefix);
-											setProp(_el$26, "wrapMode", "none");
-											insert(_el$26, () => stepRow().status);
-											effect((_p$) => {
-												var _v$7 = colorOf(props.palette, "text2"), _v$8 = colorOf(props.palette, statusMark(step.status).paletteKey);
-												_v$7 !== _p$.e && (_p$.e = setProp(_el$25, "fg", _v$7, _p$.e));
-												_v$8 !== _p$.t && (_p$.t = setProp(_el$26, "fg", _v$8, _p$.t));
-												return _p$;
-											}, {
-												e: void 0,
-												t: void 0
-											});
-											return _el$24;
-										})();
-									}
+							children: (step) => {
+								const stepRow = () => formatStepRow(step, props.layout.width);
+								var _el$19 = createElement("box", { flexDirection: "row" });
+								var _el$20 = createElement("text", { wrapMode: "none" });
+								var _el$21 = createElement("text", { wrapMode: "none" });
+								insertNode(_el$19, _el$20);
+								insertNode(_el$19, _el$21);
+								insert(_el$20, () => {
+									return stepRow().prefix;
 								});
+								insert(_el$21, () => {
+									return stepRow().status;
+								});
+								effect(() => {
+									return {
+										e: colorOf(props.palette, "text2"),
+										t: colorOf(props.palette, statusMark(step.status).paletteKey)
+									};
+								}, ({ e, t }, _p$) => {
+									e !== _p$?.e && setProp(_el$20, "fg", e, _p$?.e);
+									t !== _p$?.t && setProp(_el$21, "fg", t, _p$?.t);
+								});
+								return _el$19;
 							}
-						})];
-					}
-				}));
-				effect((_$p) => setProp(_el$18, "backgroundColor", backgroundOf(props.palette), _$p));
-				return _el$18;
-			})()];
-		}
+						}) : void 0;
+					})];
+				}
+			}));
+			effect(() => backgroundOf(props.palette), (_v$, _$p) => {
+				setProp(_el$14, "backgroundColor", _v$, _$p);
+			});
+			return _el$14;
+		})()] : (() => {
+			var _el$15 = createElement("text");
+			insertNode(_el$15, createTextNode("No turns for this session."));
+			effect(() => colorOf(props.palette, "muted"), (_v$, _$p) => {
+				setProp(_el$15, "fg", _v$, _$p);
+			});
+			return _el$15;
+		})();
 	});
 }
 function TrajectoryPanel(props) {
@@ -2811,85 +2882,83 @@ function TrajectoryPanel(props) {
 			if (turn) state.toggleTurnExpand(turn.id);
 		}
 	};
-	onMount(() => {
+	onSettled(() => {
 		props.keyboard.handlers = keyboardHandlers;
+		return () => {
+			state.stopLivePolling();
+			if (props.keyboard.handlers === keyboardHandlers) {
+				props.keyboard.handlers = null;
+				props.keyboard.focused = null;
+			}
+		};
 	});
-	onCleanup(() => {
-		state.stopLivePolling();
-		if (props.keyboard.handlers === keyboardHandlers) {
-			props.keyboard.handlers = null;
-			props.keyboard.focused = null;
-		}
+	createEffect(() => bridgeFocus(props.focused), (focused) => {
+		props.keyboard.focused = focused;
 	});
-	createEffect(() => {
-		props.keyboard.focused = bridgeFocus(props.focused);
-	});
-	createEffect(() => {
-		const sessionID = props.sessionID;
+	createEffect(() => props.sessionID, (sessionID) => {
 		state.fetchAnalysis(sessionID);
 		state.startLivePolling(sessionID);
 	});
-	return (() => {
-		var _el$27 = createElement("box");
-		setProp(_el$27, "flexDirection", "column");
-		setProp(_el$27, "flexGrow", 1);
-		setProp(_el$27, "padding", 1);
-		insert(_el$27, createComponent(Show, {
-			get when() {
-				return state.analysis();
+	var _el$22 = createElement("box", {
+		flexDirection: "column",
+		flexGrow: 1,
+		padding: 1
+	});
+	insert(_el$22, createComponent(Show, {
+		get when() {
+			return state.analysis();
+		},
+		get fallback() {
+			return createComponent(StateMessage, {
+				state,
+				get palette() {
+					return palette();
+				}
+			});
+		},
+		children: (analysis) => [createComponent(Header, {
+			get analysis() {
+				return analysis();
 			},
-			get fallback() {
-				return createComponent(StateMessage, {
-					state,
-					get palette() {
-						return palette();
-					}
+			get turns() {
+				return state.turns().length;
+			},
+			get palette() {
+				return palette();
+			}
+		}), memo(() => {
+			return memo(() => {
+				return !!state.loading();
+			})() ? (() => {
+				var _el$23 = createElement("text");
+				insertNode(_el$23, createTextNode("Loading…"));
+				effect(() => colorOf(palette(), "muted"), (_v$, _$p) => {
+					setProp(_el$23, "fg", _v$, _$p);
 				});
-			},
-			children: (analysis) => [createComponent(Header, {
-				get analysis() {
-					return analysis();
+				return _el$23;
+			})() : createComponent(TurnLedger, {
+				get layout() {
+					return currentLayout();
 				},
 				get turns() {
-					return state.turns().length;
+					return state.turns();
+				},
+				get isSelected() {
+					return state.isSelected;
+				},
+				get expanded() {
+					return state.expandedTurns();
 				},
 				get palette() {
 					return palette();
 				}
-			}), createComponent(Show, {
-				get when() {
-					return state.loading();
-				},
-				get fallback() {
-					return createComponent(TurnLedger, {
-						get layout() {
-							return currentLayout();
-						},
-						get turns() {
-							return state.turns();
-						},
-						get isSelected() {
-							return state.isSelected;
-						},
-						get expanded() {
-							return state.expandedTurns();
-						},
-						get palette() {
-							return palette();
-						}
-					});
-				},
-				get children() {
-					var _el$28 = createElement("text");
-					insertNode(_el$28, createTextNode(`Loading…`));
-					effect((_$p) => setProp(_el$28, "fg", colorOf(palette(), "muted"), _$p));
-					return _el$28;
-				}
-			})]
-		}));
-		effect((_$p) => setProp(_el$27, "backgroundColor", backgroundOf(palette()), _$p));
-		return _el$27;
-	})();
+			});
+		})]
+	}));
+	effect(() => backgroundOf(palette()), (_v$, _$p) => {
+		setProp(_el$22, "backgroundColor", _v$, _$p);
+	});
+	return _el$22;
 }
 function TrajectoryView(props) {
 	return createComponent(PluginContextProvider, {
@@ -2948,12 +3017,8 @@ var statusBadge_exports = /* @__PURE__ */ __exportAll({ statusBadgeElement: () =
 function StatusBadge(props) {
 	const [line, setLine] = createSignal(null);
 	let lastSessionID;
-	createEffect(() => {
-		const sessionID = props.input.sessionID;
+	createEffect(() => props.input.sessionID, (sessionID) => {
 		let active = true;
-		onCleanup(() => {
-			active = false;
-		});
 		if (badgeLineInvalidated(lastSessionID, sessionID)) {
 			lastSessionID = sessionID;
 			setLine(null);
@@ -2961,16 +3026,18 @@ function StatusBadge(props) {
 		statusBadgeText(props.context, sessionID).then((text) => {
 			if (active) setLine(text);
 		});
+		return () => {
+			active = false;
+		};
 	});
-	return createComponent(Show, {
-		get when() {
-			return line();
-		},
-		get children() {
+	return memo(() => {
+		return memo(() => {
+			return !!line();
+		})() ? (() => {
 			var _el$ = createElement("text");
 			insert(_el$, line);
 			return _el$;
-		}
+		})() : void 0;
 	});
 }
 /**

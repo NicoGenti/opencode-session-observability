@@ -31,11 +31,17 @@ test("StatisticsView mirrors the slot input's focus into the keyboard bridge", a
   const source = await viewSource();
 
   assert.match(source, /focused=\{input\.focused\}/);
+  // Solid 2 splits the effect: the compute phase tracks the slot input and the
+  // apply phase writes the shared bridge. The two invariants are asserted
+  // separately so reformatting the pair does not break the guard.
   assert.match(
     source,
-    /props\.keyboard\.focused = bridgeFocus\(props\.focused\)/,
+    /createEffect\(\s*(?:\/\/[^\n]*\r?\n\s*)*\(\)\s*=>\s*bridgeFocus\(\s*props\.focused\s*\)/,
   );
+  assert.match(source, /props\.keyboard\.focused\s*=\s*focused\b/);
   assert.match(source, /props\.keyboard\.focused = null/);
+  // Scope the guard to a call: a maintenance comment may name the old API.
+  assert.doesNotMatch(source, /\bonMount\s*\(/);
 });
 
 test("StatisticsView keeps the documented loading, error and empty states", async () => {

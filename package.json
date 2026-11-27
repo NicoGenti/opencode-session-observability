@@ -50,7 +50,7 @@
   "scripts": {
     "start": "node src/server/index.ts",
     "serve": "node src/server/index.ts",
-    "test": "node --test --test-reporter=spec test/adapter.test.ts test/attribution.test.ts test/auth.test.ts test/benchmark.test.ts test/delegation-service.test.ts test/diagnostics-multiagent.test.ts test/diagnostics.test.ts test/digest.test.ts test/episodeCompare.test.ts test/episodes-service.test.ts test/episodes.test.ts test/export.test.ts test/guardrails.test.ts test/health.test.ts test/live.test.ts test/metrics.test.ts test/normalize.test.ts test/opencode-theme.test.ts test/paging.test.ts test/plugin-deps.test.ts test/plugin-tui-badge.test.ts test/plugin-tui-commands.test.ts test/plugin-tui-entry.test.ts test/plugin-tui-native.test.ts test/plugin-tui-statistics-state.test.ts test/plugin-tui-statistics-view.test.ts test/plugin-tui-status.test.ts test/plugin-tui-trajectory-state.test.ts test/plugin-tui-trajectory.test.ts test/plugin-tui-warmup.test.ts test/plugin-tui.test.ts test/plugin.test.ts test/project.test.ts test/recommendations.test.ts test/security.test.ts test/server.test.ts test/service.test.ts test/token-file.test.ts test/tui-statistics-columns.test.ts test/tui-statistics-status.test.ts test/web-api.test.ts test/web-attribution.test.ts test/web-auth.test.ts test/web-benchmark.test.ts test/web-chart-data.test.ts test/web-charts.test.ts test/web-compactions.test.ts test/web-compare.test.ts test/web-diagnostics.test.ts test/web-drawer.test.ts test/web-event-filters.test.ts test/web-export.test.ts test/web-guardrails-derive.test.ts test/web-guardrails.test.ts test/web-health.test.ts test/web-keyboard.test.ts test/web-ledger-scroll.test.ts test/web-ledger.test.ts test/web-live.test.ts test/web-markdown.test.ts test/web-paging.test.ts test/web-recommendations.test.ts test/web-reveal.test.ts test/web-review-fixes.test.ts test/web-routing.test.ts test/web-settings.test.ts test/web-shell.test.ts test/web-statistics.test.ts test/web-theme.test.ts",
+    "test": "node --test --test-reporter=spec test/adapter.test.ts test/attribution.test.ts test/auth.test.ts test/benchmark.test.ts test/delegation-service.test.ts test/diagnostics-multiagent.test.ts test/diagnostics.test.ts test/digest.test.ts test/episodeCompare.test.ts test/episodes-service.test.ts test/episodes.test.ts test/export.test.ts test/guardrails.test.ts test/health.test.ts test/live.test.ts test/metrics.test.ts test/normalize.test.ts test/opencode-theme.test.ts test/paging.test.ts test/plugin-deps.test.ts test/plugin-tui-badge.test.ts test/plugin-tui-commands.test.ts test/plugin-tui-entry.test.ts test/plugin-tui-native.test.ts test/plugin-tui-solid2-migration.test.ts test/plugin-tui-statistics-state.test.ts test/plugin-tui-statistics-view.test.ts test/plugin-tui-status.test.ts test/plugin-tui-trajectory-state.test.ts test/plugin-tui-trajectory.test.ts test/plugin-tui-warmup.test.ts test/plugin-tui.test.ts test/plugin.test.ts test/project.test.ts test/recommendations.test.ts test/security.test.ts test/server.test.ts test/service.test.ts test/token-file.test.ts test/tui-statistics-columns.test.ts test/tui-statistics-status.test.ts test/web-api.test.ts test/web-attribution.test.ts test/web-auth.test.ts test/web-benchmark.test.ts test/web-chart-data.test.ts test/web-charts.test.ts test/web-compactions.test.ts test/web-compare.test.ts test/web-diagnostics.test.ts test/web-drawer.test.ts test/web-event-filters.test.ts test/web-export.test.ts test/web-guardrails-derive.test.ts test/web-guardrails.test.ts test/web-health.test.ts test/web-keyboard.test.ts test/web-ledger-scroll.test.ts test/web-ledger.test.ts test/web-live.test.ts test/web-markdown.test.ts test/web-paging.test.ts test/web-recommendations.test.ts test/web-reveal.test.ts test/web-review-fixes.test.ts test/web-routing.test.ts test/web-settings.test.ts test/web-shell.test.ts test/web-statistics.test.ts test/web-theme.test.ts",
     "typecheck": "tsc --noEmit",
     "typecheck:tui": "tsc --noEmit -p tsconfig.tui.json",
     "typecheck:ui": "tsc --noEmit -p tsconfig.ui.json",
@@ -66,11 +66,11 @@
   },
   "devDependencies": {
     "@hookform/resolvers": "7.0.8",
-    "@opencode/client": "2.3.0",
-    "@opencode/plugin": "2.3.0",
-    "@opencode/theme": "2.3.0",
-    "@opentui/core": "0.9.0",
-    "@opentui/solid": "0.9.0",
+    "@opencode/client": "2.3.2",
+    "@opencode/plugin": "2.3.2",
+    "@opencode/theme": "2.3.2",
+    "@opentui/core": "0.9.7",
+    "@opentui/solid": "0.9.7",
     "@radix-ui/react-dialog": "1.3.1",
     "@radix-ui/react-label": "2.1.17",
     "@radix-ui/react-select": "2.4.1",
@@ -79,6 +79,7 @@
     "@radix-ui/react-toggle-group": "1.2.1",
     "@radix-ui/react-tooltip": "1.4.1",
     "@radix-ui/react-visually-hidden": "1.2.13",
+    "@solidjs/vite-plugin": "^3.0.1",
     "@tailwindcss/vite": "4.3.5",
     "@tanstack/react-virtual": "3.14.28",
     "@types/node": "^26.6.6",
@@ -94,18 +95,17 @@
     "react-hook-form": "7.92.0",
     "react-is": "19.3.1",
     "recharts": "3.11.0",
-    "solid-js": "1.9.19",
+    "solid-js": "2.0.3",
     "tailwind-merge": "3.7.1",
     "tailwindcss": "4.3.5",
     "typescript": "^7.0.2",
     "vite": "8.3.8",
-    "vite-plugin-solid": "2.11.17",
     "zod": "4.6.7"
   },
   "peerDependencies": {
-    "@opentui/core": ">=0.8.1",
-    "@opentui/solid": ">=0.8.1",
-    "solid-js": ">=1.9.16"
+    "@opentui/core": ">=0.9.7",
+    "@opentui/solid": ">=0.9.7",
+    "solid-js": ">=2.0.3 <3"
   },
   "peerDependenciesMeta": {
     "@opentui/core": {

@@ -1,7 +1,7 @@
 import { builtinModules } from "node:module";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
-import solid from "vite-plugin-solid";
+import solid from "@solidjs/vite-plugin";
 
 /**
  * Build lane for the OpenCode TUI part.
