@@ -2,6 +2,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import {
   GUARDRAIL_FIELDS,
+  effectiveDbKeyChange,
   get,
   getGuardrails,
   resolveDbKey,
@@ -146,6 +147,12 @@ export function GuardrailInput({
 export interface SettingsDialogProps {
   open: boolean;
   onOpenChange(open: boolean): void;
+  /**
+   * The effective wire database changed (a different row, or an invalid stored
+   * key self-healed onto another one). The store write has already happened, so
+   * the app can clear its selected session and refetch the list.
+   */
+  onDatabaseChanged?(): void;
 }
 
 /**
@@ -160,7 +167,11 @@ export interface SettingsDialogProps {
  * and this form share one source of truth; the local state only mirrors the
  * controlled select.
  */
-export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
+export function SettingsDialog({
+  open,
+  onOpenChange,
+  onDatabaseChanged,
+}: SettingsDialogProps) {
   const theme = useTheme();
   const settings = useSettings();
   const auth = useAuth();
@@ -199,6 +210,8 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const requestedCounts = useRef(new Set<string>());
   const setStoredDbKey = useRef(settings.setDbKey);
   setStoredDbKey.current = settings.setDbKey;
+  const onChangeDatabase = useRef(onDatabaseChanged);
+  onChangeDatabase.current = onDatabaseChanged;
   const opener = useRef<HTMLElement | null>(null);
   const wasOpen = useRef(false);
 
@@ -279,6 +292,17 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         if (resolution.reset) setDbReset(true);
         if (resolution.key !== stored) setStoredDbKey.current(resolution.key);
         setDbKey(typeof resolution.key === "string" ? resolution.key : "");
+        // A self-heal that lands on a different wire database must refetch; the
+        // "" -> startup adoption is the same target and stays quiet.
+        if (
+          effectiveDbKeyChange(
+            typeof stored === "string" ? stored : "",
+            resolution.key,
+            startupKey,
+          )
+        ) {
+          onChangeDatabase.current?.();
+        }
         void loadCount(resolution.key);
       } catch {
         if (!active) return;
@@ -292,9 +316,22 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   }, [open, loadCount]);
 
   const selectDatabase = (key: string): void => {
+    const previous = get("dbKey");
+    const previousKey = typeof previous === "string" ? previous : "";
+    // Same selection: no store write, no refetch — but an explicit pick still
+    // dismisses a one-shot reset caption from an earlier heal.
+    if (previousKey === key) {
+      setDbReset(false);
+      return;
+    }
     const next = setStoredDbKey.current(key);
     setDbKey(next);
     setDbReset(false);
+    // The store write above is synchronous, so the refresh this triggers reads
+    // the NEW key. "" and the startup key are the same wire target.
+    if (effectiveDbKeyChange(previousKey, next, startupDbKey)) {
+      onChangeDatabase.current?.();
+    }
     void loadCount(next);
   };
 
@@ -534,9 +571,20 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             <button
               type="button"
               onClick={() => {
+                const previous = get("dbKey");
+                const previousKey =
+                  typeof previous === "string" ? previous : "";
                 settings.resetSettings();
                 setContextBasis(get("contextBasis"));
                 setEdit({ inputs: guardrailInputs(getGuardrails()), errors: {} });
+                setDbKey("");
+                setDbReset(false);
+                // The reset returns every preference to its default, including
+                // the database: "" is served by the startup database, so only a
+                // different prior selection needs the clear + refetch.
+                if (effectiveDbKeyChange(previousKey, "", startupDbKey)) {
+                  onChangeDatabase.current?.();
+                }
               }}
               className="rounded-sm border border-border bg-surface-2 px-2.5 py-1 text-[12.5px] text-text-2"
             >

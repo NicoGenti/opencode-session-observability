@@ -34,6 +34,7 @@ import {
 import { ApiError, createApiClient } from "./lib/api.ts";
 import { parseBenchmarkFilters } from "./lib/benchmark.ts";
 import {
+  benchmarkFragment,
   readRoute,
   withRoute,
   writeSessionRoute,
@@ -135,6 +136,12 @@ function AppShell() {
   const forcePending = useRef(false);
   /** Session data (not only the sidebar list) is loading: the live poll pauses. */
   const [dataLoading, setDataLoading] = useState(false);
+  /**
+   * Bumped only when the effective database changes. The benchmark view keys its
+   * request on this, so a DB switch refetches it without subscribing to the
+   * unrelated `dataEpoch` bumps (Refresh, live heavy pass, reveal).
+   */
+  const [dbEpoch, setDbEpoch] = useState(0);
 
   const bumpData = useCallback(() => {
     setDataEpoch((epoch) => epoch + 1);
@@ -158,6 +165,10 @@ function AppShell() {
     forbid(): void;
     syncAllowed(allowed: boolean): void;
   } | null>(null);
+  // The api client is also built before `handleDatabaseChanged`; this ref lets
+  // the invalid_db self-heal reach the same clear + refetch path the dialog
+  // uses, without moving the client below the handler.
+  const databaseChangedSink = useRef<(() => void) | null>(null);
 
   /** The one request-error sink: `reveal_disabled` turns reveal off anywhere. */
   const handleRequestError = useCallback((error: ApiError) => {
@@ -177,6 +188,10 @@ function AppShell() {
         // handled failure runs the reveal recovery (`app.js:353-357`).
         onError: handleRequestError,
         onRevealAllowed: (allowed) => revealSink.current?.syncAllowed(allowed),
+        // A 400 invalid_db self-heal cleared the stored key: clear the selected
+        // session and refetch against the startup database, exactly like a
+        // dialog-driven switch.
+        onDatabaseKeyCleared: () => databaseChangedSink.current?.(),
       }),
     [auth, handleRequestError, tokenPrompt.requestToken],
   );
@@ -300,6 +315,36 @@ function AppShell() {
     },
     [navigate],
   );
+
+  // A database switch invalidates the selected session: its id belongs to the
+  // old database. Clear the route first (detail/events/live stop targeting it),
+  // then drive the same refresh path the Refresh button uses. The store write
+  // happened before this callback, so the refetch reads the NEW key.
+  const handleDatabaseChanged = useCallback(() => {
+    navigate({ sessionID: null, eventID: null });
+    const current = routeRef.current;
+    // `writeSessionRoute` intentionally no-ops without a session; rewrite the
+    // fragment so a reload cannot resurrect an id from the old database, while
+    // keeping a benchmark route's filter query.
+    try {
+      globalThis.history.replaceState(
+        null,
+        "",
+        current.view === "benchmark"
+          ? benchmarkFragment(current.benchmarkQuery)
+          : "#/",
+      );
+    } catch {
+      // The address bar is cosmetic; the app state is already cleared.
+    }
+    analysisRef.current = null;
+    setCompareOpen(false);
+    setFilters(emptyFilters());
+    setLedgerState({ eventCount: 0, cursorIndex: -1 });
+    setDbEpoch((epoch) => epoch + 1);
+    manualRefresh();
+  }, [manualRefresh, navigate]);
+  databaseChangedSink.current = handleDatabaseChanged;
 
   // A session switch clears the filters and the cursor, exactly as
   // `selectSession` did (`app.js:424-432`). The view is keyed by session, so its
@@ -507,6 +552,7 @@ function AppShell() {
               api={api}
               filters={benchmarkFilters}
               routeOwned={benchmarkOwned}
+              dbEpoch={dbEpoch}
             />
           ) : route.sessionID && route.view === "trajectory" ? (
             <TrajectoryView
@@ -560,6 +606,7 @@ function AppShell() {
       <SettingsDialog
         open={overlay === "settings"}
         onOpenChange={(open) => setOverlay(open ? "settings" : null)}
+        onDatabaseChanged={handleDatabaseChanged}
       />
       <ShortcutsDialog
         open={overlay === "shortcuts"}

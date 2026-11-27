@@ -71,6 +71,12 @@ export interface ApiClientConfig {
   onError?(error: ApiError): void;
   /** Shared policy sink: called when a JSON payload carries `revealAllowed`. */
   onRevealAllowed?(allowed: boolean): void;
+  /**
+   * Called right after a `400 invalid_db` self-heal clears the stored `dbKey`,
+   * so the app can clear its selected session and refetch against the startup
+   * database.
+   */
+  onDatabaseKeyCleared?(): void;
 }
 
 export function serializeParams(params: ApiParams = {}): URLSearchParams {
@@ -212,6 +218,7 @@ export function createApiClient(config: ApiClientConfig): ApiFn {
           (explicit === "" || explicit === stored)
         ) {
           set("dbKey", "");
+          config.onDatabaseKeyCleared?.();
         }
       }
       config.onError?.(error);

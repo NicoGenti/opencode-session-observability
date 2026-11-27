@@ -31,6 +31,11 @@ export interface BenchmarkViewProps {
   filters: BenchmarkFilterSet;
   /** True while the router still owns the benchmark view. */
   routeOwned(): boolean;
+  /**
+   * Bumped when the effective database changes. A dedicated epoch so a DB switch
+   * re-runs the benchmark request without reacting to unrelated data refreshes.
+   */
+  dbEpoch: number;
 }
 
 function MetricCell({
@@ -215,15 +220,21 @@ function BenchmarkNotes({ benchmark }: { benchmark: Benchmark }) {
  * the route never writes a session hash: `writeSessionRoute` is a no-op without
  * a session id, and this view has none.
  */
-export function BenchmarkView({ api, filters, routeOwned }: BenchmarkViewProps) {
+export function BenchmarkView({
+  api,
+  filters,
+  routeOwned,
+  dbEpoch,
+}: BenchmarkViewProps) {
   const benchmark = useBenchmark({ api, owned: routeOwned });
   const filtersKey = serializeBenchmarkFilters(filters);
   const { run } = benchmark;
 
   useEffect(() => {
     void run(filters);
-    // `filtersKey` is the value identity of `filters`.
-  }, [filtersKey, run]);
+    // `filtersKey` is the value identity of `filters`; `dbEpoch` re-runs after a
+    // database switch, which changes every benchmark row's provenance.
+  }, [filtersKey, run, dbEpoch]);
 
   const hasCriteria = benchmarkHasFilters(filters);
   const empty =
