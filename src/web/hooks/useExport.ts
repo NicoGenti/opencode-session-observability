@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import type { EventIndexEntry, NormalizedEvent, SessionSummary } from "../../core/types.ts";
-import { responseError, type ApiFn } from "../lib/api.ts";
+import { requestTarget, responseError, type ApiFn } from "../lib/api.ts";
 import type { ConfirmController } from "../lib/confirm.ts";
 import {
   REVEAL_COPY_WARNING,
@@ -127,7 +127,9 @@ export function useExport(options: UseExportOptions): UseExportResult {
 
   const requestText = useCallback(
     async (path: string): Promise<string> => {
-      const response = await fetch(path, {
+      // The export path is built by `exportRequestPath`; `requestTarget` is the
+      // one seam that appends the stored database key (and never a duplicate).
+      const response = await fetch(requestTarget(path), {
         cache: "no-store",
         headers: authHeader(token()),
       });
@@ -161,7 +163,7 @@ export function useExport(options: UseExportOptions): UseExportResult {
           includeEvents: true,
           reveal: reveal(),
         });
-        const response = await fetch(path, {
+        const response = await fetch(requestTarget(path), {
           cache: "no-store",
           headers: authHeader(token()),
         });

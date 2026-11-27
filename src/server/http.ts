@@ -2,12 +2,25 @@ import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { open } from "node:fs/promises";
 import { basename, extname, join, normalize, resolve, sep } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { discoverDatabase } from "../core/adapters/paths.ts";
-import { DatabaseBusyError, UnsupportedSchemaError } from "../core/adapters/sqlite.ts";
+import {
+  candidateDatabasePaths,
+  candidateKey,
+  discoverDatabase,
+  inspectDatabase,
+  listDatabaseCandidates,
+} from "../core/adapters/paths.ts";
+import type { DatabaseCandidate, DiscoveryOptions } from "../core/adapters/paths.ts";
+import {
+  DatabaseBusyError,
+  UnsupportedSchemaError,
+  detectSchema,
+} from "../core/adapters/sqlite.ts";
 import { openWorkerSqliteSource } from "../core/adapters/sqlite-worker-source.ts";
 import type { ObservabilitySource } from "../core/types.ts";
 import { isAuthorized } from "./auth.ts";
+import { SourceCache } from "./source-cache.ts";
 import { readOpenCodeTheme } from "./opencode-theme.ts";
 import {
   EpisodeNotFoundError,
@@ -138,6 +151,12 @@ export interface ServerOptions {
    * uses `RATE_LIMIT_BURST` / `RATE_LIMIT_REFILL_PER_MINUTE`.
    */
   rateLimit?: { burst?: number; refillPerMinute?: number };
+  /**
+   * Test hook: overrides the discovery inputs (`env`, `platform`, `home`)
+   * behind `/api/dbs` and the `?db=` selector. Production uses the process
+   * defaults, so the catalogue always reflects the real machine.
+   */
+  discovery?: DiscoveryOptions;
 }
 
 export interface RunningServer {
@@ -668,6 +687,125 @@ function compareQuery(search: URLSearchParams): CompareQuery | null {
   return { leftSessionID, leftEpisodeID, rightSessionID, rightEpisodeID };
 }
 
+/**
+ * Raised when a `?db=` key matches no candidate in the fresh discovery list.
+ * The router maps it to a 400; the key is client-provided and is never echoed.
+ */
+class InvalidDatabaseKeyError extends Error {
+  constructor() {
+    super("Unknown database key");
+    this.name = "InvalidDatabaseKeyError";
+  }
+}
+
+/**
+ * Counts `session_v2` rows through a short-lived read-only handle. The
+ * read-only source interface has no count method, so the catalogue route owns
+ * this one query instead of widening the core adapter. The handle is always
+ * opened read-only with `PRAGMA query_only = ON`, mirrors the adapter's
+ * busy/locked mapping so a locked database answers 503 with the documented
+ * wording, and closes in `finally`.
+ */
+function countSessionsInDatabase(path: string): number {
+  let db: DatabaseSync | null = null;
+  try {
+    db = new DatabaseSync(path, {
+      readOnly: true,
+      enableForeignKeyConstraints: false,
+    });
+    db.exec("PRAGMA query_only = ON");
+    const schema = detectSchema(db);
+    if (schema !== "v2") {
+      throw new UnsupportedSchemaError(
+        schema === "v1"
+          ? `OpenCode 1 database detected at ${path}. This build reads OpenCode 2 (session_v2/session_message).`
+          : `Unrecognized database at ${path}. Expected OpenCode 2 tables session_v2 and session_message.`,
+      );
+    }
+    const statement = db.prepare("select count(*) as count from session_v2");
+    try {
+      const row = statement.get() as { count?: number } | undefined;
+      return Number(row?.count ?? 0);
+    } finally {
+      // `StatementSync` exposes no finalize()/close() in this Node runtime (its
+      // prototype carries only iterate/all/get/run/columns/set*); the statement
+      // is released with the DatabaseSync handle closed below. The try/finally
+      // stays so a runtime that adds one has a single obvious release point.
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/busy|locked/i.test(message)) {
+      throw new DatabaseBusyError(
+        `OpenCode database is locked: ${path}. The analysis is read-only; retry when the session is idle. (${message})`,
+      );
+    }
+    throw error;
+  } finally {
+    try {
+      db?.close();
+    } catch (error) {
+      // Surface a failed close instead of swallowing it: a leaked handle can
+      // keep the file locked on Windows.
+      try {
+        process.stderr.write(
+          `opencode-observability: failed to close database handle: ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
+        );
+      } catch {
+        // A failing log sink must not become a crash either.
+      }
+    }
+  }
+}
+
+/**
+ * The discovery inputs for selection/catalogue lookup, seeded with the running
+ * database. `options.dbPath` is authoritative when set (an explicit `--db` or a
+ * test fixture); otherwise `discovery.explicitPath` already names the running
+ * database a production `discoverDatabase()` picked.
+ */
+function discoveryWithRunningDb(
+  discovery: DiscoveryOptions | undefined,
+  runningPath: string | undefined,
+): DiscoveryOptions {
+  const explicitPath = runningPath ?? discovery?.explicitPath;
+  return explicitPath === undefined
+    ? { ...(discovery ?? {}) }
+    : { ...(discovery ?? {}), explicitPath };
+}
+
+/**
+ * The fresh key → path map for selection paths. Pure path enumeration: it opens
+ * nothing, so a request validates exactly one database (the matched path)
+ * rather than every candidate. Duplicate keys keep the first path in discovery
+ * order.
+ */
+function candidatePathsByKey(
+  discovery: DiscoveryOptions | undefined,
+  runningPath: string | undefined,
+): Map<string, string> {
+  const byKey = new Map<string, string>();
+  for (const path of candidateDatabasePaths(
+    discoveryWithRunningDb(discovery, runningPath),
+  )) {
+    const key = candidateKey(path);
+    if (!byKey.has(key)) byKey.set(key, path);
+  }
+  return byKey;
+}
+
+/**
+ * The one read-only inspection a selection costs: the matched path must exist
+ * and be an OpenCode 2 database. Missing, locked or corrupt files answer the
+ * same 400 as an unknown key instead of reaching a 500.
+ */
+function selectableCandidate(path: string): DatabaseCandidate | null {
+  const candidate = inspectDatabase(path);
+  return candidate.exists && candidate.schema === "v2" ? candidate : null;
+}
+
+
 export async function createObservabilityServer(
   options: ServerOptions = {},
 ): Promise<RunningServer> {
@@ -699,7 +837,53 @@ export async function createObservabilityServer(
     source.close();
     throw error;
   }
-  const service = new ObservabilityService(source);
+  const startupService = new ObservabilityService(source);
+  // The startup key is the same opaque key `/api/dbs` reports for this path, so
+  // the client can preselect the running database without knowing its location.
+  const startupDbKey = candidateKey(dbPath);
+  const sourceCache = new SourceCache({
+    startup: { key: startupDbKey, source, service: startupService },
+  });
+
+  /**
+   * The single `?db=` seam. Every route below reads the `service` resolved here
+   * once, so no route threads the selector by hand. `/api/health` and the
+   * catalogue routes skip it: health stays fast, and the catalogue owns its own
+   * key lookup. An unknown key is a 400; the parameter never relaxes the token
+   * gate, which already ran before this point.
+   */
+  const requestService = async (
+    path: string,
+    search: URLSearchParams,
+    res: ServerResponse,
+  ): Promise<ObservabilityService> => {
+    if (
+      !path.startsWith("/api/") ||
+      path === "/api/health" ||
+      path === "/api/dbs" ||
+      path === "/api/dbs/count"
+    ) {
+      return startupService;
+    }
+    const key = search.get("db");
+    if (key === null || key === "") return startupService;
+    // The running database is servable by definition, even when the injected
+    // discovery list does not happen to contain it.
+    if (key === startupDbKey) return startupService;
+    const matchedPath = candidatePathsByKey(
+      options.discovery,
+      options.dbPath,
+    ).get(key);
+    const candidate =
+      matchedPath === undefined ? null : selectableCandidate(matchedPath);
+    if (!candidate) throw new InvalidDatabaseKeyError();
+    const lease = await sourceCache.acquire(key, candidate.path);
+    // Eviction waits for the in-flight count to reach zero, so the worker keeps
+    // serving this request until the response is done or the socket closes.
+    res.once("close", lease.release);
+    return lease.service;
+  };
+
   let boundPort = port;
   // Bodies currently being drained. Bounded by MAX_CONCURRENT_DRAINS so a few
   // slow uploads cannot occupy the in-flight slots interactive requests need.
@@ -836,6 +1020,10 @@ export async function createObservabilityServer(
         });
         return;
       }
+      // (g) The `?db=` selector is resolved once, after every gate, and handed
+      // to the router as `service`. An unknown key is a 400; an absent one keeps
+      // the startup source.
+      const service = await requestService(path, search, res);
       const reveal = revealRequested && allowReveal;
       // `?refresh=1` drops the dataset cache for the routes that own a manual
       // refresh. The live route is polled and keeps requestKey coherence
@@ -856,6 +1044,10 @@ export async function createObservabilityServer(
           version: VERSION,
           source: service.describe(),
           dbPath: basename(dbPath),
+          // Stable opaque key for the running database. Emitted even when the
+          // file has since disappeared from discovery; the client falls back to
+          // its own selection rather than failing the probe.
+          startupDbKey,
           revealAllowed: allowReveal,
           authRequired,
           readOnly: true,
@@ -863,6 +1055,73 @@ export async function createObservabilityServer(
           // touches the CLI config.
           theme,
         });
+        return;
+      }
+
+      if (path === "/api/dbs") {
+        // Every candidate is reported, missing files included: the UI shows
+        // validity and never re-filters the set here.
+        const candidates = listDatabaseCandidates(
+          discoveryWithRunningDb(options.discovery, options.dbPath),
+        ).map(
+          (candidate) => ({
+            key: candidateKey(candidate.path),
+            path: candidate.path,
+            validity: candidate.schema,
+            ...(candidate.mtimeMs !== undefined
+              ? { mtimeMs: candidate.mtimeMs }
+              : {}),
+            ...(candidate.error !== undefined
+              ? {
+                  // Fixed coarse code only: the driver message never leaves the
+                  // process. "busy" is the retryable lock case; every other
+                  // inspection failure reads "open_failed".
+                  error: /busy|locked/i.test(String(candidate.error))
+                    ? "busy"
+                    : "open_failed",
+                }
+              : {}),
+          }),
+        );
+        sendJson(req, res, 200, candidates);
+        return;
+      }
+
+      if (path === "/api/dbs/count") {
+        const key = search.get("db");
+        if (key === null || key === "") {
+          sendJson(req, res, 400, {
+            error: "invalid_db",
+            message: "A database key is required.",
+          });
+          return;
+        }
+        // The running database is servable by definition and is counted from
+        // the startup path even if it is not in the injected discovery list.
+        if (key === startupDbKey) {
+          sendJson(req, res, 200, { count: countSessionsInDatabase(dbPath) });
+          return;
+        }
+        const matchedPath = candidatePathsByKey(
+          options.discovery,
+          options.dbPath,
+        ).get(key);
+        const candidate =
+          matchedPath === undefined ? null : selectableCandidate(matchedPath);
+        if (!candidate) {
+          sendJson(req, res, 400, {
+            error: "invalid_db",
+            message: "Unknown database key.",
+          });
+          return;
+        }
+        // The pre-check above already maps a missing, corrupt or persistently
+        // locked non-startup candidate to 400 `invalid_db`. Only the standalone
+        // count open can still hit a lock acquired after that inspection (or the
+        // startup-key race, which skips the pre-check); that DatabaseBusyError
+        // keeps the documented 503.
+        const count = countSessionsInDatabase(candidate.path);
+        sendJson(req, res, 200, { count });
         return;
       }
 
@@ -1160,6 +1419,11 @@ export async function createObservabilityServer(
           error: "episode_not_found",
           message: "Episode not found.",
         });
+      } else if (error instanceof InvalidDatabaseKeyError) {
+        sendJson(req, res, 400, {
+          error: "invalid_db",
+          message: "Unknown database key.",
+        });
       } else if (error instanceof DatabaseBusyError) {
         sendJson(req, res, 503, {
           error: "database_busy",
@@ -1276,12 +1540,13 @@ export async function createObservabilityServer(
     port: actualPort,
     dbPath,
     source,
-    service,
+    service: startupService,
     close: async () => {
       await new Promise<void>((resolveClose) => {
         server.close(() => resolveClose());
       });
-      source.close();
+      // The cache owns the startup source too; closing it closes every worker.
+      sourceCache.close();
     },
   };
 }

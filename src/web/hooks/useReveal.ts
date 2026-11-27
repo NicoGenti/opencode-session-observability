@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import type { ApiFn } from "../lib/api.ts";
 import type { ConfirmController } from "../lib/confirm.ts";
 import { REVEAL_CONFIRM, TOAST } from "../lib/export.ts";
+import { get, set } from "../lib/settings.ts";
 import type { ToastController } from "../lib/toast.ts";
 
 export interface RevealState {
@@ -40,6 +41,8 @@ export interface UseRevealResult extends RevealState {
 interface HealthResponse {
   revealAllowed?: boolean;
   theme?: { name?: unknown } | null;
+  /** Present on servers that expose the database catalogue; optional for older ones. */
+  startupDbKey?: unknown;
 }
 
 /**
@@ -106,6 +109,18 @@ export function useReveal(options: UseRevealOptions): UseRevealResult {
         const themeName = data.theme?.name;
         if (typeof themeName === "string" && themeName.trim().length > 0) {
           serverThemeRef.current?.(themeName.trim());
+        }
+        // First load adopts the startup database. A stored non-empty key is
+        // left alone: the Settings dialog validates it against a fresh
+        // catalogue and resets it only if it disappeared. An older server
+        // without `startupDbKey` leaves the setting empty (placeholder).
+        const startupDbKey =
+          typeof data.startupDbKey === "string" ? data.startupDbKey.trim() : "";
+        if (startupDbKey) {
+          const storedDbKey = get("dbKey");
+          if (typeof storedDbKey !== "string" || storedDbKey.trim() === "") {
+            set("dbKey", startupDbKey);
+          }
         }
         if (typeof data.revealAllowed !== "boolean") return;
         // Same policy as a response payload: no second write site here.

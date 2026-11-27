@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createObservabilityServer } from "../src/server/http.ts";
 import { generateToken, tokenMatches } from "../src/server/auth.ts";
 import { simpleFixture, writeFixtureDb } from "./fixtures/build.ts";
@@ -151,4 +154,35 @@ test("non-loopback binds require a token", async () => {
     createObservabilityServer({ dbPath: path, port: 0, authToken: "   " }),
     /authToken must not be empty/,
   );
+});
+
+test("GET /api/dbs is not exempt from token auth", async () => {
+  const { path } = writeFixtureDb(simpleFixture());
+  const home = mkdtempSync(join(tmpdir(), "opencode-home-"));
+  const token = generateToken();
+  const server = await createObservabilityServer({
+    dbPath: path,
+    port: 0,
+    authToken: token,
+    // Keep the catalogue machine-independent: one known fixture candidate.
+    discovery: { env: { OPENCODE_DB: path }, platform: "linux", home },
+  });
+  try {
+    const unauthorized = await request(server.port, "/api/dbs");
+    assert.equal(unauthorized.status, 401);
+    assert.equal(JSON.parse(unauthorized.body).error, "unauthorized");
+
+    // The count route is gated the same way.
+    const count = await request(server.port, "/api/dbs/count?db=anything");
+    assert.equal(count.status, 401);
+    assert.equal(JSON.parse(count.body).error, "unauthorized");
+
+    const authorized = await request(server.port, "/api/dbs", {
+      Authorization: `Bearer ${token}`,
+    });
+    assert.equal(authorized.status, 200);
+    assert.ok(Array.isArray(JSON.parse(authorized.body)));
+  } finally {
+    await server.close();
+  }
 });

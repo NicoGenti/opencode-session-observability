@@ -2,12 +2,12 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { chmod, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, extname, join, normalize, resolve, sep } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { DatabaseSync } from "node:sqlite";
 import { Worker } from "node:worker_threads";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 // src/core/util.ts
 function isRecord(value) {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -418,6 +418,7 @@ function inspectDatabase(path) {
 			readOnly: true,
 			enableForeignKeyConstraints: false
 		});
+		db.exec("PRAGMA query_only = ON");
 		return {
 			path,
 			exists: true,
@@ -437,6 +438,27 @@ function inspectDatabase(path) {
 			db?.close();
 		} catch {}
 	}
+}
+/**
+* Inspects every candidate database location and returns them all, in priority
+* order. Missing candidates are reported with `exists: false` and are never
+* opened; existing ones are read read-only through {@link inspectDatabase}.
+*/
+function listDatabaseCandidates(options = {}) {
+	return candidateDatabasePaths(options).map((path) => inspectDatabase(path));
+}
+/**
+* Derives a stable, opaque key from a database path. The path is canonicalized
+* with `resolve`/`normalize`, then hashed with SHA-256 and truncated to 12 hex
+* characters. Case is folded only where the platform treats case variants as
+* the same file (`win32`); on POSIX filesystems distinct spellings keep distinct
+* keys. `platform` defaults to the running process and exists so callers (and
+* tests) can pin the fold rule.
+*/
+function candidateKey(path, platform = process.platform) {
+	const resolved = normalize(resolve(path));
+	const canonical = platform === "win32" ? resolved.toLowerCase() : resolved;
+	return createHash("sha256").update(canonical).digest("hex").slice(0, 12);
 }
 /**
 * Selects an OpenCode 2 database. An explicit path is authoritative. Otherwise
@@ -592,79 +614,6 @@ function requestToken(req) {
 }
 function isAuthorized(req, expected) {
 	return tokenMatches(expected, requestToken(req));
-}
-// src/server/opencode-theme.ts
-/**
-* OpenCode 2 keeps the TUI theme in its CLI config (`cli.json`), separate from
-* the project config. The observed profile layout is
-* `~/.opencode2/config/opencode/cli.json`; the XDG and platform locations are
-* checked as fallbacks.
-*/
-function candidateCliConfigPaths(options = {}) {
-	const env = options.env ?? process.env;
-	const platform = options.platform ?? process.platform;
-	const home = options.home ?? homedir();
-	const paths = [];
-	const push = (value) => {
-		if (!value) return;
-		const normalized = resolve(value);
-		if (!paths.some((item) => item.toLowerCase() === normalized.toLowerCase())) paths.push(normalized);
-	};
-	push(options.configPath);
-	push(env.OPENCODE_CLI_CONFIG);
-	if (env.OPENCODE_CONFIG_DIR) push(join(env.OPENCODE_CONFIG_DIR, "opencode", "cli.json"));
-	push(join(home, ".opencode2", "config", "opencode", "cli.json"));
-	push(join(home, ".opencode2", "config-fm", "opencode", "cli.json"));
-	const xdg = env.XDG_CONFIG_HOME ?? join(home, ".config");
-	push(join(xdg, "opencode", "cli.json"));
-	if (platform === "win32" && env.APPDATA) push(join(env.APPDATA, "opencode", "cli.json"));
-	if (platform === "darwin") push(join(home, "Library", "Application Support", "opencode", "cli.json"));
-	return paths;
-}
-function parseTheme(value) {
-	if (typeof value === "string") {
-		const name = value.trim();
-		return name ? { name } : null;
-	}
-	if (!value || typeof value !== "object") return null;
-	const record = value;
-	const name = typeof record.name === "string" ? record.name.trim() : "";
-	if (!name) return null;
-	const mode = record.mode === "system" || record.mode === "dark" || record.mode === "light" ? record.mode : void 0;
-	return mode ? {
-		name,
-		mode
-	} : { name };
-}
-/**
-* The CLI theme is process-static configuration: OpenCode writes it once and a
-* running server never needs to observe a mid-process change. The server
-* therefore resolves it exactly once, while it is being created, so no request
-* handler reads a config file. The discovery result is memoised per candidate
-* path list and a failed lookup is cached exactly like a successful one (a
-* malformed or absent config cannot become a per-request filesystem read).
-*/
-var cachedLookup = null;
-var fileReads = 0;
-/** Returns the theme currently selected in OpenCode 2, or null when unknown. */
-function readOpenCodeTheme(options = {}) {
-	const paths = options.configPath ? [resolve(options.configPath)] : candidateCliConfigPaths(options);
-	const key = paths.join("\n");
-	if (cachedLookup !== null && cachedLookup.key === key) return cachedLookup.theme;
-	let theme = null;
-	for (const path of paths) {
-		if (!existsSync(path)) continue;
-		try {
-			fileReads += 1;
-			theme = parseTheme(JSON.parse(readFileSync(path, "utf8")).theme);
-			if (theme) break;
-		} catch {}
-	}
-	cachedLookup = {
-		key,
-		theme
-	};
-	return theme;
 }
 // src/core/types.ts
 var EMPTY_TOKENS = {
@@ -6120,6 +6069,236 @@ function filterEvents(events, filter, corpora = null) {
 		return true;
 	});
 }
+/** Awaits `ready()` when the source exposes it (the worker source does). */
+async function waitUntilReady(source) {
+	const candidate = source;
+	if (typeof candidate.ready === "function") await candidate.ready();
+}
+/**
+* A two-entry LRU of open sources, keyed by the opaque database key. The
+* startup source is resident and is never evicted, so switching `?db=` on one
+* route cannot disturb a live poll already reading the startup database.
+*
+* Every acquire returns a lease; the router releases it when the response
+* closes. Eviction only closes a non-startup entry whose in-flight count is
+* zero, so a request can never have its worker terminated underneath it. When
+* every non-startup entry is in flight the cache may transiently exceed
+* `SOURCE_CACHE_CAPACITY`; the oldest zero-refcount entry is swept on the next
+* non-startup acquire or on any release that finds the capacity exceeded.
+*
+* `close()` also guards a worker that is still opening: a late `ready()` sees
+* the closed flag, closes that source and fails its request instead of
+* inserting into the cleared map.
+*
+* Concurrent misses for the same key share one open through `#pending`.
+*/
+var SourceCache = class {
+	#startupKey;
+	#open;
+	#entries = /* @__PURE__ */ new Map();
+	#pending = /* @__PURE__ */ new Map();
+	#closed = false;
+	constructor(options) {
+		this.#startupKey = options.startup.key;
+		this.#open = options.open ?? ((path) => openWorkerSqliteSource(path));
+		this.#entries.set(options.startup.key, {
+			...options.startup,
+			inFlight: 0
+		});
+	}
+	/**
+	* Resident entries. May transiently exceed `SOURCE_CACHE_CAPACITY` while all
+	* non-startup entries are leased to in-flight requests.
+	*/
+	get size() {
+		return this.#entries.size;
+	}
+	/** The startup entry, always present until `close()`. */
+	get startup() {
+		const entry = this.#entries.get(this.#startupKey);
+		return {
+			key: entry.key,
+			source: entry.source,
+			service: entry.service
+		};
+	}
+	/**
+	* Leases the cached service for `key`, opening `path` on a miss. The caller
+	* has already matched `key` to `path` against the fresh candidate list; the
+	* cache never looks anything up by itself. The caller must call `release()`
+	* once the response is finished.
+	*/
+	async acquire(key, path) {
+		if (key === this.#startupKey) {
+			const startup = this.#entries.get(key);
+			this.#touch(key, startup);
+			return {
+				key: startup.key,
+				source: startup.source,
+				service: startup.service,
+				release: () => {}
+			};
+		}
+		const existing = this.#entries.get(key);
+		if (existing) {
+			existing.inFlight += 1;
+			this.#touch(key, existing);
+			this.#evictIfOverCapacity();
+			return this.#lease(existing);
+		}
+		const pending = this.#pending.get(key);
+		if (pending) {
+			const entry = await pending;
+			entry.inFlight += 1;
+			this.#evictIfOverCapacity();
+			return this.#lease(entry);
+		}
+		const loading = this.#load(key, path);
+		this.#pending.set(key, loading);
+		try {
+			return this.#lease(await loading);
+		} finally {
+			this.#pending.delete(key);
+		}
+	}
+	/** Closes every resident source, startup included, and cancels pending opens. */
+	close() {
+		this.#closed = true;
+		this.#pending.clear();
+		for (const entry of this.#entries.values()) entry.source.close?.();
+		this.#entries.clear();
+	}
+	async #load(key, path) {
+		const source = this.#open(path);
+		try {
+			await waitUntilReady(source);
+		} catch (error) {
+			source.close?.();
+			throw error;
+		}
+		if (this.#closed) {
+			source.close?.();
+			throw new Error("Source cache is closed");
+		}
+		const entry = {
+			key,
+			source,
+			service: new ObservabilityService(source),
+			inFlight: 1
+		};
+		this.#entries.set(key, entry);
+		this.#evictIfOverCapacity();
+		return entry;
+	}
+	#lease(entry) {
+		let released = false;
+		return {
+			key: entry.key,
+			source: entry.source,
+			service: entry.service,
+			release: () => {
+				if (released) return;
+				released = true;
+				if (this.#entries.get(entry.key) !== entry) return;
+				if (entry.inFlight > 0) entry.inFlight -= 1;
+				this.#evictIfOverCapacity();
+			}
+		};
+	}
+	#touch(key, entry) {
+		this.#entries.delete(key);
+		this.#entries.set(key, entry);
+	}
+	#evictIfOverCapacity() {
+		while (this.#entries.size > 2) {
+			let victim;
+			for (const [key, entry] of this.#entries) {
+				if (key === this.#startupKey) continue;
+				if (entry.inFlight === 0) {
+					victim = key;
+					break;
+				}
+			}
+			if (victim === void 0) return;
+			const entry = this.#entries.get(victim);
+			this.#entries.delete(victim);
+			entry.source.close?.();
+		}
+	}
+};
+// src/server/opencode-theme.ts
+/**
+* OpenCode 2 keeps the TUI theme in its CLI config (`cli.json`), separate from
+* the project config. The observed profile layout is
+* `~/.opencode2/config/opencode/cli.json`; the XDG and platform locations are
+* checked as fallbacks.
+*/
+function candidateCliConfigPaths(options = {}) {
+	const env = options.env ?? process.env;
+	const platform = options.platform ?? process.platform;
+	const home = options.home ?? homedir();
+	const paths = [];
+	const push = (value) => {
+		if (!value) return;
+		const normalized = resolve(value);
+		if (!paths.some((item) => item.toLowerCase() === normalized.toLowerCase())) paths.push(normalized);
+	};
+	push(options.configPath);
+	push(env.OPENCODE_CLI_CONFIG);
+	if (env.OPENCODE_CONFIG_DIR) push(join(env.OPENCODE_CONFIG_DIR, "opencode", "cli.json"));
+	push(join(home, ".opencode2", "config", "opencode", "cli.json"));
+	push(join(home, ".opencode2", "config-fm", "opencode", "cli.json"));
+	const xdg = env.XDG_CONFIG_HOME ?? join(home, ".config");
+	push(join(xdg, "opencode", "cli.json"));
+	if (platform === "win32" && env.APPDATA) push(join(env.APPDATA, "opencode", "cli.json"));
+	if (platform === "darwin") push(join(home, "Library", "Application Support", "opencode", "cli.json"));
+	return paths;
+}
+function parseTheme(value) {
+	if (typeof value === "string") {
+		const name = value.trim();
+		return name ? { name } : null;
+	}
+	if (!value || typeof value !== "object") return null;
+	const record = value;
+	const name = typeof record.name === "string" ? record.name.trim() : "";
+	if (!name) return null;
+	const mode = record.mode === "system" || record.mode === "dark" || record.mode === "light" ? record.mode : void 0;
+	return mode ? {
+		name,
+		mode
+	} : { name };
+}
+/**
+* The CLI theme is process-static configuration: OpenCode writes it once and a
+* running server never needs to observe a mid-process change. The server
+* therefore resolves it exactly once, while it is being created, so no request
+* handler reads a config file. The discovery result is memoised per candidate
+* path list and a failed lookup is cached exactly like a successful one (a
+* malformed or absent config cannot become a per-request filesystem read).
+*/
+var cachedLookup = null;
+var fileReads = 0;
+/** Returns the theme currently selected in OpenCode 2, or null when unknown. */
+function readOpenCodeTheme(options = {}) {
+	const paths = options.configPath ? [resolve(options.configPath)] : candidateCliConfigPaths(options);
+	const key = paths.join("\n");
+	if (cachedLookup !== null && cachedLookup.key === key) return cachedLookup.theme;
+	let theme = null;
+	for (const path of paths) {
+		if (!existsSync(path)) continue;
+		try {
+			fileReads += 1;
+			theme = parseTheme(JSON.parse(readFileSync(path, "utf8")).theme);
+			if (theme) break;
+		} catch {}
+	}
+	cachedLookup = {
+		key,
+		theme
+	};
+	return theme;
+}
 // src/core/guardrails.ts
 /**
 * The out-of-the-box budgets. They sit just above the approved health watch
@@ -6822,6 +7001,89 @@ function compareQuery(search) {
 		rightEpisodeID
 	};
 }
+/**
+* Raised when a `?db=` key matches no candidate in the fresh discovery list.
+* The router maps it to a 400; the key is client-provided and is never echoed.
+*/
+var InvalidDatabaseKeyError = class extends Error {
+	constructor() {
+		super("Unknown database key");
+		this.name = "InvalidDatabaseKeyError";
+	}
+};
+/**
+* Counts `session_v2` rows through a short-lived read-only handle. The
+* read-only source interface has no count method, so the catalogue route owns
+* this one query instead of widening the core adapter. The handle is always
+* opened read-only with `PRAGMA query_only = ON`, mirrors the adapter's
+* busy/locked mapping so a locked database answers 503 with the documented
+* wording, and closes in `finally`.
+*/
+function countSessionsInDatabase(path) {
+	let db = null;
+	try {
+		db = new DatabaseSync(path, {
+			readOnly: true,
+			enableForeignKeyConstraints: false
+		});
+		db.exec("PRAGMA query_only = ON");
+		const schema = detectSchema(db);
+		if (schema !== "v2") throw new UnsupportedSchemaError(schema === "v1" ? `OpenCode 1 database detected at ${path}. This build reads OpenCode 2 (session_v2/session_message).` : `Unrecognized database at ${path}. Expected OpenCode 2 tables session_v2 and session_message.`);
+		const statement = db.prepare("select count(*) as count from session_v2");
+		try {
+			const row = statement.get();
+			return Number(row?.count ?? 0);
+		} finally {}
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		if (/busy|locked/i.test(message)) throw new DatabaseBusyError(`OpenCode database is locked: ${path}. The analysis is read-only; retry when the session is idle. (${message})`);
+		throw error;
+	} finally {
+		try {
+			db?.close();
+		} catch (error) {
+			try {
+				process.stderr.write(`opencode-observability: failed to close database handle: ${error instanceof Error ? error.message : String(error)}\n`);
+			} catch {}
+		}
+	}
+}
+/**
+* The discovery inputs for selection/catalogue lookup, seeded with the running
+* database. `options.dbPath` is authoritative when set (an explicit `--db` or a
+* test fixture); otherwise `discovery.explicitPath` already names the running
+* database a production `discoverDatabase()` picked.
+*/
+function discoveryWithRunningDb(discovery, runningPath) {
+	const explicitPath = runningPath ?? discovery?.explicitPath;
+	return explicitPath === void 0 ? { ...discovery ?? {} } : {
+		...discovery ?? {},
+		explicitPath
+	};
+}
+/**
+* The fresh key → path map for selection paths. Pure path enumeration: it opens
+* nothing, so a request validates exactly one database (the matched path)
+* rather than every candidate. Duplicate keys keep the first path in discovery
+* order.
+*/
+function candidatePathsByKey(discovery, runningPath) {
+	const byKey = /* @__PURE__ */ new Map();
+	for (const path of candidateDatabasePaths(discoveryWithRunningDb(discovery, runningPath))) {
+		const key = candidateKey(path);
+		if (!byKey.has(key)) byKey.set(key, path);
+	}
+	return byKey;
+}
+/**
+* The one read-only inspection a selection costs: the matched path must exist
+* and be an OpenCode 2 database. Missing, locked or corrupt files answer the
+* same 400 as an unknown key instead of reaching a 500.
+*/
+function selectableCandidate(path) {
+	const candidate = inspectDatabase(path);
+	return candidate.exists && candidate.schema === "v2" ? candidate : null;
+}
 async function createObservabilityServer(options = {}) {
 	const host = options.host ?? "127.0.0.1";
 	if (host.trim() === "") throw new Error("host must not be empty");
@@ -6841,7 +7103,32 @@ async function createObservabilityServer(options = {}) {
 		source.close();
 		throw error;
 	}
-	const service = new ObservabilityService(source);
+	const startupService = new ObservabilityService(source);
+	const startupDbKey = candidateKey(dbPath);
+	const sourceCache = new SourceCache({ startup: {
+		key: startupDbKey,
+		source,
+		service: startupService
+	} });
+	/**
+	* The single `?db=` seam. Every route below reads the `service` resolved here
+	* once, so no route threads the selector by hand. `/api/health` and the
+	* catalogue routes skip it: health stays fast, and the catalogue owns its own
+	* key lookup. An unknown key is a 400; the parameter never relaxes the token
+	* gate, which already ran before this point.
+	*/
+	const requestService = async (path, search, res) => {
+		if (!path.startsWith("/api/") || path === "/api/health" || path === "/api/dbs" || path === "/api/dbs/count") return startupService;
+		const key = search.get("db");
+		if (key === null || key === "") return startupService;
+		if (key === startupDbKey) return startupService;
+		const matchedPath = candidatePathsByKey(options.discovery, options.dbPath).get(key);
+		const candidate = matchedPath === void 0 ? null : selectableCandidate(matchedPath);
+		if (!candidate) throw new InvalidDatabaseKeyError();
+		const lease = await sourceCache.acquire(key, candidate.path);
+		res.once("close", lease.release);
+		return lease.service;
+	};
 	let boundPort = port;
 	let draining = 0;
 	const handle = async (req, res) => {
@@ -6922,6 +7209,7 @@ async function createObservabilityServer(options = {}) {
 				});
 				return;
 			}
+			const service = await requestService(path, search, res);
 			const reveal = revealRequested && allowReveal;
 			if (!SESSION_LIVE_PATTERN.test(path) && path !== "/api/benchmark" && bool(search, "refresh")) service.clearCache();
 			if (path === "/api/health") {
@@ -6931,11 +7219,47 @@ async function createObservabilityServer(options = {}) {
 					version: VERSION$1,
 					source: service.describe(),
 					dbPath: basename(dbPath),
+					startupDbKey,
 					revealAllowed: allowReveal,
 					authRequired,
 					readOnly: true,
 					theme
 				});
+				return;
+			}
+			if (path === "/api/dbs") {
+				sendJson(req, res, 200, listDatabaseCandidates(discoveryWithRunningDb(options.discovery, options.dbPath)).map((candidate) => ({
+					key: candidateKey(candidate.path),
+					path: candidate.path,
+					validity: candidate.schema,
+					...candidate.mtimeMs !== void 0 ? { mtimeMs: candidate.mtimeMs } : {},
+					...candidate.error !== void 0 ? { error: /busy|locked/i.test(String(candidate.error)) ? "busy" : "open_failed" } : {}
+				})));
+				return;
+			}
+			if (path === "/api/dbs/count") {
+				const key = search.get("db");
+				if (key === null || key === "") {
+					sendJson(req, res, 400, {
+						error: "invalid_db",
+						message: "A database key is required."
+					});
+					return;
+				}
+				if (key === startupDbKey) {
+					sendJson(req, res, 200, { count: countSessionsInDatabase(dbPath) });
+					return;
+				}
+				const matchedPath = candidatePathsByKey(options.discovery, options.dbPath).get(key);
+				const candidate = matchedPath === void 0 ? null : selectableCandidate(matchedPath);
+				if (!candidate) {
+					sendJson(req, res, 400, {
+						error: "invalid_db",
+						message: "Unknown database key."
+					});
+					return;
+				}
+				sendJson(req, res, 200, { count: countSessionsInDatabase(candidate.path) });
 				return;
 			}
 			if (path === "/api/sessions") {
@@ -7208,6 +7532,10 @@ async function createObservabilityServer(options = {}) {
 				error: "episode_not_found",
 				message: "Episode not found."
 			});
+			else if (error instanceof InvalidDatabaseKeyError) sendJson(req, res, 400, {
+				error: "invalid_db",
+				message: "Unknown database key."
+			});
 			else if (error instanceof DatabaseBusyError) sendJson(req, res, 503, {
 				error: "database_busy",
 				message: "The OpenCode database is locked. Retry when the session is idle."
@@ -7283,12 +7611,12 @@ async function createObservabilityServer(options = {}) {
 		port: actualPort,
 		dbPath,
 		source,
-		service,
+		service: startupService,
 		close: async () => {
 			await new Promise((resolveClose) => {
 				server.close(() => resolveClose());
 			});
-			source.close();
+			sourceCache.close();
 		}
 	};
 }

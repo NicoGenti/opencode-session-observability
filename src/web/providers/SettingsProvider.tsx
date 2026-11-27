@@ -33,6 +33,8 @@ export interface SettingsContextValue {
   guardrails: GuardrailValues;
   guardrailsExpanded: boolean;
   guardrailsCollapsed: boolean;
+  /** The database selector stored in this browser; "" means the startup DB. */
+  dbKey: string;
   setViewMode(mode: string): ViewMode;
   setContextBasis(value: string): string;
   setResponseLimit(value: number): void;
@@ -43,6 +45,8 @@ export interface SettingsContextValue {
   setGuardrailsCollapsed(value: boolean): void;
   setGuardrail(key: string, value: unknown): GuardrailWriteResult;
   resetGuardrails(): GuardrailValues;
+  /** Persists the selected database key; "" restores the startup database. */
+  setDbKey(value: string): string;
   /** Clears every stored preference and returns the document to Auto + Basic. */
   resetSettings(): void;
 }
@@ -57,11 +61,13 @@ type SettingSnapshot = Pick<
   | "sessionTree"
   | "guardrailsExpanded"
   | "guardrailsCollapsed"
+  | "dbKey"
 >;
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);
 
 function readSnapshot(): SettingSnapshot {
+  const storedDbKey = get("dbKey");
   return {
     viewMode: getViewMode(),
     responseLimit: get("responseLimit"),
@@ -76,6 +82,9 @@ function readSnapshot(): SettingSnapshot {
     guardrailsExpanded:
       get("guardrailsExpanded") === true || get("guardrailsCollapsed") === false,
     guardrailsCollapsed: get("guardrailsCollapsed"),
+    // A hand-edited store can hold a non-string; the request path only accepts
+    // a string key.
+    dbKey: typeof storedDbKey === "string" ? storedDbKey : "",
   };
 }
 
@@ -187,6 +196,16 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     return restored;
   }, []);
 
+  const changeDbKey = useCallback(
+    (value: string) => {
+      const next = typeof value === "string" ? value : "";
+      set("dbKey", next);
+      update("dbKey", next);
+      return next;
+    },
+    [update],
+  );
+
   const resetSettings = useCallback(() => {
     resetAll();
     setSettings(readSnapshot());
@@ -207,6 +226,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       setGuardrailsCollapsed: changeGuardrailsCollapsed,
       setGuardrail: changeGuardrail,
       resetGuardrails,
+      setDbKey: changeDbKey,
       resetSettings,
     }),
     [
@@ -222,6 +242,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       changeGuardrailsCollapsed,
       changeGuardrail,
       resetGuardrails,
+      changeDbKey,
       resetSettings,
     ],
   );

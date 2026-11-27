@@ -1,5 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import {
   BENCHMARK_PATH,
   EPISODE_COMPARE_PATH,
@@ -10,7 +14,11 @@ import {
   createObservabilityServer,
 } from "../src/server/http.ts";
 import { generateToken } from "../src/server/auth.ts";
+import { SourceCache } from "../src/server/source-cache.ts";
+import { candidateKey } from "../src/core/adapters/paths.ts";
 import { DatabaseBusyError } from "../src/core/adapters/sqlite.ts";
+import { ObservabilityService } from "../src/core/service.ts";
+import type { ObservabilitySource } from "../src/core/types.ts";
 import {
   BASE,
   assistant,
@@ -1350,3 +1358,326 @@ test("HTTP benchmark names the windowed exclusion without dropping full-range se
 function methods(): RequestInit {
   return { method: "POST" };
 }
+
+test("GET /api/dbs requires token and lists candidates", async () => {
+  const { path } = writeFixtureDb(simpleFixture());
+  const home = mkdtempSync(join(tmpdir(), "opencode-home-"));
+  const discovery = {
+    env: { OPENCODE_DB: path },
+    platform: "linux" as const,
+    home,
+  };
+  const token = generateToken();
+  const server = await createObservabilityServer({
+    dbPath: path,
+    port: 0,
+    authToken: token,
+    discovery,
+  });
+  try {
+    const unauthorized = await fetch(`${server.url}/api/dbs`);
+    assert.equal(unauthorized.status, 401);
+    assert.equal(((await unauthorized.json()) as any).error, "unauthorized");
+
+    const response = await fetch(`${server.url}/api/dbs`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(response.status, 200);
+    const rows = (await response.json()) as any[];
+    assert.ok(Array.isArray(rows));
+
+    const key = candidateKey(path);
+    const selected = rows.find((row) => row.key === key);
+    assert.ok(selected, "the fixture database is listed");
+    assert.equal(selected.path, path);
+    assert.equal(selected.validity, "v2");
+    assert.equal(typeof selected.mtimeMs, "number");
+
+    // Every discovered path is reported, missing files included, in discovery
+    // order. The home profiles do not exist under the injected home.
+    assert.ok(rows.some((row) => row.validity === "unknown"));
+    const expected = rows.map((row) => row.key);
+    assert.equal(new Set(expected).size, expected.length, "keys are unique");
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /api/dbs/count rejects invalid db key", async () => {
+  const { path } = writeFixtureDb(simpleFixture());
+  const home = mkdtempSync(join(tmpdir(), "opencode-home-"));
+  const server = await createObservabilityServer({
+    dbPath: path,
+    port: 0,
+    discovery: { env: { OPENCODE_DB: path }, platform: "linux", home },
+  });
+  try {
+    const valid = await fetch(
+      `${server.url}/api/dbs/count?db=${candidateKey(path)}`,
+    );
+    assert.equal(valid.status, 200);
+    assert.deepEqual(await valid.json(), { count: 1 });
+
+    const unknown = await fetch(`${server.url}/api/dbs/count?db=not-a-key`);
+    assert.equal(unknown.status, 400);
+    assert.equal(((await unknown.json()) as any).error, "invalid_db");
+
+    const missing = await fetch(`${server.url}/api/dbs/count`);
+    assert.equal(missing.status, 400);
+    assert.equal(((await missing.json()) as any).error, "invalid_db");
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /api/sessions?db=<invalid> returns 400", async () => {
+  const startup = writeFixtureDb(simpleFixture()).path;
+  const other = writeFixtureDb(toolsFixture()).path;
+  const home = mkdtempSync(join(tmpdir(), "opencode-home-"));
+  const server = await createObservabilityServer({
+    dbPath: startup,
+    port: 0,
+    discovery: {
+      env: { OPENCODE_OBSERVABILITY_DB: startup, OPENCODE_DB: other },
+      platform: "linux",
+      home,
+    },
+  });
+  try {
+    const invalid = await fetch(`${server.url}/api/sessions?db=not-a-key`);
+    assert.equal(invalid.status, 400);
+    assert.equal(((await invalid.json()) as any).error, "invalid_db");
+
+    // A valid key routes the same route through the cached source for it.
+    const routed = await fetch(
+      `${server.url}/api/sessions?db=${candidateKey(other)}`,
+    );
+    assert.equal(routed.status, 200);
+    const body = (await routed.json()) as any;
+    assert.equal(body.sessions[0].id, "ses_tools");
+
+    // The startup key still serves the startup database.
+    const resident = await fetch(
+      `${server.url}/api/sessions?db=${candidateKey(startup)}`,
+    );
+    assert.equal(resident.status, 200);
+    assert.equal(((await resident.json()) as any).sessions[0].id, "ses_simple");
+  } finally {
+    await server.close();
+  }
+});
+
+function cacheTestSource(name: string, closed: string[]): ObservabilitySource {
+  return {
+    kind: "sqlite",
+    listSessions: async () => [],
+    getSession: async () => null,
+    listMessages: async () => [],
+    getFamily: async () => ({ rootID: name, parent: null, children: [] }),
+    messageBounds: async () => ({ minSeq: 0, maxSeq: 0, count: 0 }),
+    close: () => closed.push(name),
+  };
+}
+
+function cacheTestCache(closed: string[]): SourceCache {
+  const startupSource = cacheTestSource("startup", closed);
+  return new SourceCache({
+    startup: {
+      key: "startup-key",
+      source: startupSource,
+      service: new ObservabilityService(startupSource),
+    },
+    open: (path) => cacheTestSource(path, closed),
+  });
+}
+
+test("source cache closes evicted source", async () => {
+  const closed: string[] = [];
+  const cache = cacheTestCache(closed);
+  try {
+    const two = await cache.acquire("key-two", "/db/two.db");
+    two.release();
+    const three = await cache.acquire("key-three", "/db/three.db");
+    assert.equal(cache.size, 2, "capacity includes the startup source");
+    assert.deepEqual(closed, ["/db/two.db"], "the LRU entry is closed");
+
+    // Touching the startup entry never evicts it.
+    const startup = await cache.acquire("startup-key", "/db/startup.db");
+    startup.release();
+    assert.equal(cache.size, 2);
+    assert.deepEqual(closed, ["/db/two.db"]);
+    three.release();
+  } finally {
+    cache.close();
+  }
+  assert.deepEqual(
+    closed.slice().sort(),
+    ["/db/three.db", "/db/two.db", "startup"],
+    "close() closes every remaining source, startup included",
+  );
+});
+
+test("eviction defers while a source is in flight and closes it after release", async () => {
+  const closed: string[] = [];
+  const cache = cacheTestCache(closed);
+  try {
+    const two = await cache.acquire("key-two", "/db/two.db");
+    const three = await cache.acquire("key-three", "/db/three.db");
+    // Both non-startup entries are leased: transient over-capacity, no close.
+    assert.equal(cache.size, 3);
+    assert.deepEqual(closed, []);
+
+    two.release();
+    // The deferred victim is the oldest zero-refcount entry.
+    assert.deepEqual(closed, ["/db/two.db"]);
+    assert.equal(cache.size, 2);
+    three.release();
+    assert.deepEqual(closed, ["/db/two.db"], "the live entry is never closed");
+  } finally {
+    cache.close();
+  }
+  assert.deepEqual(closed.slice().sort(), [
+    "/db/three.db",
+    "/db/two.db",
+    "startup",
+  ]);
+});
+
+test("close() during a pending open does not leak a worker", async () => {
+  const closed: string[] = [];
+  let releaseReady: (() => void) | undefined;
+  const ready = new Promise<void>((resolve) => {
+    releaseReady = resolve;
+  });
+  const startupSource = cacheTestSource("startup", closed);
+  const cache = new SourceCache({
+    startup: {
+      key: "startup-key",
+      source: startupSource,
+      service: new ObservabilityService(startupSource),
+    },
+    open: (path) =>
+      Object.assign(cacheTestSource(path, closed), { ready: () => ready }),
+  });
+
+  const pending = cache.acquire("key-two", "/db/two.db");
+  cache.close();
+  releaseReady?.();
+  await assert.rejects(pending, /closed/i);
+  assert.equal(cache.size, 0, "no entry is inserted after close()");
+  assert.deepEqual(
+    closed.slice().sort(),
+    ["/db/two.db", "startup"],
+    "the late worker is closed, never leaked",
+  );
+});
+
+test("GET /api/dbs never echoes the raw driver message", async () => {
+  const { path } = writeFixtureDb(simpleFixture());
+  const home = mkdtempSync(join(tmpdir(), "opencode-home-"));
+  const corruptDir = mkdtempSync(join(tmpdir(), "opencode-corrupt-"));
+  const corrupt = join(corruptDir, "opencode.db");
+  writeFileSync(corrupt, "this is not a sqlite database");
+  const server = await createObservabilityServer({
+    dbPath: path,
+    port: 0,
+    discovery: { env: { OPENCODE_DB: corrupt }, platform: "linux", home },
+  });
+  const lock = new DatabaseSync(path);
+  try {
+    lock.exec("BEGIN EXCLUSIVE");
+    const rows = (await fetch(`${server.url}/api/dbs`).then((res) =>
+      res.json(),
+    )) as any[];
+    const busyRow = rows.find((row) => row.key === candidateKey(path));
+    assert.equal(busyRow?.error, "busy");
+    const brokenRow = rows.find((row) => row.key === candidateKey(corrupt));
+    assert.equal(brokenRow?.error, "open_failed");
+    const body = JSON.stringify(rows);
+    assert.doesNotMatch(body, /database is locked|not a sqlite database/i);
+  } finally {
+    try {
+      lock.exec("ROLLBACK");
+    } catch {
+      // ignore
+    }
+    lock.close();
+    await server.close();
+  }
+});
+
+test("GET /api/sessions?db=<startupDbKey> serves the startup database even when it is not a catalogue candidate", async () => {
+  const { path } = writeFixtureDb(simpleFixture());
+  const home = mkdtempSync(join(tmpdir(), "opencode-home-"));
+  // The injected discovery points at no fixture; only the running dbPath names
+  // the startup database, which must stay servable by definition.
+  const server = await createObservabilityServer({
+    dbPath: path,
+    port: 0,
+    discovery: { env: {}, platform: "linux", home },
+  });
+  try {
+    const key = candidateKey(path);
+    const routed = await fetch(`${server.url}/api/sessions?db=${key}`);
+    assert.equal(routed.status, 200);
+    const body = (await routed.json()) as any;
+    assert.equal(body.sessions[0].id, "ses_simple");
+
+    // The catalogue is seeded with the running database too.
+    const catalogue = (await fetch(`${server.url}/api/dbs`).then((res) =>
+      res.json(),
+    )) as any[];
+    assert.ok(catalogue.some((row) => row.key === key));
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /api/sessions?db=<key-of-missing-candidate> returns 400 invalid_db", async () => {
+  const { path } = writeFixtureDb(simpleFixture());
+  const home = mkdtempSync(join(tmpdir(), "opencode-home-"));
+  const missing = join(home, "missing", "opencode.db");
+  const server = await createObservabilityServer({
+    dbPath: path,
+    port: 0,
+    discovery: { env: { OPENCODE_DB: missing }, platform: "linux", home },
+  });
+  try {
+    const response = await fetch(
+      `${server.url}/api/sessions?db=${candidateKey(missing)}`,
+    );
+    assert.equal(response.status, 400);
+    assert.equal(((await response.json()) as any).error, "invalid_db");
+  } finally {
+    await server.close();
+  }
+});
+
+test("busy candidate count returns unavailable error", async () => {
+  const { path } = writeFixtureDb(simpleFixture());
+  const home = mkdtempSync(join(tmpdir(), "opencode-home-"));
+  const server = await createObservabilityServer({
+    dbPath: path,
+    port: 0,
+    discovery: { env: { OPENCODE_DB: path }, platform: "linux", home },
+  });
+  const lock = new DatabaseSync(path);
+  try {
+    lock.exec("BEGIN EXCLUSIVE");
+    const response = await fetch(
+      `${server.url}/api/dbs/count?db=${candidateKey(path)}`,
+    );
+    assert.equal(response.status, 503);
+    const body = (await response.json()) as any;
+    assert.equal(body.error, "database_busy");
+    assert.match(body.message, /locked/);
+  } finally {
+    try {
+      lock.exec("ROLLBACK");
+    } catch {
+      // ignore
+    }
+    lock.close();
+    await server.close();
+  }
+});

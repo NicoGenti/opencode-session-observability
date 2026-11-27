@@ -335,6 +335,11 @@ test("every error response body is a literal pinned to the reviewed table", asyn
       body: '{"error":"episode_not_found","message":"Episode not found."}',
     },
     {
+      type: "InvalidDatabaseKeyError",
+      status: 400,
+      body: '{"error":"invalid_db","message":"Unknown database key."}',
+    },
+    {
       type: "DatabaseBusyError",
       status: 503,
       body: '{"error":"database_busy","message":"The OpenCode database is locked. Retry when the session is idle."}',
@@ -419,6 +424,7 @@ test("the error catch block consumes the exception only through instanceof", asy
     "SessionNotFoundError",
     "EventNotFoundError",
     "EpisodeNotFoundError",
+    "InvalidDatabaseKeyError",
     "DatabaseBusyError",
     "UnsupportedSchemaError",
     "URIError",

@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, normalize, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { detectSchema, UnsupportedSchemaError } from "./sqlite.ts";
 import type { SchemaKind } from "./sqlite.ts";
@@ -74,6 +75,9 @@ export function inspectDatabase(path: string): DatabaseCandidate {
   let db: DatabaseSync | null = null;
   try {
     db = new DatabaseSync(path, { readOnly: true, enableForeignKeyConstraints: false });
+    // Same read-only discipline the long-lived adapter applies: the handle is
+    // opened read-only and can never write even if a later caller tried.
+    db.exec("PRAGMA query_only = ON");
     const schema = detectSchema(db);
     return { path, exists: true, schema, ...(mtimeMs !== undefined ? { mtimeMs } : {}) };
   } catch (error) {
@@ -91,6 +95,34 @@ export function inspectDatabase(path: string): DatabaseCandidate {
       // ignore
     }
   }
+}
+
+/**
+ * Inspects every candidate database location and returns them all, in priority
+ * order. Missing candidates are reported with `exists: false` and are never
+ * opened; existing ones are read read-only through {@link inspectDatabase}.
+ */
+export function listDatabaseCandidates(
+  options: DiscoveryOptions = {},
+): DatabaseCandidate[] {
+  return candidateDatabasePaths(options).map((path) => inspectDatabase(path));
+}
+
+/**
+ * Derives a stable, opaque key from a database path. The path is canonicalized
+ * with `resolve`/`normalize`, then hashed with SHA-256 and truncated to 12 hex
+ * characters. Case is folded only where the platform treats case variants as
+ * the same file (`win32`); on POSIX filesystems distinct spellings keep distinct
+ * keys. `platform` defaults to the running process and exists so callers (and
+ * tests) can pin the fold rule.
+ */
+export function candidateKey(
+  path: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const resolved = normalize(resolve(path));
+  const canonical = platform === "win32" ? resolved.toLowerCase() : resolved;
+  return createHash("sha256").update(canonical).digest("hex").slice(0, 12);
 }
 
 /**

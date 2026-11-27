@@ -22,6 +22,8 @@
  * `onRevealAllowed` sees every payload that states the server policy.
  */
 
+import { get, set } from "./settings.ts";
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -97,6 +99,14 @@ export function requestTarget(
   options: RequestTargetOptions = {},
 ): string {
   const search = serializeParams(params);
+  // The one database selector. A stored key is appended once to every /api
+  // request, read through the same settings accessor every other module uses.
+  // An explicit caller `db` wins, so the catalogue's per-row count request is
+  // never duplicated; `/api/health` is startup-defined and never carries it.
+  if (path.startsWith("/api/") && path !== "/api/health" && !search.has("db")) {
+    const stored = get("dbKey");
+    if (typeof stored === "string" && stored.length > 0) search.set("db", stored);
+  }
   if (options.reveal) search.set("reveal", "1");
   const query = search.toString();
   if (!query) return path;
@@ -189,6 +199,21 @@ export function createApiClient(config: ApiClientConfig): ApiFn {
         response,
         `Request failed (${response.status})`,
       );
+      // A stale database selection self-heals once: when the rejected key is the
+      // one stored in this browser, clearing it lets the next request fall back
+      // to the startup database. An explicit per-row key never clears a
+      // different stored choice, and there is no retry loop here.
+      if (error.status === 400 && error.code === "invalid_db") {
+        const stored = get("dbKey");
+        const explicit = typeof params.db === "string" ? params.db : "";
+        if (
+          typeof stored === "string" &&
+          stored !== "" &&
+          (explicit === "" || explicit === stored)
+        ) {
+          set("dbKey", "");
+        }
+      }
       config.onError?.(error);
       throw error;
     }
