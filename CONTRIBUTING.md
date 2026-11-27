@@ -50,7 +50,7 @@ Dependabot opens version-update pull requests from [`.github/dependabot.yml`](.g
 | `npm` | weekly | 5 |
 | `github-actions` | monthly | 5 |
 
-The `@opencode/*`, `@opentui/*` and `solid-js` pins arrive together in a single grouped pull request (`tui-host-stack`) and must be reviewed as a unit against the OpenCode and OpenTUI release notes. They are the host-API pins declared in `package.json` (peer floors `@opentui/* >=0.8.1`, `solid-js >=1.9.16`), so never blind-upgrade them. Every other dev dependency arrives as an individual pull request.
+The `@opencode/*`, `@opentui/*` and `solid-js` pins arrive together in a single grouped pull request (`tui-host-stack`) and must be reviewed as a unit against the OpenCode and OpenTUI release notes. They are the host-API pins declared in `package.json` (peer floors `@opentui/* >=0.9.7`, `solid-js >=2.0.3 <3` — a major bump to 2.x), so never blind-upgrade them. Every other dev dependency arrives as an individual pull request.
 
 Every dependency pull request is reviewed and then merged manually; no unconditional auto-merge is enabled. CI (`.github/workflows/ci.yml`) runs on these pull requests, and the reviewer also confirms:
 
