@@ -192,6 +192,80 @@ test("a 400 invalid_db clears the stored db key once", async () => {
   }
 });
 
+test("a 400 invalid_db invokes the cleared callback once after clearing", async () => {
+  const original = (globalThis as { localStorage?: unknown }).localStorage;
+  const values = new Map<string, string>();
+  Object.assign(globalThis, {
+    localStorage: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        values.set(key, value);
+      },
+      removeItem: (key: string) => {
+        values.delete(key);
+      },
+    },
+  });
+  try {
+    set("dbKey", "stale-key");
+    const seen: string[] = [];
+    let cleared = 0;
+    const api = createApiClient({
+      ...config(),
+      onDatabaseKeyCleared: () => {
+        cleared += 1;
+        seen.push(get("dbKey"));
+      },
+      fetch: async () =>
+        json({ error: "invalid_db", message: "Unknown database key." }, 400),
+    });
+    await assert.rejects(api<unknown>("/api/sessions"));
+    assert.equal(cleared, 1);
+    assert.deepEqual(seen, [""], "the callback runs after the store is cleared");
+
+    // Nothing is left to clear, so a second rejection does not notify again.
+    await assert.rejects(api<unknown>("/api/sessions"));
+    assert.equal(cleared, 1);
+  } finally {
+    Object.assign(globalThis, { localStorage: original });
+  }
+});
+
+test("a 400 invalid_db keeps a different explicit key from clearing the stored one", async () => {
+  const original = (globalThis as { localStorage?: unknown }).localStorage;
+  const values = new Map<string, string>();
+  Object.assign(globalThis, {
+    localStorage: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        values.set(key, value);
+      },
+      removeItem: (key: string) => {
+        values.delete(key);
+      },
+    },
+  });
+  try {
+    set("dbKey", "stale-key");
+    let cleared = 0;
+    const api = createApiClient({
+      ...config(),
+      onDatabaseKeyCleared: () => {
+        cleared += 1;
+      },
+      fetch: async () =>
+        json({ error: "invalid_db", message: "Unknown database key." }, 400),
+    });
+    // The catalogue's per-row count carries its own explicit key; a rejection of
+    // that foreign key must not clear the user's stored selection.
+    await assert.rejects(api<unknown>("/api/dbs/count", { db: "other-key" }));
+    assert.equal(get("dbKey"), "stale-key");
+    assert.equal(cleared, 0);
+  } finally {
+    Object.assign(globalThis, { localStorage: original });
+  }
+});
+
 /* ----------------------------------------------------------------------- errors */
 
 test("ApiError carries the status, code and message", () => {

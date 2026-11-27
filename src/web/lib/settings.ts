@@ -226,6 +226,30 @@ export function resolveDbKey(
 }
 
 /**
+ * Whether the effective WIRE database changes between two stored keys. `""`
+ * means "no db parameter": the request is served by the startup database,
+ * exactly like the explicit startup key, so those two spellings are the same
+ * target while `startupKey` is known. Every other pair differs: choosing a real
+ * database from "" changes the target, and falling back to "" from a real
+ * selection changes it back to the startup database.
+ *
+ * Values are compared raw: `requestTarget` appends the stored string verbatim,
+ * so a whitespace-only key is an invalid key handled by the `invalid_db`
+ * self-heal, not something this helper normalizes away.
+ */
+export function effectiveDbKeyChange(
+  previousEffectiveKey: string,
+  nextKey: string,
+  startupKey: string,
+): boolean {
+  const target = (key: string): string =>
+    key === "" || (startupKey !== "" && key === startupKey)
+      ? "\0startup"
+      : key;
+  return target(previousEffectiveKey) !== target(nextKey);
+}
+
+/**
  * One-time upgrade path for preferences written by the previous UI, which had
  * a manual light/dark toggle and no `themeUserSet` marker. Without this, the
  * first TUI deep link would silently overwrite the user's existing choice.

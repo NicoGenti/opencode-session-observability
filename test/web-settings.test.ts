@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   applyViewMode,
+  effectiveDbKeyChange,
   get,
   getViewMode,
   migrate,
@@ -224,4 +225,30 @@ test("invalid stored dbKey resets to startup key", () => {
   });
   // An older server with no startupDbKey never invents a key.
   assert.deepEqual(resolveDbKey("", [], undefined), { key: "", reset: false });
+});
+
+test("effectiveDbKeyChange compares the wire target, not the stored spelling", () => {
+  const startup = "startup-key-1";
+  // Same key: no refetch.
+  assert.equal(effectiveDbKeyChange(startup, startup, startup), false);
+  assert.equal(effectiveDbKeyChange("other-key", "other-key", startup), false);
+  // A different real database refetches.
+  assert.equal(effectiveDbKeyChange("other-key", "third-key", startup), true);
+  // "" means "no db parameter": the startup database, same as the startup key.
+  assert.equal(effectiveDbKeyChange("", startup, startup), false);
+  assert.equal(effectiveDbKeyChange(startup, "", startup), false);
+  // "" to a real database changes the wire target.
+  assert.equal(effectiveDbKeyChange("", "other-key", startup), true);
+  // Falling back to "" from a real selection changes it back to startup.
+  assert.equal(effectiveDbKeyChange("other-key", "", startup), true);
+  // Selecting the startup key from another database also changes the target.
+  assert.equal(effectiveDbKeyChange("other-key", startup, startup), true);
+  // An older server has no startup key: "" still means the startup database,
+  // and the ""<->startup-key equivalence cannot be claimed without knowing it.
+  assert.equal(effectiveDbKeyChange("", "", ""), false);
+  assert.equal(effectiveDbKeyChange("", "other-key", ""), true);
+  assert.equal(effectiveDbKeyChange("", "startup-key-1", ""), true);
+  assert.equal(effectiveDbKeyChange("startup-key-1", "", ""), true);
+  // Comparison is raw: a whitespace key is a different (invalid) wire value.
+  assert.equal(effectiveDbKeyChange(" ", "", ""), true);
 });
