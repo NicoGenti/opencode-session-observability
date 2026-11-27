@@ -47,7 +47,7 @@ import {
 import type { GuardrailThresholds } from "../core/guardrails.ts";
 
 const UI_ROOT = fileURLToPath(new URL("../../dist-ui/", import.meta.url));
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 
 /**
  * Hard ceiling for one static asset. The largest shipped file is the hashed

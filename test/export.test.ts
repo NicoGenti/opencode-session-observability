@@ -82,7 +82,7 @@ test("exports JSON with the normalized analysis and optional events", async () =
   assert.equal(result.mime, "application/json; charset=utf-8");
   assert.equal(result.redacted, true);
   const parsed = JSON.parse(result.content) as Record<string, any>;
-  assert.equal(parsed.generator, "opencode-session-observability/0.2.0");
+  assert.equal(parsed.generator, "opencode-session-observability/0.3.0");
   assert.equal(parsed.redacted, true);
   assert.equal(parsed.session.id, "ses_simple");
   assert.equal(parsed.analysis.turns.length, 1);
